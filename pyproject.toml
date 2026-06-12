@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "focalcut"
+version = "0.1.0"
+description = "Split video into focal-subject segments using SAM 3 object permanence, and export per-subject clips or an editor timeline."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Isaac Rowntree" }]
+keywords = ["video", "editing", "segmentation", "sam3", "tracking", "object-permanence"]
+dependencies = [
+    "torch>=2.4",
+    "transformers>=5.3",
+    "numpy>=1.24",
+    "accelerate>=0.30",
+]
+
+[project.optional-dependencies]
+otio = ["opentimelineio>=0.17"]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/isaacrowntree/focalcut"
+Repository = "https://github.com/isaacrowntree/focalcut"
+
+[project.scripts]
+focalcut = "focalcut.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["focalcut*"]
+
+# Note: requires ffmpeg/ffprobe on PATH, and a SAM 3 checkpoint you have access to
+# (facebook/sam3 is a gated model — accept its license on Hugging Face and log in).

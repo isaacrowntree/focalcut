@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+# outputs
+*.focalcut.xml
+*.proof.jpg
+*_dancers/
+bench/data/*.mp4
+bench/data/runs/
