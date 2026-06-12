@@ -17,8 +17,16 @@ import json, os
 from . import video as V
 from .contactsheet import build_sheet
 
-MANIFEST = "focalcut_library.json"
+LIBDIR = "focalcut"          # all library artifacts live in <folder>/focalcut/
+MANIFEST = "library.json"
 VIDEO_EXTS = (".mp4", ".mov", ".m4v", ".mkv")
+
+
+def lib_dir(folder: str) -> str:
+    """The subfolder that holds this folder's library (manifest + sheets)."""
+    d = os.path.join(folder, LIBDIR)
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
 def list_clips(folder: str, portrait_only: bool = False) -> list[dict]:
@@ -74,7 +82,7 @@ def derive_segments(duration: float, cuts: list[float]) -> list[list[float]]:
 
 
 def load(folder: str) -> dict:
-    p = os.path.join(folder, MANIFEST)
+    p = os.path.join(lib_dir(folder), MANIFEST)
     return json.load(open(p)) if os.path.exists(p) else {}
 
 
@@ -87,6 +95,6 @@ def save(folder: str, clips: list[dict], meta: dict) -> str:
                "single_segment": len(clips) - multi,
                "total_cuts": sum(len(c.get("cuts", [])) for c in clips),
                "clips": clips}
-    p = os.path.join(folder, MANIFEST)
+    p = os.path.join(lib_dir(folder), MANIFEST)
     json.dump(payload, open(p, "w"), indent=2)
     return p

@@ -131,7 +131,8 @@ def cmd_library(a: argparse.Namespace) -> int:
     """
     import time as _t
     from . import library as lib
-    out_dir = a.sheets_dir or os.path.join(a.folder, ".focalcut_sheets")
+    libd = lib.lib_dir(a.folder)
+    out_dir = a.sheets_dir or os.path.join(libd, "sheets")
 
     def prog(i, n, j):
         ok = "ok" if j.get("sheet") else f"ERROR {j.get('error','')}"
@@ -141,7 +142,7 @@ def cmd_library(a: argparse.Namespace) -> int:
     jobs = lib.build_sheets(a.folder, out_dir, interval=a.interval, cols=a.cols,
                             portrait_only=a.portrait_only, on_progress=prog)
     ok = [j for j in jobs if j.get("sheet")]
-    jobs_path = os.path.join(a.folder, "focalcut_sheets.json")
+    jobs_path = os.path.join(libd, "sheets.json")
     json_dump(jobs_path, {"folder": a.folder, "interval": a.interval, "sheets": ok})
     # skeleton manifest (cuts to be filled by the judge)
     clips = [{"name": j["name"], "duration": j["duration"], "sheet": j["sheet"],
