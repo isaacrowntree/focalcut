@@ -143,27 +143,35 @@ def _focal(dets: list[Detection], W: int, H: int, area_frac: float):
     return best
 
 
-def segment_focal(per_frame: dict[int, list[Detection]], frames: np.ndarray, fps: float,
+def segment_focal(per_frame: dict[int, list[Detection]], frames: np.ndarray, times: list[float],
                   frame_wh: tuple[int, int], area_frac: float = 0.02, min_score: float = 0.5,
                   sim_thresh: float = 0.45, iou_keep: float = 0.2, min_dwell: float = 3.0,
-                  min_segment: float = 4.0, t_offset: float = 0.0) -> list[Segment]:
+                  min_segment: float = 4.0) -> list[Segment]:
     """Track ONE focal subject by appearance, coasting through flare/occlusion.
 
-    A cut is emitted only on *positive, sustained* evidence of a different focal subject —
-    a confident frame whose focal crop is both spatially disjoint from and colour-different
-    to the one we're following. Degraded frames (washed out, no clear focal) coast.
+    `times[f]` is the real timestamp (seconds) of frame index `f`, so this works on
+    irregularly-spaced keyframes. A cut is emitted only on *positive, sustained* evidence
+    of a different focal subject — a confident frame whose focal crop is both spatially
+    disjoint from and colour-different to the one we're following. Degraded frames (washed
+    out, no clear focal) coast.
     """
     W, H = frame_wh
     order = sorted(per_frame)
     if not order:
         return []
-    dwell = max(1, round(min_dwell * fps))
+    if len(order) > 1:
+        diffs = sorted(times[order[i + 1]] - times[order[i]] for i in range(len(order) - 1))
+        dt = diffs[len(diffs) // 2] or 0.5          # median frame spacing
+    else:
+        dt = 0.5
+    dwell = max(1, round(min_dwell / dt))
 
     segs: list[Segment] = []
     seg_start = order[0]
     cur_hist = None          # appearance of the subject we're currently following
     cur_box = None
     challenge = 0            # consecutive confident frames disagreeing with current
+    challenge_start = order[0]
 
     for f in order:
         foc = _focal(per_frame[f], W, H, area_frac)
@@ -187,13 +195,15 @@ def segment_focal(per_frame: dict[int, list[Detection]], frames: np.ndarray, fps
             cur_box = foc.box
             challenge = 0
         else:
+            if challenge == 0:
+                challenge_start = f                     # first frame of the new subject
             challenge += 1
             if challenge >= dwell:                      # sustained different subject -> cut
-                segs.append(Segment(seg_start / fps + t_offset, (f - dwell + 1) / fps + t_offset, []))
-                seg_start = f - dwell + 1
+                segs.append(Segment(times[seg_start], times[challenge_start], []))
+                seg_start = challenge_start
                 cur_hist, cur_box, challenge = hist, foc.box, 0
 
-    segs.append(Segment(seg_start / fps + t_offset, (order[-1] + 1) / fps + t_offset, []))
+    segs.append(Segment(times[seg_start], times[order[-1]] + dt, []))
     return _merge_short(segs, min_segment)
 
 

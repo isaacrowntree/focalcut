@@ -23,13 +23,17 @@ def _build_engine(a):
 def _cut_one(a, path: str, engine, single: bool) -> int:
     info = V.probe(path)
     size = V.target_size(info, a.long_side)
-    fps = a.fps if a.fps is not None else (4.0 if a.engine == "video" else 0.5)
+    fps = a.fps if a.fps is not None else (4.0 if a.engine == "video" else 1.0)
     print(f"\n[focalcut] {os.path.basename(path)}  {info.width}x{info.height} "
           f"{info.fps:.0f}fps {info.duration:.0f}s -> {a.engine} @ {fps}fps {size[0]}x{size[1]}",
           file=sys.stderr)
 
     t = time.time()
-    frames = V.decode(path, fps, size, start=a.start, duration=a.duration)
+    if a.engine == "video":
+        frames = V.decode(path, fps, size, start=a.start, duration=a.duration)
+        times = [i / fps + (a.start or 0.0) for i in range(len(frames))]
+    else:
+        frames, times = V.decode_keyframes(path, size, target_fps=fps)
     dec = time.time() - t
 
     kind, eng = engine
@@ -46,10 +50,9 @@ def _cut_one(a, path: str, engine, single: bool) -> int:
     print(f"[focalcut] decoded {len(frames)} + {kind} {len(per_frame)} frames "
           f"in {dec:.1f}+{time.time()-t:.1f}s{vram}", file=sys.stderr)
 
-    segs = segment_focal(per_frame, frames, fps, size, area_frac=a.area_frac,
+    segs = segment_focal(per_frame, frames, times, size, area_frac=a.area_frac,
                          min_score=a.min_score, sim_thresh=a.sim_thresh,
-                         min_dwell=a.min_dwell, min_segment=a.min_segment,
-                         t_offset=(a.start or 0.0))
+                         min_dwell=a.min_dwell, min_segment=a.min_segment)
 
     print(f"[focalcut] {len(segs)} focal segments:")
     for i, s in enumerate(segs):
@@ -119,6 +122,45 @@ def cmd_cut(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_library(a: argparse.Namespace) -> int:
+    """Coarse pass for a folder: build a contact sheet per clip + a sheet-jobs file.
+
+    The vision judge (Claude, fanned out one agent per sheet) then reads the jobs file
+    and returns cut points; see README for the coarse->fine->ultra pipeline. This step
+    is the deterministic, GPU-free part — no cutting.
+    """
+    import time as _t
+    from . import library as lib
+    out_dir = a.sheets_dir or os.path.join(a.folder, ".focalcut_sheets")
+
+    def prog(i, n, j):
+        ok = "ok" if j.get("sheet") else f"ERROR {j.get('error','')}"
+        print(f"  [{i:>3}/{n}] {j['name']:<22} {ok}", file=sys.stderr)
+
+    t0 = _t.time()
+    jobs = lib.build_sheets(a.folder, out_dir, interval=a.interval, cols=a.cols,
+                            portrait_only=a.portrait_only, on_progress=prog)
+    ok = [j for j in jobs if j.get("sheet")]
+    jobs_path = os.path.join(a.folder, "focalcut_sheets.json")
+    json_dump(jobs_path, {"folder": a.folder, "interval": a.interval, "sheets": ok})
+    # skeleton manifest (cuts to be filled by the judge)
+    clips = [{"name": j["name"], "duration": j["duration"], "sheet": j["sheet"],
+              "cuts": [], "segments": [[0.0, j["duration"]]], "needs_review": True}
+             for j in ok]
+    man = lib.save(a.folder, clips, {"interval_s": a.interval, "status": "sheets_built"})
+    print(f"\n[focalcut] {len(ok)}/{len(jobs)} sheets -> {out_dir}/  ({_t.time()-t0:.0f}s)")
+    print(f"[focalcut] sheet jobs -> {jobs_path}")
+    print(f"[focalcut] skeleton manifest -> {man}")
+    print("[focalcut] next: fan out a vision agent per sheet to fill in cut points "
+          "(see README: coarse->fine->ultra).")
+    return 0
+
+
+def json_dump(path, obj):
+    import json
+    json.dump(obj, open(path, "w"), indent=2)
+
+
 def cmd_sheet(a: argparse.Namespace) -> int:
     """Coarse pass: build a thumbnail-grid contact sheet for a vision judge to read."""
     out = a.output or os.path.splitext(a.input)[0] + ".sheet.jpg"
@@ -131,6 +173,14 @@ def cmd_sheet(a: argparse.Namespace) -> int:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="focalcut")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    lb = sub.add_parser("library", help="coarse pass: build a contact sheet per clip in a folder (no cutting)")
+    lb.add_argument("folder")
+    lb.add_argument("--interval", type=float, default=8.0, help="seconds between thumbnails")
+    lb.add_argument("--cols", type=int, default=6)
+    lb.add_argument("--portrait-only", action="store_true", help="only process portrait clips")
+    lb.add_argument("--sheets-dir", help="where to write sheets (default <folder>/.focalcut_sheets)")
+    lb.set_defaults(func=cmd_library)
 
     sh = sub.add_parser("sheet", help="build a contact sheet (coarse pass)")
     sh.add_argument("input")

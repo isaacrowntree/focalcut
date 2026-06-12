@@ -42,8 +42,10 @@ def build_sheet(video_path: str, interval: float = 10.0, cols: int = 4,
         if not tiles:
             raise RuntimeError(f"no frames extracted from {video_path}")
         rows = (len(tiles) + cols - 1) // cols
-        inputs = sum([["-i", t] for t in tiles], [])
-        subprocess.run(["ffmpeg", "-v", "error", *inputs, "-filter_complex",
+        # tile() works on frames of ONE stream, so feed the thumbnails as a glob
+        # sequence (sequentially named t000.jpg, t001.jpg, ...), not as N -i inputs.
+        subprocess.run(["ffmpeg", "-v", "error", "-framerate", "1", "-pattern_type", "glob",
+                        "-i", os.path.join(td, "t*.jpg"), "-frames:v", "1", "-filter_complex",
                         f"tile={cols}x{rows}:padding=6:color=white", "-y", out_path],
                        capture_output=True, check=True)
     return out_path

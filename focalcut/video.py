@@ -1,6 +1,6 @@
 """Video probing and frame decoding via ffmpeg (no decord/pyav dependency)."""
 from __future__ import annotations
-import json, subprocess
+import json, re, subprocess
 from dataclasses import dataclass
 import numpy as np
 
@@ -65,3 +65,31 @@ def decode(path: str, fps: float, size: tuple[int, int],
             "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
     raw = subprocess.run(cmd, capture_output=True, check=True).stdout
     return np.frombuffer(raw, np.uint8).reshape(-1, h, w, 3)
+
+
+def decode_keyframes(path: str, size: tuple[int, int], target_fps: float | None = None):
+    """Decode only keyframes (much faster than full decode) with their real timestamps.
+
+    Keyframes are typically every ~0.5-1s, dense enough to locate focal handoffs, and
+    decoding only them avoids the cost of decoding every inter-frame. Returns
+    (frames (N,H,W,3) uint8, times list[float] seconds). `showinfo` reports each
+    decoded frame's pts_time so timestamps are exact, not assumed.
+    """
+    w, h = size
+    cmd = ["ffmpeg", "-v", "info", "-skip_frame", "nokey", "-i", path,
+           "-vf", f"scale={w}:{h},showinfo", "-vsync", "0",
+           "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
+    p = subprocess.run(cmd, capture_output=True)
+    frames = np.frombuffer(p.stdout, np.uint8).reshape(-1, h, w, 3)
+    times = [float(x) for x in re.findall(r"pts_time:([0-9.]+)", p.stderr.decode("utf-8", "ignore"))]
+    n = min(len(frames), len(times))
+    frames, times = frames[:n], times[:n]
+    if target_fps and len(times) > 1:
+        # subsample keyframes down toward target_fps (keeps timestamps honest)
+        span = times[-1] - times[0]
+        want = max(1, int(round(span * target_fps)))
+        if want < n:
+            idx = np.linspace(0, n - 1, want).round().astype(int)
+            idx = sorted(set(idx.tolist()))
+            frames, times = frames[idx], [times[i] for i in idx]
+    return frames, times

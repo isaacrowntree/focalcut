@@ -4,59 +4,63 @@
 
 Point focalcut at dance footage (or any video where the camera moves between subjects) and it finds the cuts where the focus changes from one person/couple to the next, then exports per-subject clips and an editor timeline (Premiere / Resolve / Final Cut).
 
-Built on Meta's [SAM 3](https://ai.meta.com/research/sam3/) for detection and tracking. MIT-licensed, runs locally on a single consumer GPU.
-
-> Status: early. Works well on clips with a clear focal subject; crowded, uniformly-lit floors are hard (see *How it works*).
+MIT-licensed. The recommended pipeline is **GPU-free** (ffmpeg + a vision model).
 
 ## Why this is hard (and how it works)
 
-The core difficulty is **identity under bad conditions**: stage lighting washes every dancer the same colour, lens flare swallows the subject, and dancers spin away from the camera. Naive signals fail — frame-differencing over-cuts on every spin, and colour or even CLIP-embedding similarity can't tell two magenta-lit couples apart.
+The core difficulty is **identity under bad conditions**: stage lighting washes every dancer the same colour, lens flare swallows the subject, and dancers spin away from the camera. Naive signals fail — frame-differencing over-cuts on every spin, and colour or even CLIP-embedding similarity can't tell two magenta-lit couples apart. (A SAM 3 detector + appearance tracker was tried and under-segmented crowded floors; it remains as the optional `cut --engine image|video` path.)
 
-focalcut offers two engines and a coarse-to-fine workflow:
+**What actually works is a contact sheet read by a vision model.** One thumbnail every N seconds is the most legible identity signal there is — a vision model reading the grid reasons about clothing, hair, faces, and recurrence the way no box metric can. The library pipeline is coarse → fine → ultra, all built from cheap ffmpeg contact sheets:
 
-- **`image` engine (fast, default).** Samples a frame every ~2 s, runs SAM 3's image detector (~3.4 GB VRAM, no growing memory bank), and tracks the focal subject by appearance, *coasting* through flared/occluded frames rather than cutting on them. A few seconds per clip. Great when there's one dominant subject; can miss handoffs on a crowded floor.
-- **`video` engine (slow, robust).** SAM 3's video tracker with a real learned memory bank — holds a subject's identity through flare, occlusion, and spins. Minutes per clip and heavier on VRAM, but correct on hard footage.
-- **Coarse-to-fine (recommended for crowded footage).** A **contact sheet** — one thumbnail every N seconds — is the most legible identity signal there is, because a vision model reading the grid can reason about clothing, faces, and recurrence the way no box metric can. The intended workflow:
-  1. `focalcut sheet clip.mp4` → thumbnail grid (scratch; cleaned up after use).
-  2. A vision judge (Claude, or you) reads the grid and flags which buckets are a *different* subject.
-  3. SAM 3 refines each flagged ~N-second window to pin the exact cut frame.
+1. **Coarse** — one thumbnail every ~8 s per clip; a judge reads each and returns candidate cut points.
+2. **Refine** — a ±8 s sheet at 2 s spacing around each candidate verifies it's a real couple change (not flare/spin/partner-rotation) and gives a ~2 s boundary.
+3. **Ultra** — a ±3 s sheet at 0.5 s spacing pins each boundary to ~0.5 s.
+4. **Miss-sweep** — a skeptical second read of the single-segment clips catches any handoff the coarse pass missed.
 
-  This is a toolkit Claude can drive end to end, in the spirit of a contact-sheet edit.
+The judge is a vision model fanned out one agent per sheet (Claude, via the scripts in `workflows/`). On a 50-clip portrait dance library this ran in **~7 minutes total** and pinned 26 cuts to 0.5 s — see `workflows/` for the four parallel passes.
 
 ## Install
 
-Requires Python ≥3.10, `ffmpeg`/`ffprobe` on PATH, and a CUDA GPU for the SAM 3 engines.
+Requires Python ≥3.10 and `ffmpeg`/`ffprobe` on PATH. The library pipeline needs no GPU.
+(The optional `cut --engine` paths use SAM 3 `facebook/sam3`, a **gated** model — accept its
+license on Hugging Face and `hf auth login` first; a CUDA GPU is recommended for those.)
 
 ```bash
 pip install -e .
 ```
 
-SAM 3 (`facebook/sam3`) is a **gated** model: accept its license on Hugging Face and log in (`hf auth login`) before first use.
-
 ## Usage
 
+### Build a cut-point library for a folder (recommended)
+
 ```bash
-# Contact sheet (coarse pass) — one thumbnail every 10s
-focalcut sheet "clip.mp4" --interval 10
-
-# Cut a single clip into per-subject segments + extract clips to a subfolder
-focalcut cut "clip.mp4" --clips            # -> clip_dancers/ + clip.focalcut.xml
-
-# Whole folder, fast engine, model loaded once
-focalcut cut "/path/to/folder" --clips --copy
-
-# Hard clip: use the robust video tracker
-focalcut cut "crowded.mp4" --engine video
-
-# Proof montage of the detected segments (sanity check)
-focalcut cut "clip.mp4" --proof
+# Coarse pass: one contact sheet per clip (portrait-only optional). GPU-free.
+focalcut library "/path/to/folder" --interval 8 --portrait-only
+#  -> <folder>/.focalcut_sheets/*.jpg
+#  -> <folder>/focalcut_sheets.json   (sheet jobs for the judge)
+#  -> <folder>/focalcut_library.json  (skeleton manifest; cuts filled by the judge)
 ```
 
-Key flags: `--engine image|video`, `--fps` (sample rate), `--clips` / `--clips-dir` / `--copy`,
-`--prompt` (SAM 3 concept, default `person`), `--windows-paths` (map WSL `/mnt/d` → `D:` for
-Windows NLEs), `--proof`, `--dump-json`.
+Then fan out a vision agent per sheet to fill in the cut points, refine, and pin
+boundaries — the four passes in `workflows/` (`01-coarse-judge` → `02-refine-cuts` →
+`03-miss-sweep` → `04-ultra-boundary`). The final `focalcut_library.json` holds, per clip,
+`cuts` (seconds), `segments`, and `notes` describing each couple for human verification.
+
+### One-off contact sheet
+
+```bash
+focalcut sheet "clip.mp4" --interval 10
+```
+
+### Direct cut/export (optional SAM 3 engines)
+
+```bash
+focalcut cut "clip.mp4" --clips            # -> clip_dancers/ + clip.focalcut.xml
+focalcut cut "/folder" --engine image --clips --copy
+```
 
 Exports are FCP7 XML (`xmeml`), which Premiere, Resolve, and Final Cut all import.
+`--windows-paths` maps WSL `/mnt/d` → `D:` for Windows NLEs.
 
 ## Benchmark
 
