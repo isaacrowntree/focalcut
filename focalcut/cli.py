@@ -162,6 +162,25 @@ def json_dump(path, obj):
     json.dump(obj, open(path, "w"), indent=2)
 
 
+def cmd_export_premiere(a: argparse.Namespace) -> int:
+    """Export a Premiere-ready FCP7 selects timeline of the couple segments in a library."""
+    from . import library as lib
+    from .premiere import export_selects
+    man = lib.load(a.folder)
+    if not man.get("clips"):
+        print("[focalcut] no library.json found — run `focalcut library` first", file=sys.stderr)
+        return 1
+    couple = [c for c in man["clips"]
+              if c.get("kind") != "non-couple" and c.get("n_couples") != 0 and c.get("segments")]
+    name = a.name or (os.path.basename(a.folder.rstrip("/")) + " — couples")
+    out = a.output or os.path.join(lib.lib_dir(a.folder), "couples_premiere.xml")
+    export_selects(a.folder, couple, out, name, windows_paths=a.windows_paths)
+    nseg = sum(len(c["segments"]) for c in couple)
+    print(f"[focalcut] {len(couple)} couple clips, {nseg} segments -> {out}")
+    print("[focalcut] import into Premiere: File > Import, select the XML.")
+    return 0
+
+
 def cmd_sheet(a: argparse.Namespace) -> int:
     """Coarse pass: build a thumbnail-grid contact sheet for a vision judge to read."""
     out = a.output or os.path.splitext(a.input)[0] + ".sheet.jpg"
@@ -182,6 +201,15 @@ def main(argv=None) -> int:
     lb.add_argument("--portrait-only", action="store_true", help="only process portrait clips")
     lb.add_argument("--sheets-dir", help="where to write sheets (default <folder>/.focalcut_sheets)")
     lb.set_defaults(func=cmd_library)
+
+    ep = sub.add_parser("export-premiere", help="export a Premiere FCP7 selects timeline from a library")
+    ep.add_argument("folder")
+    ep.add_argument("-o", "--output", help="output XML (default <folder>/focalcut/couples_premiere.xml)")
+    ep.add_argument("--name", help="sequence name")
+    ep.add_argument("--windows-paths", action="store_true", default=True,
+                    help="map /mnt/<d> -> <D>: for Premiere on Windows (default on)")
+    ep.add_argument("--no-windows-paths", dest="windows_paths", action="store_false")
+    ep.set_defaults(func=cmd_export_premiere)
 
     sh = sub.add_parser("sheet", help="build a contact sheet (coarse pass)")
     sh.add_argument("input")
