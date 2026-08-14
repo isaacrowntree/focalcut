@@ -1,63 +1,15 @@
-"""Export focal segments to an editor timeline.
+"""Render focal segments to media: per-subject clip files and a proof montage.
 
-Primary format is FCP7 XML (xmeml v5) — the lingua franca that Premiere, DaVinci
-Resolve, and Final Cut all import, and an open spec (no third-party adapter, no
-ButterCut code). Each segment becomes one clip on V1, laid end to end, referencing
-the original media by source in/out so the editor can trim, reorder, or delete.
+Timeline export lives in timeline.py (OpenTimelineIO); this module is only the
+ffmpeg-backed rendering that turns segments into things you can watch.
 """
 from __future__ import annotations
+
+import functools
+import operator
 import os
-from xml.sax.saxutils import escape
+
 from .segment import Segment
-
-
-def _pathurl(path: str, windows_paths: bool) -> str:
-    """file:// URL for the media. Optionally map WSL /mnt/<d>/... -> <D>:/... ."""
-    p = os.path.abspath(path)
-    if windows_paths and p.startswith("/mnt/") and len(p) > 6 and p[6] == "/":
-        drive = p[5].upper()
-        p = f"{drive}:{p[6:]}"
-        return "file://localhost/" + p.replace("\\", "/").lstrip("/").replace(" ", "%20").replace(":", "%3A", 0)
-    from urllib.request import pathname2url
-    return "file://localhost" + pathname2url(p)
-
-
-def to_fcp7_xml(segments: list[Segment], source_path: str, src_fps: float,
-                width: int, height: int, sequence_name: str = "focalcut",
-                windows_paths: bool = False) -> str:
-    tb = int(round(src_fps))
-    ntsc = "TRUE" if abs(src_fps - tb) > 1e-3 else "FALSE"
-    fname = os.path.basename(source_path)
-    url = _pathurl(source_path, windows_paths)
-
-    def rate():
-        return f"<rate><timebase>{tb}</timebase><ntsc>{ntsc}</ntsc></rate>"
-
-    items, tl = [], 0
-    for i, s in enumerate(segments):
-        src_in = int(round(s.start * src_fps))
-        src_out = int(round(s.end * src_fps))
-        n = src_out - src_in
-        tl_start, tl_end = tl, tl + n
-        tl = tl_end
-        label = escape(f"{os.path.splitext(fname)[0]} · dancer {i+1}")
-        file_el = (f'<file id="src"><name>{escape(fname)}</name>'
-                   f'<pathurl>{escape(url)}</pathurl>{rate()}'
-                   f'<media><video><samplecharacteristics><width>{width}</width>'
-                   f'<height>{height}</height></samplecharacteristics></video></media></file>'
-                   ) if i == 0 else '<file id="src"/>'
-        items.append(
-            f'<clipitem id="clip{i+1}"><name>{label}</name>{rate()}'
-            f'<start>{tl_start}</start><end>{tl_end}</end>'
-            f'<in>{src_in}</in><out>{src_out}</out>{file_el}</clipitem>')
-
-    return (
-        '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE xmeml>\n<xmeml version="5">\n'
-        f'<sequence id="seq"><name>{escape(sequence_name)}</name>'
-        f'<duration>{tl}</duration>{rate()}'
-        f'<media><video><format><samplecharacteristics>{rate()}'
-        f'<width>{width}</width><height>{height}</height></samplecharacteristics></format>'
-        f'<track>{"".join(items)}</track></video></media></sequence>\n</xmeml>\n')
 
 
 def write_dancer_clips(segments: list[Segment], source_path: str, out_dir: str,
@@ -90,7 +42,8 @@ def write_dancer_clips(segments: list[Segment], source_path: str, out_dir: str,
 def write_proof_montage(segments: list[Segment], source_path: str, out_path: str) -> str | None:
     """Tile one frame from the middle of each segment so a human can eyeball that
     each segment really is a different dancer/couple. Returns path or None."""
-    import subprocess, tempfile
+    import subprocess
+    import tempfile
     if not segments:
         return None
     tiles = []
@@ -111,7 +64,7 @@ def write_proof_montage(segments: list[Segment], source_path: str, out_path: str
             return None
         cols = min(5, len(tiles))
         rows = (len(tiles) + cols - 1) // cols
-        inputs = sum([["-i", t] for t in tiles], [])
+        inputs = functools.reduce(operator.iadd, [["-i", t] for t in tiles], [])
         # pad the grid to cols*rows so the tile filter always has enough inputs
         subprocess.run(["ffmpeg", "-v", "error", *inputs, "-filter_complex",
                         f"tile={cols}x{rows}:padding=4:color=black", "-y", out_path],

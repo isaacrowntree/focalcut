@@ -6,7 +6,11 @@ more reliably than any box/embedding metric under uniform stage lighting. Sheets
 scratch: built into a temp dir and cleaned up after, unless `keep=True`.
 """
 from __future__ import annotations
-import os, subprocess, tempfile
+
+import os
+import subprocess
+import tempfile
+
 from . import video as V
 
 

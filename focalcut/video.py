@@ -1,7 +1,11 @@
 """Video probing and frame decoding via ffmpeg (no decord/pyav dependency)."""
 from __future__ import annotations
-import json, re, subprocess
+
+import json
+import re
+import subprocess
 from dataclasses import dataclass
+
 import numpy as np
 
 
@@ -32,7 +36,7 @@ def probe(path: str) -> VideoInfo:
             rot = int(sd["rotation"])
     if abs(rot) % 180 == 90:
         w, h = h, w
-    num, den = (st.get("r_frame_rate", "0/1").split("/") + ["1"])[:2]
+    num, den = ([*st.get("r_frame_rate", "0/1").split("/"), "1"])[:2]
     fps = float(num) / float(den or 1) if float(den or 1) else 0.0
     dur = float(data.get("format", {}).get("duration") or st.get("duration") or 0.0)
     return VideoInfo(path, w, h, fps, dur)
@@ -87,7 +91,7 @@ def decode_keyframes(path: str, size: tuple[int, int], target_fps: float | None 
     if target_fps and len(times) > 1:
         # subsample keyframes down toward target_fps (keeps timestamps honest)
         span = times[-1] - times[0]
-        want = max(1, int(round(span * target_fps)))
+        want = max(1, round(span * target_fps))
         if want < n:
             idx = np.linspace(0, n - 1, want).round().astype(int)
             idx = sorted(set(idx.tolist()))

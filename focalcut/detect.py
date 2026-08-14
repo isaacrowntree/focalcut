@@ -8,7 +8,9 @@ propagation. Sampling a frame every couple of seconds, running SAM 3's image det
 IoU gives the same "don't re-cut on a back-turn" permanence in a few seconds per clip.
 """
 from __future__ import annotations
+
 import numpy as np
+
 from .track import Detection
 
 
@@ -40,7 +42,7 @@ class Sam3ImageDetector:
                     boxes = r["boxes"].float().cpu().numpy()
                     scores = r["scores"].float().cpu().numpy()
                     dets = []
-                    for b, s in zip(boxes, scores):
+                    for b, s in zip(boxes, scores, strict=False):
                         x0, y0, x1, y1 = [float(v) for v in b]
                         dets.append(Detection(-1, (x0, y0, x1, y1),
                                               abs((x1 - x0) * (y1 - y0)), float(s)))

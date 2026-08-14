@@ -8,8 +8,13 @@ Usage:
     python -m bench.baselines.framediff <video> [--fps 6] [--thresh 0.35] > pred.json
 """
 from __future__ import annotations
-import argparse, json, sys
+
+import argparse
+import json
+import sys
+
 import numpy as np
+
 from focalcut import video as V
 
 

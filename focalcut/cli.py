@@ -2,25 +2,40 @@
 
 Pass one file or many (a whole folder of clips). The SAM 3 model is loaded once and
 reused across every clip, so batch runs amortise the load cost.
+
+Only `cut` needs SAM 3 (and therefore torch). The recommended contact-sheet pipeline
+(`library`, `sheet`, `export`) is GPU-free, so the torch-backed modules are imported
+lazily inside `cut` — importing them here would make `pip install focalcut` drag in the
+whole CUDA stack for users who never touch the SAM engines.
 """
 from __future__ import annotations
-import argparse, glob, os, sys, time
+
+import argparse
+import glob
+import os
+import sys
+import time
+
 from . import video as V
-from .track import Sam3Tracker
-from .detect import Sam3ImageDetector, associate
-from .segment import segment_focal
-from .export import to_fcp7_xml, write_proof_montage, write_dancer_clips
 from .contactsheet import build_sheet
+from .timeline import FORMATS as _FORMATS
 
 
 def _build_engine(a):
     """Construct the tracking engine once (reusable across many clips)."""
     if a.engine == "video":
+        from .track import Sam3Tracker
         return ("video", Sam3Tracker(model_id=a.model, device=a.device))
+    from .detect import Sam3ImageDetector
     return ("image", Sam3ImageDetector(model_id=a.model, device=a.device))
 
 
 def _cut_one(a, path: str, engine, single: bool) -> int:
+    from . import timeline as T
+    from .detect import associate
+    from .export import write_dancer_clips, write_proof_montage
+    from .segment import segment_focal
+
     info = V.probe(path)
     size = V.target_size(info, a.long_side)
     fps = a.fps if a.fps is not None else (4.0 if a.engine == "video" else 1.0)
@@ -60,16 +75,19 @@ def _cut_one(a, path: str, engine, single: bool) -> int:
 
     stem = os.path.splitext(path)[0]
     base = (a.output if (single and a.output) else stem + ".focalcut.xml")
-    with open(base, "w") as f:
-        f.write(to_fcp7_xml(segs, path, info.fps, info.width, info.height,
-                            sequence_name=os.path.basename(stem), windows_paths=a.windows_paths))
+    record = [{"name": os.path.basename(path),
+               "segments": [[s.start, s.end] for s in segs]}]
+    tl = T.build_timeline(os.path.dirname(os.path.abspath(path)), record,
+                          os.path.basename(stem), windows_paths=a.windows_paths)
+    T.write_timeline(tl, base, "fcp7")
     print(f"[focalcut] timeline -> {base}")
 
     if a.dump_json and single:
         import json
-        json.dump({"video": path, "segments": [{"start": round(s.start, 3),
-                   "end": round(s.end, 3), "obj_ids": s.obj_ids} for s in segs]},
-                  open(a.dump_json, "w"), indent=2)
+        with open(a.dump_json, "w") as fh:
+            json.dump({"video": path, "segments": [{"start": round(s.start, 3),
+                       "end": round(s.end, 3), "obj_ids": s.obj_ids} for s in segs]},
+                      fh, indent=2)
         print(f"[focalcut] segments json -> {a.dump_json}")
 
     if a.clips:
@@ -112,7 +130,7 @@ def cmd_cut(a: argparse.Namespace) -> int:
     print(f"[focalcut] {a.engine} engine loaded in {time.time()-t0:.1f}s; {len(files)} clip(s)",
           file=sys.stderr)
     total = 0
-    for i, path in enumerate(files):
+    for _i, path in enumerate(files):
         try:
             total += _cut_one(a, path, engine, single)
         except Exception as e:
@@ -130,6 +148,7 @@ def cmd_library(a: argparse.Namespace) -> int:
     is the deterministic, GPU-free part — no cutting.
     """
     import time as _t
+
     from . import library as lib
     libd = lib.lib_dir(a.folder)
     out_dir = a.sheets_dir or os.path.join(libd, "sheets")
@@ -159,25 +178,55 @@ def cmd_library(a: argparse.Namespace) -> int:
 
 def json_dump(path, obj):
     import json
-    json.dump(obj, open(path, "w"), indent=2)
+    with open(path, "w") as fh:
+        json.dump(obj, fh, indent=2)
 
 
-def cmd_export_premiere(a: argparse.Namespace) -> int:
-    """Export a Premiere-ready FCP7 selects timeline of the couple segments in a library."""
+IMPORT_HINT = {
+    "fcp7": "Premiere/Resolve: File > Import, select the XML.",
+    "aaf": "Media Composer: File > Input > Import.",
+    "edl": "Any NLE: import as an EDL, then relink to the source media.",
+    "otio": "Open with any OTIO-aware tool, or convert with otioconvert.",
+}
+
+
+def cmd_export(a: argparse.Namespace) -> int:
+    """Export the library's focal segments as an editor timeline in any OTIO format."""
     from . import library as lib
-    from .premiere import export_selects
+    from . import timeline as T
     man = lib.load(a.folder)
     if not man.get("clips"):
         print("[focalcut] no library.json found — run `focalcut library` first", file=sys.stderr)
         return 1
-    couple = [c for c in man["clips"]
-              if c.get("kind") != "non-couple" and c.get("n_couples") != 0 and c.get("segments")]
-    name = a.name or (os.path.basename(a.folder.rstrip("/")) + " — couples")
-    out = a.output or os.path.join(lib.lib_dir(a.folder), "couples_premiere.xml")
-    export_selects(a.folder, couple, out, name, windows_paths=a.windows_paths)
-    nseg = sum(len(c["segments"]) for c in couple)
-    print(f"[focalcut] {len(couple)} couple clips, {nseg} segments -> {out}")
-    print("[focalcut] import into Premiere: File > Import, select the XML.")
+    clips = [c for c in man["clips"]
+             if c.get("kind") != "non-couple" and c.get("n_couples") != 0 and c.get("segments")]
+    name = a.name or (os.path.basename(a.folder.rstrip("/")) + " selects")
+    out = a.output or T.default_output(a.folder, a.format, lib.lib_dir(a.folder))
+    try:
+        tl = T.build_timeline(a.folder, clips, name, windows_paths=a.windows_paths)
+        T.write_timeline(tl, out, a.format)
+    except T.TimelineError as e:
+        print(f"[focalcut] {e}", file=sys.stderr)
+        return 1
+    nseg = sum(len(c["segments"]) for c in clips)
+    print(f"[focalcut] {len(clips)} clips, {nseg} segments -> {out}")
+    print(f"[focalcut] {IMPORT_HINT[a.format]}")
+    return 0
+
+
+def cmd_formats(a: argparse.Namespace) -> int:
+    """List the timeline formats whose OTIO adapter is installed."""
+    from . import timeline as T
+    try:
+        have = set(T.available_formats())
+    except T.TimelineError as e:
+        print(f"[focalcut] {e}", file=sys.stderr)
+        return 1
+    for fmt, (adapter, suffix) in T.FORMATS.items():
+        mark = "yes" if fmt in have else "no "
+        print(f"  {mark}  {fmt:8s} {suffix:8s} ({adapter})")
+    if len(have) < len(T.FORMATS):
+        print("\n  missing adapters: pip install opentimelineio-plugins")
     return 0
 
 
@@ -202,14 +251,19 @@ def main(argv=None) -> int:
     lb.add_argument("--sheets-dir", help="where to write sheets (default <folder>/.focalcut_sheets)")
     lb.set_defaults(func=cmd_library)
 
-    ep = sub.add_parser("export-premiere", help="export a Premiere FCP7 selects timeline from a library")
+    ep = sub.add_parser("export", help="export a selects timeline from a library (FCP7/AAF/EDL/OTIO)")
     ep.add_argument("folder")
-    ep.add_argument("-o", "--output", help="output XML (default <folder>/focalcut/couples_premiere.xml)")
+    ep.add_argument("-o", "--output", help="output file (default <folder>/focalcut/selects.<ext>)")
+    ep.add_argument("-f", "--format", default="fcp7", choices=list(_FORMATS),
+                    help="timeline format (default fcp7: Premiere, Resolve, Final Cut)")
     ep.add_argument("--name", help="sequence name")
     ep.add_argument("--windows-paths", action="store_true", default=True,
                     help="map /mnt/<d> -> <D>: for Premiere on Windows (default on)")
     ep.add_argument("--no-windows-paths", dest="windows_paths", action="store_false")
-    ep.set_defaults(func=cmd_export_premiere)
+    ep.set_defaults(func=cmd_export)
+
+    fm = sub.add_parser("formats", help="list timeline formats and whether their adapter is installed")
+    fm.set_defaults(func=cmd_formats)
 
     sh = sub.add_parser("sheet", help="build a contact sheet (coarse pass)")
     sh.add_argument("input")

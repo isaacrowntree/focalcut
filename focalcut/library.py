@@ -13,7 +13,10 @@ This module owns the deterministic parts (sheet building, manifest read/write,
 segment derivation). The judgement itself is model-driven and lives in the workflow.
 """
 from __future__ import annotations
-import json, os
+
+import json
+import os
+
 from . import video as V
 from .contactsheet import build_sheet
 
@@ -71,19 +74,22 @@ def window_sheet(folder: str, clip: str, cut: float, out_path: str,
     info = V.probe(os.path.join(folder, clip))
     start = max(0.0, cut - half_width)
     dur = min(2 * half_width, info.duration - start)
-    cols = max(1, int(round(dur / interval)))
+    cols = max(1, round(dur / interval))
     return build_sheet(os.path.join(folder, clip), interval=interval, cols=cols,
                        thumb_w=thumb_w, out_path=out_path, start=start, duration=dur)
 
 
 def derive_segments(duration: float, cuts: list[float]) -> list[list[float]]:
-    b = [0.0] + sorted(cuts) + [duration]
+    b = [0.0, *sorted(cuts), duration]
     return [[round(b[i], 2), round(b[i + 1], 2)] for i in range(len(b) - 1)]
 
 
 def load(folder: str) -> dict:
     p = os.path.join(lib_dir(folder), MANIFEST)
-    return json.load(open(p)) if os.path.exists(p) else {}
+    if not os.path.exists(p):
+        return {}
+    with open(p) as fh:
+        return json.load(fh)
 
 
 def save(folder: str, clips: list[dict], meta: dict) -> str:
@@ -96,5 +102,6 @@ def save(folder: str, clips: list[dict], meta: dict) -> str:
                "total_cuts": sum(len(c.get("cuts", [])) for c in clips),
                "clips": clips}
     p = os.path.join(lib_dir(folder), MANIFEST)
-    json.dump(payload, open(p, "w"), indent=2)
+    with open(p, "w") as fh:
+        json.dump(payload, fh, indent=2)
     return p

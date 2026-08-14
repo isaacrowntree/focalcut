@@ -6,7 +6,9 @@ re-appearance (object permanence). We keep only lightweight per-detection geomet
 (id, box, area, score) — never the full masks — so memory stays flat over long clips.
 """
 from __future__ import annotations
+
 from dataclasses import dataclass
+
 import numpy as np
 
 

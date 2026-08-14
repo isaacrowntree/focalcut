@@ -17,15 +17,18 @@ Usage:
 where pred.json is {"cuts": [...]} or focalcut's segment list (see load_pred()).
 """
 from __future__ import annotations
-import argparse, json
+
+import argparse
+import json
 
 
 def load_pred(path: str) -> list[float]:
-    d = json.load(open(path))
+    with open(path) as fh:
+        d = json.load(fh)
     if "cuts" in d:
         return sorted(float(c) for c in d["cuts"])
     # focalcut segment dump: [{start,end},...] -> interior boundaries
-    segs = d["segments"] if "segments" in d else d
+    segs = d.get("segments", d)
     starts = sorted(float(s["start"]) for s in segs)
     return starts[1:]  # drop the very first (clip start is not a cut)
 
@@ -74,7 +77,8 @@ def main(argv=None):
     ap.add_argument("--pred", required=True)
     ap.add_argument("--tol", type=float, default=0.5, help="boundary match tolerance (s)")
     a = ap.parse_args(argv)
-    gt = json.load(open(a.gt))
+    with open(a.gt) as fh:
+        gt = json.load(fh)
     res = evaluate(load_pred(a.pred), sorted(float(c) for c in gt["cuts"]),
                    a.tol, gt.get("duration"))
     print(json.dumps(res, indent=2))

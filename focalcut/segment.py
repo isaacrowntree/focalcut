@@ -8,8 +8,11 @@ seconds. Object permanence in the tracker keeps ids stable through spins / brief
 occlusion, so turning your back or a passing couple does NOT trigger a false cut.
 """
 from __future__ import annotations
+
 from dataclasses import dataclass
+
 import numpy as np
+
 from .track import Detection
 
 

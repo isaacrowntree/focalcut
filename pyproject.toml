@@ -5,22 +5,32 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "focalcut"
 version = "0.1.0"
-description = "Split video into focal-subject segments using SAM 3 object permanence, and export per-subject clips or an editor timeline."
+description = "Split video into per-subject segments by following whoever the camera is focused on, and export an editor timeline."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Isaac Rowntree" }]
 keywords = ["video", "editing", "segmentation", "sam3", "tracking", "object-permanence"]
+# The recommended pipeline (contact sheets + a vision judge) is GPU-free and needs
+# only numpy + ffmpeg on PATH. torch and SAM 3 are an opt-in extra so a plain install
+# does not pull ~2.5GB of CUDA wheels for users who never touch the SAM engines.
 dependencies = [
-    "torch>=2.4",
-    "transformers>=5.3",
     "numpy>=1.24",
-    "accelerate>=0.30",
+    "opentimelineio>=0.17",
+    "opentimelineio-plugins>=0.17",
 ]
 
 [project.optional-dependencies]
-otio = ["opentimelineio>=0.17"]
-dev = ["pytest>=7"]
+# SAM 3 engines for `focalcut cut` (gated model; a CUDA GPU is recommended)
+sam = [
+    "torch>=2.4",
+    "transformers>=5.3",
+    "accelerate>=0.30",
+]
+dev = [
+    "pytest>=7",
+    "ruff>=0.6",
+]
 
 [project.urls]
 Homepage = "https://github.com/isaacrowntree/focalcut"
@@ -31,6 +41,30 @@ focalcut = "focalcut.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["focalcut*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "E501",     # long lines are caught by the formatter, not worth failing CI over
+    "SIM105",   # contextlib.suppress is not clearer than a two-line try/except here
+    "RUF001",   # the docs and log strings intentionally use typographic punctuation
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# ffmpeg wrappers deliberately swallow per-clip failures so one bad file cannot
+# abort a batch; the error is reported in the job record instead.
+"focalcut/export.py" = ["S603", "S607"]
+"tests/*" = ["B011"]
 
 # Note: requires ffmpeg/ffprobe on PATH, and a SAM 3 checkpoint you have access to
 # (facebook/sam3 is a gated model — accept its license on Hugging Face and log in).

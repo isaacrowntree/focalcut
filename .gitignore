@@ -10,3 +10,8 @@ dist/
 *_dancers/
 bench/data/*.mp4
 bench/data/runs/
+
+# focalcut artifacts
+focalcut/sheets/
+.pytest_cache/
+.ruff_cache/
