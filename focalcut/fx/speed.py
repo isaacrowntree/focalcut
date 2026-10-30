@@ -46,9 +46,15 @@ class Speed(Effect):
     def source_length(self, out_len, ctx):
         return float(self._map(out_len, ctx)[1][-1]) + 2 / ctx.fps
 
-    def source_peak(self, out_peak, ctx):
-        t, src, _ = self._map(max(out_peak * 2, 1.0), ctx)
+    def source_peak(self, out_peak, ctx, out_len=None):
+        """Source time under output time out_peak (out_len: the shot's length, for curves that depend on it)."""
+        t, src, _ = self._map(out_len or max(out_peak * 2, 1.0), ctx)
         return float(np.interp(out_peak, t, src))
+
+    def out_time(self, src_time, out_len, ctx):
+        """The inverse: the output time at which source time src_time plays."""
+        t, src, _ = self._map(out_len, ctx)
+        return float(np.interp(src_time, src, t))
 
     def apply(self, frames, ctx):
         n_out = len(frames) if not hasattr(ctx, "out_frames") else ctx.out_frames

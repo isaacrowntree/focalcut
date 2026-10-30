@@ -127,7 +127,12 @@ class Picker:
     def share(self, r, m):
         """Rank after the fair-share discount: a clip that already has shots has to be that much better (less so for
         a clip the editor asked for more of: picks "more")."""
-        return rk(m, self.fmt) - SHARE * self.count.get(r["unit"]["clip"], 0) / (1 + r.get("more", 0))
+        return rk(m, self.fmt) - SHARE * self.count.get(r["unit"]["clip"], 0) / (1 + max(r.get("more", 0), 0))
+
+    def load(self, clip):
+        """How many shots a clip has, for choosing which clip gives one up (picks "more" counts against it)."""
+        more = max((r.get("more", 0) for r in self.recs if r["unit"]["clip"] == clip), default=0)
+        return self.count.get(clip, 0) / (1 + more)
 
     def take(self, r, m, **kw):
         self.used.setdefault(r["id"], []).append(m["t"])
@@ -363,7 +368,7 @@ def cover_all(P, seq, recs, home):
                                                                           seq[i + 1]["unit"]["role"]))]
         if not idx:
             continue
-        i = max(idx, key=lambda i: (P.count.get(seq[i]["unit"]["clip"], 0), -seq[i]["rank"]))
+        i = max(idx, key=lambda i: (P.load(seq[i]["unit"]["clip"]), -seq[i]["rank"]))
         old = seq[i]
         P.count[old["unit"]["clip"]] -= 1
         seq[i] = P.take(*x, beats=old["beats"], act=act)
@@ -380,11 +385,13 @@ def include_adds(P, seq, recs, home):
             clip = r["unit"]["clip"]
             idx = [i for i, x in enumerate(seq) if x["act"] == act and not x["fx"] and not x.get("reaction")
                    and not x.get("ending") and not x.get("band") and not x.get("logo")
-                   and not x.get("add") and 0 < i < len(seq) - 1
-                   and clip not in (seq[i - 1]["unit"]["clip"], seq[i + 1]["unit"]["clip"])]
+                   and not x.get("add") and 0 < i < len(seq) - 1 and P.count.get(x["unit"]["clip"], 0) > 1
+                   and clip not in (seq[i - 1]["unit"]["clip"], seq[i + 1]["unit"]["clip"])
+                   and not (r["role"] == "transition" and "transition" in (seq[i - 1]["unit"]["role"],
+                                                                           seq[i + 1]["unit"]["role"]))]
             if not idx:
                 continue
-            i = max(idx, key=lambda i: (P.count.get(seq[i]["unit"]["clip"], 0), -seq[i]["rank"]))
+            i = max(idx, key=lambda i: (P.load(seq[i]["unit"]["clip"]), -seq[i]["rank"]))
             old = seq[i]
             P.count[old["unit"]["clip"]] -= 1
             seq[i] = P.take(r, m, beats=old["beats"], act=act); seq[i]["add"] = True   # (the act's grid stays exact)
@@ -394,8 +401,8 @@ def _secs(x):
     """'1:23.5' or 83.5 -> seconds."""
     if isinstance(x, (int, float)):
         return float(x)
-    m, _, sec = str(x).strip().rpartition(":")
-    return float(m or 0) * 60 + float(sec)
+    parts = [float(v) for v in str(x).strip().split(":")]
+    return sum(v * 60 ** k for k, v in enumerate(reversed(parts)))
 
 
 def apply_picks(recs, picks):
@@ -418,7 +425,9 @@ def apply_picks(recs, picks):
             if txt == "all":
                 return u["t0"] - 1, u["t1"] + 1
             x0 = u.get("export_t0", 0.0)
-            return tuple(x0 + _secs(v) for v in (txt.split("-", 1) if isinstance(txt, str) else txt))
+            if isinstance(txt, str):
+                txt = txt.split("-", 1) if "-" in txt.strip()[1:] else [txt, txt]   # one time: a moment, not a range
+            return tuple(x0 + _secs(v) for v in txt)
         for a, b in map(span, p.get("ban", [])):
             r["moments"] = [m for m in r["moments"] if not a <= m["t"] <= b]
         for a, b in map(span, p.get("prefer", [])):
@@ -444,7 +453,7 @@ def apply_picks(recs, picks):
                 m[k] += 1.0
             m["pick"] = m["add"] = True
         if p.get("more"):
-            r["more"] = int(p["more"])
+            r["more"] = max(int(p["more"]), 0)
             for m in r["moments"]:
                 for k in [k for k in ("score_l", "score_p") if k in m] or ["score"]:
                     m[k] += 0.15 * r["more"]
@@ -488,8 +497,9 @@ def band_in(P, seq, recs, music, cfg):
         for k in range(n):
             aim = lo + (k + 0.5) * (hi - lo + 1) / n
             cand = [i for i in range(lo + 1, hi) if seq[i]["unit"]["role"] != "transition" and not seq[i]["fx"]
-                    and not seq[i].get("ending") and seq[i]["beats"] <= 2
-                    and not all(seq[j]["unit"]["role"] == "transition" for j in (i - 1, i + 1))
+                    and not any(seq[i].get(f) for f in ("ending", "add", "reaction", "logo")) and seq[i]["beats"] <= 2
+                    and P.count.get(seq[i]["unit"]["clip"], 0) > 1
+                    and not any(seq[j]["unit"]["role"] == "transition" for j in (i - 1, i + 1))
                     and not any(seq[j].get("band") or seq[j]["fx"] for j in (i - 1, i + 1))]
             if not cand:
                 break
@@ -554,7 +564,7 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None):
     if day or demos:
         ar = cover(P, day, len(day), 4, "arrival", cap=1)
         left = budget["arrival"] - 4 * len(ar)
-        ar += cover(P, demos, max(len(demos), left // 2), 2, "arrival", cap=3,
+        ar += cover(P, demos or stage, max(len(demos), left // 2), 2, "arrival", cap=3,
                     kinds_pref=("spin", "dip", "trick", "pattern", "shake"))
         ar = weave(ar, seq[-1], direction=direction)
         lb, ld = itertools.cycle([4, 3, 5, 4, 3, 5, 4]), itertools.cycle([2, 3, 1, 2, 1, 3, 2, 2, 1, 3, 2, 1])
@@ -674,15 +684,22 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None):
                   and all(r["id"] != s["unit"]["id"] for s in fi)), None)
         return P.take(*(x or P.best(dance)), beats=beats, act="finale")
     fi.append(face(2))
-    move = lambda kinds, mf: P.best(dance, kinds, mf, strict=True) or P.best(dance, MOVES, strict=True) or P.best(dance)
+    def move(kinds, mf):                                     # never the clip just before it
+        prev = (fi or seq)[-1]["unit"]["clip"]
+        for ks, f in ((kinds, mf), (kinds, 0.0), (MOVES, 0.0), (None, 0.0)):
+            x = next((c for c in P.pool(dance, ks, f) if c[0]["unit"]["clip"] != prev), None)
+            if x:
+                return x
+        return P.best(dance)
     s = P.take(*move(("spin", "dip"), 0.45), beats=4, act="finale"); s["fx"], s["effect"] = ["hero"], "hero"
     fi.append(s)
     cw = [r for r in crowd if r["orient"] == fmt] or crowd   # the packed floor; any night B-roll once it's used up
     fi.append(P.take(*((P.best(cw) if cw else None) or P.best(night) or P.best(dance)), beats=4, act="finale"))
     fi.append(face(3))
-    fi[-1]["fx"], fi[-1]["effect"] = ["hero"], "hero"        # a face and its hair, in deep slow motion
     rest = max(budget["finale"] - 13, 2)
     end = ending_record(recs, cfg)
+    if end:                                                  # a face and its hair in deep slow motion before the
+        fi[-1]["fx"], fi[-1]["effect"] = ["hero"], "hero"    # ending (else the last move is the slow one)
     if end:                                                  # the reel's chosen last shot, to the music's end
         r, t = end
         near = min(r["moments"], key=lambda m: abs(m["t"] - t))
@@ -705,6 +722,10 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None):
                 next((d for d in near if d["act"] == s["act"] and d is not s and d["beats"] == 2 and not d["fx"]), None)
             if donor:
                 donor["beats"] -= 1; s["beats"] += 1
+    for k in range(1, len(seq)):                             # one effect at a time across act changes too
+        a, b = seq[k - 1], seq[k]
+        if a["act"] != b["act"] and a["fx"] and b["fx"] and b["effect"] in ("hero", "spotlight", "neon"):
+            b["fx"], b["effect"] = [], None
     # whatever the acts could not fill (or overfilled) comes off / goes on the plain shots, so the grid stays exact
     over = sum(s["beats"] for s in seq) - video_beats
     plain = sorted([s for s in seq if not s["fx"]], key=lambda s: s["rank"]) or seq
@@ -730,16 +751,16 @@ def transitions(seq, music, cfg, direction=None):
     room = [s["beats"] for s in seq]                        # beats left in each shot for transition halves
 
     def put(i, name, why):
-        if name == "velocity":                              # a velocity edit: out fast, in fast, a whip between
-            A, B = seq[i - 1], seq[i]
-            if not (any(f in SPEED for f in A["fx"] + B["fx"]) or A["beats"] < 2 or B["beats"] < 2):
-                A["fx"].append("flashout"); B["fx"].insert(0, "flashin"); A["velocity"] = B["velocity"] = True
-            name = "swipe"
+        velocity = name == "velocity"                       # a velocity edit: out fast, in fast, a swipe between
+        name = "swipe" if velocity else name
         h = G.HALF[name]
         if room[i - 1] < h + 0.5 or room[i] < h + 0.5:
             return False
         if why != "act change" and (seq[i - 1].get("transition") or (i + 1 < len(seq) and seq[i + 1].get("transition"))):
             return False                                    # never back to back
+        A, B = seq[i - 1], seq[i]
+        if velocity and not (any(f in SPEED for f in A["fx"] + B["fx"]) or A["beats"] < 2 or B["beats"] < 2):
+            A["fx"].append("flashout"); B["fx"].insert(0, "flashin"); A["velocity"] = B["velocity"] = True
         seq[i]["transition"] = name; seq[i]["why"] = why
         room[i - 1] -= h; room[i] -= h
         return True
@@ -790,7 +811,9 @@ def reframe(project, unit, t0, length, fmt):
     narrow = cw0 < 0.5                                      # a 9:16 strip out of a 16:9 frame: little room for lag
     face = np.zeros(len(union), bool)
     if unit["role"] != "transition":                        # a couple dancing apart in a strip: follow one of them
-        union, face, _ = FR.follow(d, pt[sel], union, cw0 if narrow else 9.0)
+        union, face, one = FR.follow(d, pt[sel], union, cw0 if narrow else 9.0)
+        if one:                                             # the group's edge contact no longer applies: the
+            touch = None                                    # dancer's own box is checked against the frame below
     _, z, _, _ = FR.framing(union, src_w, src_h, W, H, touch=touch)
     ok = ~np.isnan(union[:, 0])
     if not ok.any():
@@ -933,6 +956,18 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
     acc = list(np.array(music.get("beat_accent") or np.ones(len(bt)))[i0:])
     from . import shake
     lo = cfg["shake"][0]
+
+    def frame(s):
+        """The shot's crop (following its subject over the stretch it plays) and shake, from its in-point."""
+        u, L = s["unit"], s["length"]
+        s["crop"] = reframe(project, u, s["src_in"], L, fmt)
+        if s.get("ending") and s["crop"]:                    # the whole scene, centred: no following one person
+            s["crop"] = dict(w=s["crop"]["w"] * s["crop"]["z"], h=s["crop"]["h"] * s["crop"]["z"], z=1.0,
+                             path=[[0, (list(cfg["ending"]) + [0.5])[3], 0.5]])
+        j = shake.jitter(project, u, s["src_in"], s["src_in"] + L)
+        j = j / max((s["crop"] or {}).get("w", 1.0), 0.2) if j is not None else None
+        s["jitter"] = round(j, 5) if j is not None else None
+        s["stab"] = bool(j is not None and j > lo and "_stabilized" not in u["source"])   # (not twice)
     rec = 0
     for s in seq:
         L = s["beats"] * beat
@@ -943,24 +978,19 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
             s["lead_beats"] = V.landing(s["beats"], ramp, s["kind"] == "closeup", acc[rec:])
         src_in = in_point(s, beat)
         if s.get("ending"):                                  # the configured ending runs out at its "to" time
-            src_in = u.get("export_t0", 0.0) + cfg["ending"][2] - L
+            src_in = max(u.get("export_t0", 0.0) + cfg["ending"][2] - L, u["t0"])
         f0, f1 = round(rec * beat * FPS), round((rec + s["beats"]) * beat * FPS)
         s.update(rec_in=round(rec * beat, 3), length=round(L, 3), frames=f1 - f0, src_in=round(src_in, 3),
                  peak=round(s["t"] - src_in, 3), group=u["role"] == "show")
-        s["crop"] = reframe(project, u, src_in, L, fmt)
-        if s.get("ending") and s["crop"]:                    # the whole scene, centred: no following one person
-            s["crop"] = dict(w=s["crop"]["w"] * s["crop"]["z"], h=s["crop"]["h"] * s["crop"]["z"], z=1.0,
-                             path=[[0, (list(cfg["ending"]) + [0.5])[3], 0.5]])
-        j = shake.jitter(project, u, src_in, src_in + L)
-        j = j / max((s["crop"] or {}).get("w", 1.0), 0.2) if j is not None else None
-        s["jitter"] = round(j, 5) if j is not None else None
-        s["stab"] = bool(j is not None and j > lo and "_stabilized" not in u["source"])   # (not twice)
+        frame(s)
         rec += s["beats"]
     transitions(seq, music, cfg, direction)
     for s in seq:                                            # velocity edits changed some shots' speed effects
         if any(f in SPEED for f in s["fx"]) and not s.get("ending"):
-            src_in = in_point(s, beat)
-            s.update(src_in=round(src_in, 3), peak=round(s["t"] - src_in, 3))
+            src_in = round(in_point(s, beat), 3)
+            if src_in != s["src_in"]:
+                s.update(src_in=src_in, peak=round(s["t"] - src_in, 3))
+                frame(s)
     video = round(rec * beat, 3)
     plan = dict(format=fmt, beat=beat, music_start=round(music["start"] - ANTICIPATE, 3),
                 music_length=round(video + (STINGER_OVERLAP if stinger_len else 0), 3), video_length=video,

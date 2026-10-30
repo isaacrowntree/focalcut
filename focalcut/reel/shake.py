@@ -30,10 +30,13 @@ def motion(path, ts, dur, gpu=False):
     sw, sh = map(int, subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                                                "stream=width,height", "-of", "csv=p=0", path]).decode().split(",")[:2])
     w, h = SIDE, SIDE * sh // sw // 2 * 2
-    raw = subprocess.run(["ffmpeg", "-v", "error", *(["-hwaccel", "cuda"] if gpu else ["-threads", "4"]),
-                          "-ss", f"{ts:.3f}", "-t", f"{dur:.3f}", "-i", path,
-                          "-an", "-vf", f"fps={RATE},scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
-                         capture_output=True).stdout
+    r = subprocess.run(["ffmpeg", "-v", "error", *(["-hwaccel", "cuda"] if gpu else ["-threads", "4"]),
+                        "-ss", f"{ts:.3f}", "-t", f"{dur:.3f}", "-i", path,
+                        "-an", "-vf", f"fps={RATE},scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                       capture_output=True)
+    if r.returncode and gpu:                        # no CUDA decoder for this file: the CPU then
+        return motion(path, ts, dur)
+    raw = r.stdout
     g = np.frombuffer(raw, np.uint8)[: len(raw) // (w * h) * w * h].reshape(-1, h, w)
     mv = np.zeros((len(g), 2))
     for i in range(1, len(g)):
@@ -47,14 +50,23 @@ def motion(path, ts, dur, gpu=False):
         m, _ = cv2.estimateAffinePartial2D(p0[ok], p1[ok], method=cv2.RANSAC, ransacReprojThreshold=1.5)
         if m is not None:
             mv[i] = m[:, 2]
+    if len(mv) > 1:
+        mv[0] = mv[1]                               # (no previous frame: carry the first motion back, not a jolt)
     return mv / w
 
 
 def hf(mv):
-    """High-frequency shake: frame-to-frame camera motion minus its ~0.1 s average, RMS over 1 s."""
+    """High-frequency shake: frame-to-frame camera motion minus its ~0.1 s average, RMS over 1 s (fewer samples at
+    the ends, never padded with zeros), one value per frame."""
+    if len(mv) == 0:
+        return np.zeros(0, np.float32)
     k = np.array([1, 2, 3, 2, 1], float); k /= k.sum()
     r = mv - np.stack([np.convolve(np.pad(mv[:, j], 2, mode="edge"), k, mode="valid") for j in range(2)], 1)
-    return np.sqrt(np.convolve((r ** 2).sum(1), np.ones(RATE) / RATE, mode="same")).astype(np.float32)
+    e = (r ** 2).sum(1)
+    c = np.concatenate([[0], np.cumsum(e)])
+    i = np.arange(len(e))
+    lo, hi = np.maximum(i - RATE // 2, 0), np.minimum(i + RATE - RATE // 2, len(e))
+    return np.sqrt((c[hi] - c[lo]) / (hi - lo)).astype(np.float32)
 
 
 def export_of(project, unit):
@@ -67,19 +79,24 @@ def measure(project, name, units, gpu):
     out = project.path("scores", name + "_shake.npz")
     if os.path.exists(out):
         return f"{name}: cached"
-    t, mv = [], []
-    for u in sorted(units, key=lambda u: u["t0"]):
+    t, mv, j = [], [], []
+    for u in sorted(units, key=lambda u: u["t0"]):            # unit by unit: no false jolt where two units meet
         f = export_of(project, u)
         if f:
             m = motion(f, u["t0"] - u.get("export_t0", 0.0), u["t1"] - u["t0"], gpu=gpu)
         else:
             src, ts = project.decode_from(u["source"], u["t0"])
             m = motion(src, ts, u["t1"] - u["t0"])
-        t.append(u["t0"] + np.arange(len(m)) / RATE); mv.append(m)
-    t, mv = np.concatenate(t), np.concatenate(mv)
+        if len(m) < 2:
+            continue                                          # nothing decoded: leave the stretch unmeasured
+        t.append(u["t0"] + np.arange(len(m)) / RATE); mv.append(m); j.append(hf(m))
+    if not t:
+        return f"{name}: nothing decoded (not cached; will retry)"
+    order = np.argsort(np.concatenate(t), kind="stable")
+    t, mv, j = (np.concatenate(x)[order] for x in (t, mv, j))
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    np.savez(out, t=t, hf=hf(mv), mv=mv.astype(np.float32))
-    return f"{name}: {len(t)} frames, median {np.median(hf(mv)) * 1e3:.2f}e-3"
+    np.savez(out, t=t, hf=j, mv=mv.astype(np.float32))
+    return f"{name}: {len(t)} frames, median {np.median(j) * 1e3:.2f}e-3"
 
 
 def series(project, name):

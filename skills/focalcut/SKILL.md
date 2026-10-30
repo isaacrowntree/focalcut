@@ -5,13 +5,14 @@ description: Cut dance and event footage into beat-synced clips with focalcut, u
 
 # focalcut
 
-focalcut lives at `~/focalcut` (MIT, github.com/isaacrowntree/focalcut). Everything below is code in that repo.
+focalcut is MIT-licensed at github.com/isaacrowntree/focalcut; paths below are relative to a clone of it (e.g.
+`~/focalcut`). Everything below is code in that repo.
 Footage folders hold only data and settings: `export/`, camera files and `focalcut/reel/reel.json`. Never copy code
 into a footage folder. If an event needs different behaviour, add a reel.json key and leave the code general.
 
 ```bash
-cd ~/focalcut && python -m venv .venv && .venv/bin/pip install -e ".[reel]"   # once (the venv already exists)
-~/focalcut/.venv/bin/focalcut --help
+cd <repo> && python -m venv .venv && .venv/bin/pip install -e ".[reel]"   # once
+.venv/bin/focalcut --help
 ```
 
 ## What every deliverable includes
@@ -19,7 +20,7 @@ cd ~/focalcut && python -m venv .venv && .venv/bin/pip install -e ".[reel]"   # 
 - **Rendered video:** 1080p 50 fps, music at −14 LUFS.
 - **FCP7 XML for Premiere:** the editor finishes there. Rendered shots go on V1, untouched sources on a disabled V2.
 - **Review page:** `review/<cut>.html` shows one frame per shot with a copyable picks line. Open it in a
-  browser (from WSL: `explorer.exe "$(wslpath -w review/<cut>.html)"`).
+  browser (on WSL, for example: `explorer.exe "$(wslpath -w review/<cut>.html)"`).
 - **Editor's picks:** the review page's **Scrub source** opens each shot's export video. The editor marks extra
   shots (`A`), swaps a shot to the playhead (`S`), bans it, or asks for more from that video. The page writes
   `focalcut/reel/picks.json`, which takes `ban`, `prefer`, `add` and `more`, with times in each export file's own
@@ -100,11 +101,11 @@ Plus `proxies` for the DNxHD stabilised masters.
 
 ## Practical notes
 
-- **Python environment:** ML runs from `~/focalcut/.venv` (the `reel` extra). Set `FOCALCUT_DISABLE_CUDNN=1` if
+- **Python environment:** ML runs from the repo's `.venv` with the `reel` extra. Set `FOCALCUT_DISABLE_CUDNN=1` if
   cuDNN engines are broken.
 - **Decoding:** Sony 10-bit 4:2:2 HEVC can't use NVDEC, so it decodes on the CPU. The shake pass decodes the H.264
   exports on the GPU instead.
-- **GPU workers:** use two scoring workers on a 12 GB GPU. More than that pages VRAM to RAM on WSL.
+- **GPU workers:** for example, two scoring workers suit a 12 GB GPU; more can overflow VRAM (on WSL it pages to RAM).
 - **Long jobs:** run them in the background. Kill workers by PID, or with an anchored `pgrep -af '^/full/path'`;
   never an unanchored `pkill -f`, which matches the calling shell.
-- **Tests:** `~/focalcut/.venv/bin/python -m pytest -q` and `ruff check .` must stay clean.
+- **Tests:** `.venv/bin/python -m pytest -q` and `ruff check .` must stay clean.

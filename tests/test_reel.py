@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from itertools import pairwise
 
 import numpy as np
 import pytest
@@ -21,7 +22,7 @@ from .conftest import _synth, needs_ffmpeg
 
 @pytest.fixture
 def project(tmp_path):
-    """A footage folder with an export/ tree and a library.json, like the SSMC layout."""
+    """A footage folder with an export/ tree and a library.json, like a real shoot's layout."""
     folder = tmp_path / "Show 2026"
     folder.mkdir()
     for name, w, h in [("C100", 320, 180), ("C101", 180, 320), ("C102", 320, 180), ("C103", 320, 180),
@@ -120,7 +121,10 @@ def test_plan_cuts_are_beat_exact_and_follow_the_acts(tmp_path):
     # cuts come ANTICIPATE ahead of the beat: the music starts that much earlier
     assert plan["music_start"] == pytest.approx(music["start"] - P.ANTICIPATE)
     # daytime B-roll opens the day; the arrival takes no night B-roll while day B-roll is left
-    assert {s["unit"]["tag"] for s in shots if s["act"] == "arrival"} <= {"class", "panel"}
+    arrival = [s for s in shots if s["act"] == "arrival"]
+    assert {s["unit"]["tag"] for s in arrival if s["unit"]["role"] == "transition"} <= {"class", "panel"}
+    # with no daytime shows, stage dancing fills between the day's B-roll: never B-roll beside B-roll
+    assert all(not (a["unit"]["role"] == b["unit"]["role"] == "transition") for a, b in pairwise(arrival))
 
 
 def test_plan_without_stinger_fills_the_whole_music(tmp_path):
@@ -235,7 +239,7 @@ def test_music_window_prefers_an_8_bar_phrase():
 
 
 def test_pathurl_maps_wsl_mounts_to_windows_drives():
-    assert pathurl("/mnt/k/Videos/SSMC 2026/C2020.MP4") == "file://localhost/K:/Videos/SSMC%202026/C2020.MP4"
+    assert pathurl("/mnt/k/Videos/Show 2026/C2020.MP4") == "file://localhost/K:/Videos/Show%202026/C2020.MP4"
     assert pathurl("/home/u/a b.mov") == "file://localhost/home/u/a%20b.mov"
 
 
@@ -521,8 +525,9 @@ def test_review_page_lists_every_shot_with_a_picks_line():
 def test_velocity_landing_on_the_strongest_beat_that_leaves_room_for_the_hold():
     from focalcut.reel import velocity as V
     assert V.landing(4, "hero", False, [1, 1.2, 2.0, 3.0]) == 2      # beat 3 would leave no room for the hold
-    assert V.landing(4, "hero", True, [1, 2.0, 1.5, 3.0]) == 1       # a close-up holds longer
-    assert V.landing(6, "bullet", False, [1, 1, 1, 1, 1, 1]) in (1, 2, 3)
+    assert V.landing(6, "bullet", False, [1, 1, 1, 2.0, 1, 1]) == 3  # bullet's 2-beat hold still fits after beat 3
+    assert V.landing(6, "bullet", False, [1, 1, 1, 1, 3.0, 1]) == 1  # beat 4 doesn't: the first of the rest
+    assert V.landing(1, "hero", False, [5.0]) == 1                   # no room at all: as far in as it goes
 
 
 def test_settle_finds_where_the_move_lands(tmp_path):
@@ -597,3 +602,98 @@ def test_picks_add_extra_shots_and_ask_for_more_from_a_clip(tmp_path):
     def n(ss, u):
         return sum(s["unit"]["id"] == u for s in ss)
     assert n(shots, "U06") > n(base, "U06")                                                  # more from that clip
+
+
+def test_assess_drops_a_subject_who_keeps_leaving_the_crop(tmp_path):
+    pr, _, moments = fake_reel(tmp_path)
+    social = next(r for r in moments if r["unit"]["clip"] == "C002")
+    os.makedirs(pr.reel_dir, exist_ok=True)
+    json.dump({f"portrait|U02|{m['t']}": [0.3 if m["t"] == 5.0 else 1.0, 1.0, 1.0, 1.0] for m in social["moments"]},
+              open(pr.path("hold_cache.json"), "w"))
+    before = {m["t"]: m["score"] for m in social["moments"]}
+    P.assess(pr, [social], "portrait", P.config(pr, "portrait"))
+    after = {m["t"]: m["score_p"] for m in social["moments"]}
+    assert after[5.0] < 0.1 * before[5.0] and after[11.0] > before[11.0]
+
+
+def _couple(n=10, faces=(True, False), focus=(1.0, 1.0), apart=0.5, empty_slot=True):
+    """Score data for two dancers apart in a 640x360 analysis frame, plus an empty pose slot."""
+    k = 3 if empty_slot else 2
+    boxes = np.full((n, k, 5), np.nan)
+    kp = np.zeros((n, k, 17, 3))
+    foc = np.full((n, k), np.nan)
+    for j, x in enumerate((0.25, 0.25 + apart)):
+        boxes[:, j] = [(x - 0.05) * 640, 0.2 * 360, (x + 0.05) * 640, 0.9 * 360, 0.9]
+        if faces[j]:                                    # nose, left eye (image right), right eye (image left)
+            kp[:, j, 0] = [x * 640, 80, 0.9]
+            kp[:, j, 1] = [x * 640 + 4, 76, 0.9]
+            kp[:, j, 2] = [x * 640 - 4, 76, 0.9]
+        foc[:, j] = focus[j]
+    d = dict(pose_t=np.arange(n) * 0.2, boxes=boxes, kp=kp, focus=foc, aw=640, ah=360)
+    union = np.tile([0.2, 0.2, 0.30 + apart, 0.9], (n, 1)).astype(float)
+    return d, union
+
+
+def test_faces_needs_nose_and_both_eyes_seen_from_the_front():
+    from focalcut.reel import frame as FR
+    d, _ = _couple(faces=(True, False))
+    f = FR.faces(d["kp"][0])
+    assert f[0] and not f[1]
+    kp = d["kp"][0].copy()
+    kp[0, [1, 2]] = kp[0, [2, 1]]                       # eyes swapped: the back of a head
+    assert not FR.faces(kp)[0]
+
+
+def test_follow_one_dancer_of_a_split_couple_preferring_a_face_then_the_sharper():
+    from focalcut.reel import frame as FR
+    d, union = _couple(faces=(False, True))
+    box, face, one = FR.follow(d, d["pose_t"], union, cw=0.32)
+    assert one and face.all() and abs((box[0, 0] + box[0, 2]) / 2 - 0.75) < 0.01    # the one facing the camera
+    d, union = _couple(faces=(False, False), focus=(1.0, 10.0))
+    box, _, _ = FR.follow(d, d["pose_t"], union, cw=0.32)                             # neither: the sharper one,
+    assert abs((box[0, 0] + box[0, 2]) / 2 - 0.75) < 0.01                              # past the empty pose slot
+    d["boxes"][3:5, 1] = np.nan                                                        # lost for two frames:
+    box, _, _ = FR.follow(d, d["pose_t"], union, cw=0.32)                             # held where they were
+    assert not np.isnan(box).any() and np.allclose(box[3], box[2])
+    d, union = _couple(faces=(True, False), apart=0.12)                               # close together: the group
+    box, face, one = FR.follow(d, d["pose_t"], union, cw=0.32)
+    assert not one and np.allclose(box, union)
+
+
+def test_shake_hf_ignores_pans_and_keeps_one_value_per_frame():
+    from focalcut.reel.shake import hf
+    pan = np.tile([0.004, 0.0], (60, 1))
+    jolt = np.tile([[0.004, 0.0], [-0.004, 0.0]], (30, 1))
+    assert hf(pan).max() < 1e-9 and hf(jolt).mean() > 1e-3
+    assert len(hf(pan[:7])) == 7 and len(hf(np.zeros((0, 2)))) == 0
+    assert hf(jolt)[0] == pytest.approx(hf(jolt)[30], rel=0.3)    # no zero-padding dip at the ends
+
+
+def test_stabilise_runs_after_rotation_before_the_crop_and_changes_the_cache_key(tmp_path, monkeypatch):
+    from focalcut.reel import render
+    monkeypatch.setattr(render, "stab", lambda path, t, dur, rot: "/tmp/x: y.trf")
+    pr = Project(str(tmp_path))
+    s = dict(unit=dict(id="C1", source="C1.MP4", rotate="transpose=2", role="dance"), src_in=1.0, length=2.0,
+             frames=100, fx=[], crop=dict(w=0.5, h=1.0, z=1.0, path=[[0, 0.5, 0.5]]), peak=1.0, kind="spin", stab=True)
+    f = render.shot_filter(s, "portrait", pr)
+    assert f.index("transpose") < f.index("vidstabtransform") < f.index("crop=") and "x\\: y.trf" in f
+    assert render.key(s, 0.6) != render.key(dict(s, stab=False), 0.6) != render.key(dict(s, stab=False), 0.5)
+
+
+def test_ending_never_starts_before_its_clip_and_band_inserts_never_touch_broll(tmp_path):
+    pr, music, moments = fake_reel(tmp_path, n_units=20)
+    moments[19]["unit"]["tag"] = "violin"
+    moments[18]["unit"]["clip"] = moments[18]["unit"]["id"] = moments[18]["id"] = "END"
+    pr.config = {"plan": {"landscape": {"ending": ["END", 0.0, 3.0]}}}
+    shots = P.build(pr, "landscape", music, moments, assess_shots=False)["shots"]
+    assert shots[-1].get("ending") and shots[-1]["src_in"] >= shots[-1]["unit"]["t0"]
+    for k, s in enumerate(shots):
+        if s.get("band"):
+            assert all(shots[j]["unit"]["role"] != "transition" or shots[j].get("band") for j in (k - 1, k + 1))
+
+
+def test_picks_take_single_times_and_hours():
+    rec = dict(id="U1", unit=dict(id="U1", t0=0.0, t1=4000.0),
+               moments=[dict(t=20.0, score=1.0), dict(t=3725.0, score=1.0)])
+    P.apply_picks([rec], {"U1": {"ban": ["0:20"], "prefer": ["1:02:05"]}})
+    assert [m["t"] for m in rec["moments"]] == [3725.0] and rec["moments"][0]["pick"]

@@ -13,8 +13,9 @@
   review    a local HTML page per reel: a frame per shot, its export file and time range, a copyable picks line
 
 Each step reads and writes JSON / npz under <folder>/focalcut/reel/, so any step can be re-run on its own, and the
-model passes skip sources they have already done. Everything except `units`, `plan`, `xml` and `review` needs the `reel` extra
-(torch, transformers, timm, librosa, opencv); `subject` and the SAM 3 effects need a CUDA GPU.
+model passes skip sources they have already done. Everything except `units`, `xml` and `review` needs the `reel` extra
+(torch, transformers, timm, librosa, opencv; `plan` needs opencv when its flow cache is incomplete); `subject` and the
+SAM 3 effects need a CUDA GPU.
 """
 from __future__ import annotations
 

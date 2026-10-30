@@ -169,6 +169,7 @@ def _follow(d, times, union, cw, split):
     best, best_sc = None, -1
     for k0 in np.nonzero(m[f0])[0]:
         seq, face = np.full((len(idx), 4), np.nan), np.zeros(len(idx), bool)
+        slot = np.full(len(idx), -1)                          # which pose slot is this dancer, frame by frame
         for order in (range(f0, len(idx)), range(f0, -1, -1)):
             prev = nb[f0, k0]
             for f in order:
@@ -182,13 +183,12 @@ def _follow(d, times, union, cw, split):
                     k = None
                 if k is None:
                     continue
-                prev = nb[f, k]; seq[f] = prev; face[f] = fv[f, k]
+                prev = nb[f, k]; seq[f] = prev; face[f] = fv[f, k]; slot[f] = k
         ok = ~np.isnan(seq[:, 0])
         if not ok.any():
             continue
         area = np.nanmean((seq[ok, 2] - seq[ok, 0]) * (seq[ok, 3] - seq[ok, 1]))
-        sharp = np.nanmean([foc[f][np.argmin(np.abs(nb[f, :, 0] - seq[f, 0]) + np.abs(nb[f, :, 2] - seq[f, 2]))]
-                            for f in np.nonzero(ok)[0]])
+        sharp = np.nanmean([foc[f, slot[f]] for f in np.nonzero(ok)[0]])
         sc = 2.0 * face.mean() + ok.mean() + np.sqrt(area) + 0.5 * np.nan_to_num(sharp / (np.nanmax(foc) + 1e-6))
         if sc > best_sc:
             best, best_sc = (seq, face), sc

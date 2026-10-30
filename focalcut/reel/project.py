@@ -20,7 +20,8 @@ reel.json keys (all optional except song):
     proxies            {"<source>": ["<file>", [[at, shift], ...]]}  a smaller file to decode a source from (e.g. the
                                          H.264 export of a DNxHD master, starting on the same frame); from source
                                          time `at` on, the proxy's time is source time + shift (a dropped join)
-    picks              {"<export file name>": {"ban": ["0:00-0:20" | "all"], "prefer": ["0:41-0:46"]}}  the editor's
+    picks              {"<export file name>": {"ban": ["0:00-0:20" | "all"], "prefer": ["0:41-0:46"], "add": ["1:12.5"],
+                                         "more": 2}}  the editor's
                                          calls, times in that export file's own timeline; merged over picks.json
                                          in this folder (the review step's page gives a copyable line per shot)
     logo               image file (PNG with transparency) laid front and centre over the opening shots

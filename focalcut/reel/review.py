@@ -15,6 +15,7 @@ import html
 import json
 import os
 import subprocess
+from urllib.parse import quote
 
 
 def mmss(x):
@@ -40,7 +41,7 @@ def page(plan, fmt, thumbs, sources=None, picks=None, key="review"):
         a = s["src_in"] - u.get("export_t0", 0.0)
         tags = " ".join(filter(None, [s["act"], s["kind"], "+".join(s["fx"]),
                                       s.get("transition") and f"⇢ {s['transition']}"]))
-        img = f'<img src="{html.escape(thumbs[i])}" loading="lazy" alt="">' if thumbs[i] else ""
+        img = f'<img src="{html.escape(quote(thumbs[i]))}" loading="lazy" alt="">' if thumbs[i] else ""
         cards.append(f'<figure data-i="{i}">{img}<figcaption><b>{i + 1}</b> {html.escape(u["id"])} '
                      f'<span class=t>{mmss(a)}–{mmss(a + s["length"])}</span><br><small>{html.escape(tags)}</small>'
                      f'<code title="copy into picks.json">{html.escape(pick_line(s))}</code>'
@@ -146,8 +147,9 @@ const store={get(){try{return JSON.parse(localStorage.getItem("picks:"+D.key))}c
  set(v){try{localStorage.setItem("picks:"+D.key,JSON.stringify(v))}catch(e){}},
  del(){try{localStorage.removeItem("picks:"+D.key)}catch(e){}}};
 let P=store.get()||JSON.parse(JSON.stringify(D.picks));
-const ent=id=>P[id]||(P[id]={});
-function tidy(){for(const k in P){const e=P[k];if(k[0]=="_"||typeof e!=="object")continue;
+const ent=id=>(P[id]&&typeof P[id]==="object"&&!Array.isArray(P[id]))?P[id]:(P[id]={});
+const esc=x=>String(x).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+function tidy(){for(const k in P){const e=P[k];if(k[0]=="_"||!e||typeof e!=="object"||Array.isArray(e))continue;
  for(const f of ["ban","prefer","add"])if(e[f]&&!e[f].length)delete e[f];if(e.more===0)delete e.more;
  if(!Object.keys(e).length)delete P[k]}}
 function save(){tidy();store.set(P);render()}
@@ -156,10 +158,14 @@ const secs=v=>{if(typeof v==="number")return v;const p=String(v).split(":");retu
 const span=v=>{if(Array.isArray(v))return v.map(secs);const s=String(v);const i=s.indexOf("-");
  return i>0?[secs(s.slice(0,i)),secs(s.slice(i+1))]:[secs(s),secs(s)]};
 function shotRange(i){const s=D.shots[i];return range(s.a,s.b)}
-function isBanned(i){const s=D.shots[i],e=P[s.id];return !!(e&&e.ban&&(e.ban.includes("all")||
+function isBanned(i){const s=D.shots[i],e=P[s.id];return !!(e&&Array.isArray(e.ban)&&(e.ban.includes("all")||
  e.ban.some(v=>{const[a,b]=span(v);return a<=s.a+0.05&&b>=s.b-0.05})))}
+function covers(v,s){if(v=="all")return true;const[a,b]=span(v);return a<=s.a+0.05&&b>=s.b-0.05}
 function toggleBan(i){const s=D.shots[i],e=ent(s.id),r=shotRange(i);e.ban=e.ban||[];
- const k=e.ban.indexOf(r);k>=0?e.ban.splice(k,1):e.ban.push(r);save()}
+ const k=e.ban.indexOf(r);if(k>=0)e.ban.splice(k,1);
+ else if(isBanned(i)){const wide=e.ban.filter(v=>covers(v,s));                 // a wider ban ("all", a range)
+  if(!confirm("Lift the ban "+wide.join(", ")+" on "+s.id+"?"))return;e.ban=e.ban.filter(v=>!covers(v,s))}
+ else e.ban.push(r);save()}
 function more(id,d){const e=ent(id);e.more=Math.max(0,(e.more||0)+d);save()}
 function render(){
  document.querySelectorAll("figure").forEach(f=>{const i=+f.dataset.i,s=D.shots[i],e=P[s.id]||{};
@@ -190,11 +196,11 @@ const dlg=document.getElementById("dlg"),vid=document.getElementById("vid"),tl=d
  zt=document.getElementById("zt"),hov=document.getElementById("hover");
 const FR=1/50;let cur=null,zoomW=8,inPt=null,outPt=null,shuttle=0,rew=null,drag=null;
 const now=()=>vid.currentTime||0;
-function seek(t){vid.currentTime=Math.min(Math.max(0,t),dur()-0.01);draw()}
+function seek(t){if(rew)stopShuttle();vid.currentTime=Math.min(Math.max(0,t),dur()-0.01);draw()}
 function openShot(i){cur=i;inPt=outPt=null;stopShuttle();const s=D.shots[i],src=D.sources[s.id]||{};
  document.getElementById("title").textContent=(i+1)+" · "+s.id+" · "+s.kind+" "+shotRange(i);
  if(src.video){if(vid.getAttribute("src")!==src.video)vid.src=src.video;vid.style.display=""}
- else{vid.removeAttribute("src");vid.style.display="none"}
+ else{vid.removeAttribute("src");vid.load();vid.style.display="none"}
  const go=()=>{vid.currentTime=s.a;draw()};vid.readyState>=1?go():vid.addEventListener("loadedmetadata",go,{once:true});
  const al=document.getElementById("alts");al.innerHTML="";
  (src.moments||[]).forEach(([t,k,r])=>{const b=document.createElement("button");b.textContent=mmss(t)+" "+k;
@@ -218,8 +224,8 @@ function paint(el,a,b,ticks){const W=b-a,pct=x=>(100*(x-a)/W).toFixed(3)+"%";let
   for(let t=Math.ceil(a/step)*step;t<=b;t+=step){const big=Math.abs(t/lab-Math.round(t/lab))<1e-6;
    h+=`<i class="tk${big?" big":""}" style="left:${pct(t)}"></i>`;if(big)h+=`<i class=lb style="left:${pct(t)}">${mmss(t)}</i>`}}
  for(const[c,x0,x1,t]of marks()){if((x1??x0)<a||x0>b)continue;
-  h+=x1===null?`<i class="${c}" title="${t}" style="left:${pct(x0)}"></i>`:
-   `<i class="${c}" title="${t}" style="left:${pct(Math.max(x0,a))};width:calc(${pct(Math.min(x1,b))} - ${pct(Math.max(x0,a))} + 2px)"></i>`}
+  h+=x1===null?`<i class="${c}" title="${esc(t)}" style="left:${pct(x0)}"></i>`:
+   `<i class="${c}" title="${esc(t)}" style="left:${pct(Math.max(x0,a))};width:calc(${pct(Math.min(x1,b))} - ${pct(Math.max(x0,a))} + 2px)"></i>`}
  if(!ticks){const[za,zb]=zwin();h+=`<i class=win style="left:${pct(za)};width:${(100*(zb-za)/W).toFixed(3)}%"></i>`}
  h+=`<i class=ph style="left:${pct(now())}"></i>`;el.innerHTML=h}
 function draw(){if(cur===null)return;const s=D.shots[cur],e=P[s.id]||{};
@@ -230,7 +236,7 @@ function draw(){if(cur===null)return;const s=D.shots[cur],e=P[s.id]||{};
   "in "+(inPt===null?"–":mmss(inPt))+" · out "+(outPt===null?"–":mmss(outPt)):"";
  document.querySelectorAll("#alts button").forEach(b=>b.classList.toggle("on",Math.abs(+b.dataset.t-now())<0.6));
  const m=document.getElementById("marks");const adds=e.add||[];
- m.innerHTML=(adds.length?`Extra shots (${adds.length}): `+adds.map((v,k)=>`<b class=jm data-t="${span(v)[0]}" style="cursor:pointer">${v}</b> <button data-k=${k} class=rm>✕</button>`).join(" "):"No extra shots marked — press M at each moment you want.")+
+ m.innerHTML=(adds.length?`Extra shots (${adds.length}): `+adds.map((v,k)=>`<b class=jm data-t="${span(v)[0]}" style="cursor:pointer">${esc(v)}</b> <button data-k=${k} class=rm>✕</button>`).join(" "):"No extra shots marked — press M at each moment you want.")+
   (e.more?` · more from this video ×${e.more}`:"")+(isBanned(cur)?" · <span style='color:var(--ban)'>this shot is banned</span>":"");
  m.querySelectorAll(".rm").forEach(b=>b.onclick=()=>{e.add.splice(+b.dataset.k,1);save()});
  m.querySelectorAll(".jm").forEach(b=>b.onclick=()=>seek(+b.dataset.t))}
@@ -250,7 +256,8 @@ function zoom(f){zoomW=Math.min(Math.max(zoomW*f,1),Math.max(dur(),2));draw()}
 vid.addEventListener("timeupdate",draw);vid.addEventListener("seeked",draw);
 let raf=null;vid.addEventListener("play",()=>{const loop=()=>{draw();if(!vid.paused)raf=requestAnimationFrame(loop)};loop()});
 function stopShuttle(){if(rew){clearInterval(rew.id);rew=null}shuttle=0;vid.playbackRate=+document.getElementById("rate").value}
-function playL(){if(rew){stopShuttle()}shuttle=vid.paused?1:Math.min(shuttle*2||2,8);vid.playbackRate=shuttle;vid.play();draw()}
+function playL(){if(rew){stopShuttle()}const base=+document.getElementById("rate").value;
+ shuttle=vid.paused?1:Math.min(shuttle*2||2,8);vid.playbackRate=base*shuttle;vid.play();draw()}
 function playJ(){vid.pause();shuttle=0;const n=rew?Math.min(rew.n*2,8):1;if(rew)clearInterval(rew.id);
  rew={n,id:setInterval(()=>{if(now()<=0)return stopShuttle();vid.currentTime=Math.max(0,now()-0.04*n);draw()},40)};draw()}
 function pause(){vid.pause();stopShuttle();draw()}
@@ -319,7 +326,9 @@ def sources(project, plan, fmt, page_dir):
         f = os.path.join(project.export_dir, u.get("category", ""), u["id"].split("#")[0] + ".mp4")
         r = moments.get(u["id"], {})
         ms = sorted(r.get("moments", []), key=lambda m: -m.get(key, m.get("score", 0)))
-        out[u["id"]] = dict(video=os.path.relpath(f, page_dir).replace(os.sep, "/") if os.path.exists(f) else None,
+        # a joined B-roll piece ("#n") has no export of its own: its times are its own clip's, not the joined file's
+        ok = os.path.exists(f) and "#" not in u["id"]
+        out[u["id"]] = dict(video=quote(os.path.relpath(f, page_dir).replace(os.sep, "/")) if ok else None,
                             moments=[[round(m["t"] - x0, 2), m["kind"], round(m.get(key, m.get("score", 0)), 2)]
                                      for m in ms if m["t"] - x0 >= 0])
     return out

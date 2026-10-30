@@ -39,11 +39,13 @@ STAB = os.path.expanduser("~/.cache/focalcut/stab")         # vidstab motion fil
 def stab(path, t, dur, rot):
     """Pass 1 of vidstab over exactly the stretch the shot decodes: the camera's shake, frame by frame."""
     os.makedirs(STAB, exist_ok=True)
-    trf = os.path.join(STAB, hashlib.md5(f"{path}|{t:.3f}|{dur:.3f}|{rot}".encode()).hexdigest()[:12] + ".trf")
-    if not os.path.exists(trf):
+    name = hashlib.md5(f"{path}|{t:.3f}|{dur:.3f}|{rot}".encode()).hexdigest()[:12] + ".trf"
+    trf = os.path.join(STAB, name)
+    if not os.path.exists(trf):                    # run in STAB with a bare file name: no filter-string escaping
         pre = (rot + ",") if rot else ""
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.3f}", "-t", f"{dur:.3f}", "-i", path, "-an", "-vf",
-                        f"{pre}vidstabdetect=shakiness=6:accuracy=12:result={trf}", "-f", "null", "-"], check=True)
+                        f"{pre}vidstabdetect=shakiness=6:accuracy=12:result={name}", "-f", "null", "-"],
+                       check=True, cwd=STAB)
     return trf
 
 
@@ -56,6 +58,7 @@ def shot_filter(s, fmt, project=None, dur=None):
     if s.get("stab") and project is not None:               # smooth the camera, zoomed just enough to hide the
         path, t = project.decode_from(u["source"], s["src_in"])   # moving edges (4K has the pixels to spare)
         trf = stab(path, t, dur or s["length"] + 0.1, u.get("rotate"))
+        trf = trf.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")   # filtergraph escaping
         f.append(f"vidstabtransform=input={trf}:smoothing=15:optzoom=1:zoomspeed=0.25:interpol=bicubic")
     c = s.get("crop")
     if c:
@@ -65,10 +68,11 @@ def shot_filter(s, fmt, project=None, dur=None):
     return ",".join(f)
 
 
-def key(s):
+def key(s, beat=None):
     """Cache name for a shot: changes whenever anything that shapes its pixels does."""
-    k = json.dumps([s["unit"]["id"], s["src_in"], s["frames"], s.get("fx"), s.get("crop"), s["peak"], s.get("logo"),
-                    s.get("stab"), s["kind"] == "closeup", 2],
+    u = s["unit"]
+    k = json.dumps([u["id"], u["source"], u.get("rotate"), u["role"], s["src_in"], s["frames"], s.get("fx"),
+                    s.get("crop"), s["peak"], s.get("logo"), s.get("stab"), s["kind"] == "closeup", beat, 3],
                    sort_keys=True)
     return hashlib.md5(k.encode()).hexdigest()[:10]
 
@@ -103,8 +107,11 @@ def fx_shot(project, s, fmt, beat, out):
     for n in s["fx"]:
         e = fx.EFFECTS[n]()
         if isinstance(e, Speed):
-            src_len, src_peak = e.source_length(L, ctx), e.source_peak(s["peak"], ctx)
+            sp = e
+            src_len, src_peak = e.source_length(L, ctx), e.source_peak(s["peak"], ctx, L)
     src_in = min(max(s["t"] - src_peak, u["t0"]), max(u["t1"] - src_len, u["t0"]))
+    if src_len != L and abs(src_in - (s["t"] - src_peak)) > 1e-3:   # clamped at the unit's edge: slow down where
+        ctx.peak = sp.out_time(s["t"] - src_in, L, ctx)               # the move now plays, not where it would have
     shot = dict(s, src_in=src_in, length=src_len)
     if s.get("crop"):                              # the source read changed: follow the subject over it instead
         shot["crop"] = reframe(project, u, src_in, src_len, fmt) or s["crop"]
@@ -186,12 +193,12 @@ def run(project, fmt, draft=False, cut=None) -> str:
     files = []
     for i, s in enumerate(plan["shots"]):
         if s.get("fx") and not draft:
-            out = os.path.join(work, f"shot_{i:03d}_{key(s)}_fx.mp4")
+            out = os.path.join(work, f"shot_{i:03d}_{key(s, plan['beat'])}_fx.mp4")
             if not os.path.exists(out):
                 fx_shot(project, s, fmt, plan["beat"], out)
                 print(f"\n  {'+'.join(s['fx'])}: {s['unit']['id']} @ {s['t']}s", flush=True)
         else:
-            out = os.path.join(work, f"shot_{i:03d}_{key(s)}.mp4")
+            out = os.path.join(work, f"shot_{i:03d}_{key(s, plan['beat'])}.mp4")
             if not os.path.exists(out):
                 cut_shot(project, s, fmt, out)
         files.append(out)
@@ -211,7 +218,7 @@ def run(project, fmt, draft=False, cut=None) -> str:
         files = [*files, sting]
     lst = os.path.join(work, "list.txt")
     with open(lst, "w") as f:
-        f.writelines(f"file '{p}'\n" for p in files)
+        f.writelines("file '" + p.replace("'", "'\\''") + "'\n" for p in files)   # (concat's own quoting)
     video = os.path.join(work, "video.mp4")
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", video],
                    check=True)

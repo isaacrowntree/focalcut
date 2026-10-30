@@ -146,7 +146,7 @@ of short cuts and speed ramps, and a finale. It cuts the way music videos are cu
 Speed ramps are velocity edits: fast through the move (never above 1.5x on dancing), slowing to land exactly as
 the dancer does, holding so hair and faces play out, then easing back up. Most cuts are hard cuts on the beat; each
 act has a short vocabulary of transitions, and one goes in only where the cut has a reason (a spin cut between two
-turns, a whip when the same travel carries across, a push in to a face, a flash on a big hit). Camera shake is
+turns, a swipe when the same travel carries across, a push in to a face, a flash on a big hit). Camera shake is
 measured, so shaky stretches give way to steadier ones and mildly shaky shots are stabilised. In portrait the strip
 follows one dancer of a couple dancing apart and favours faces over backs. Band players cut in on the musical hits,
 and the reel can end on a shot you choose. See [docs/recipes/recap-reel.md](docs/recipes/recap-reel.md).
@@ -155,7 +155,8 @@ Every one of these is a reusable piece. `plan.place()` turns any hand-built sequ
 renders and exports like a reel, so a teaser, a highlight or a promo uses the same rules (see
 [skills/focalcut/examples/teaser.py](skills/focalcut/examples/teaser.py)). [skills/focalcut](skills/focalcut/SKILL.md)
 is a Claude Code skill that lists each concept with the code behind it. To install it, run
-`ln -s "$PWD/skills/focalcut" ~/.claude/skills/focalcut`.
+`mkdir -p ~/.claude/skills && ln -s "$PWD/skills/focalcut" ~/.claude/skills/focalcut` from a clone
+(the skill is not part of the pip package).
 
 The effects are standalone modules too:
 

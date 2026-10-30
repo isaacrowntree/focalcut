@@ -45,8 +45,9 @@ Everything the recipe writes goes to `focalcut/reel/`: `reel.json` (settings), `
 | `spans` | `{"C2036": [0, 7]}` — the usable part of a clip (`[6.5, null]`: from 6.5 s to the end) |
 | `proxies` | `{"C2037_stabilized.mov": ["export/animations/C2037.mp4", []]}` — decode a heavy master (e.g. DNxHD) from a smaller file that starts on the same frame; `[[53.28, -0.28]]` shifts times after a dropped join |
 | `picks` | the editor's calls, by export file name, times in that file's own timeline: `{"C2025": {"ban": ["0:00-0:20"], "prefer": ["0:41-0:46"], "add": ["1:12.5"], "more": 2}, "C1984-05_couple": {"ban": ["all"]}}` (`add`: extra shots the reel must include; `more`: more shots from that clip). Merged over `focalcut/reel/picks.json`, which is the easier place to keep them |
+| `name` | output file prefix (default: the folder name) |
 | `logo` | the event's logo (a PNG with transparency) — laid big and centred over the opening shots |
-| `plan` | per-format overrides of the planner: `acts` (`[["teaser", 0, 2], ["arrival", 2, 12], …]` in bars — put them on your song's section changes), `split` (the default act proportions), `day` (B-roll tag keywords for the arrival act), `heroes`, `grammar` / `caps` / `flash_at` (each act's transitions, how many of each, how hard a beat must hit for a flash), `members` / `member_clips` (B-roll tags and clips of individual band players), `band_in` (player inserts per act), `ending` (`["C2023", 126.6, 133.4, 0.45]`: the last shot, export file and its own seconds, optional crop centre), `shake` (`[0.0012, 0.006]`: stabilise above the first, avoid above the second) |
+| `plan` | per-format overrides of the planner: `acts` (`[["teaser", 0, 2], ["arrival", 2, 12], …]` in bars — put them on your song's section changes), `split` (the default act proportions), `opening` (B-roll tags the reel opens on, best first), `day` (B-roll tag keywords for the arrival act), `day_shows` / `night_shows` (show categories danced by day / at night), `night_pace` (`"medium"` or `"fast"`), `heroes`, `grammar` / `caps` / `flash_at` (each act's transitions, how many of each, how hard a beat must hit for a flash), `members` / `member_clips` (B-roll tags and clips of individual band players), `band_in` (player inserts per act), `ending` (`["C2023", 126.6, 133.4, 0.45]`: the last shot, export file and its own seconds, optional crop centre), `shake` (`[0.0012, 0.006]`: stabilise above the first, avoid above the second) |
 
 ## The steps
 
@@ -103,7 +104,7 @@ Everything the recipe writes goes to `focalcut/reel/`: `reel.json` (settings), `
    | finale | a face, a slow-motion move, the packed floor, a hair flip in deep slow motion, then the `ending` shot (or one last slow move) into the stinger | dip to white |
 
    Inside an act a cut gets a transition only when it has a reason, from that act's own vocabulary and within its
-   caps (`grammar.py`): a spin cut between two turns, a whip when the same travel carries across, a zoom pushing
+   caps (`grammar.py`): a spin cut between two turns, a swipe when the same travel carries across, a zoom pushing
    in to a face, a flash on a big hit, a glitch at the DJ. Everything else, and every crowd reaction or band insert,
    is a hard cut on the beat — about 15 transitions in a 3-minute reel. Band players cut in on the hardest hits
    (`members`, `band_in`). Every shot gets a crop that keeps its
@@ -119,7 +120,7 @@ Everything the recipe writes goes to `focalcut/reel/`: `reel.json` (settings), `
 13. **review** — `review/<fmt>.html`: a frame per shot, from the rendered reel or else its source. Each shot shows
    its export file, the time range it uses in that file, and a copyable picks line. Paste the line into
    `focalcut/reel/picks.json` and leave it as `ban`, or change it to `prefer` with a better range. Then re-run
-   `--steps plan,render,xml`.
+   `--steps plan,render,xml,review`.
 
    - **ban:** removes moments in that range. `"all"` removes the whole clip.
    - **Scrub source** on any shot opens the export it came from. The timeline shows that shot, the reel's other
@@ -141,7 +142,7 @@ Everything the recipe writes goes to `focalcut/reel/`: `reel.json` (settings), `
 ### How it cuts
 
 Each of these is also a standalone concept you can reuse for other clips; the
-[focalcut-reel skill](../../skills/focalcut-reel/SKILL.md) lists them with the module behind each.
+[focalcut skill](../../skills/focalcut/SKILL.md) lists them with the module behind each.
 
 These are the editing rules the planner follows. They come from the editor the recipe was built with, checked
 against how music videos are cut:
@@ -168,7 +169,7 @@ against how music videos are cut:
   more on a close-up hair flip), and eases back up. The landing comes from the subject's own motion (a burst, then a
   rest: `velocity.settle`) and goes on the strongest beat that leaves room for the hold.
 - **Transitions with a reason.** Mostly hard cuts on the beat. Each act has its own short vocabulary and caps
-  (`grammar.py`): a spin only turn into turn, a whip only when the same travel carries across, a zoom only to push in
+  (`grammar.py`): a spin only turn into turn, a swipe only when the same travel carries across, a zoom only to push in
   to a face, a flash only on a big hit, a glitch only at the DJ. Never two in a row; reactions and band inserts cut
   straight in. One big subject effect, on the drop.
 - **Portrait framing.** A 9:16 strip from a 16:9 frame follows one dancer of a couple dancing apart (the one showing

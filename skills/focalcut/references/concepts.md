@@ -2,7 +2,7 @@
 
 These are the rules the recipe's editor cuts dance recaps by, checked against how music videos and aftermovies are made. Each
 section gives the rule, the reason, how focalcut measures or enforces it (module and function under
-`~/focalcut/focalcut/`), the numbers, and the reel.json knob where there is one. Use them together for a full
+`focalcut/` in the repo), the numbers, and the reel.json knob where there is one. Use them together for a full
 reel, or pick out the ones a new clip needs.
 
 ---
@@ -133,7 +133,7 @@ gets it backwards: the fast part looks slow and the hold has nothing to show.
   - A close-up slows a further ×0.6 and holds 0.5 beat longer.
   - `cap` param: 1.5 for dancing, 3.5 for B-roll.
 - `velocity.settle(project, unit, t)` finds the landing: subject motion is a burst in the 0.6 s before and a rest
-  in the 0.6 s after, searched over −1.0 to +0.8 s.
+  from 0.1 to 0.6 s after, searched over −1.0 to +0.8 s.
 - `velocity.landing()` puts the landing on the strongest accent beat that leaves room for the hold;
   `plan.place` applies both.
 - One-off: `focalcut fx apply clip.mp4 -e hero --peak <landing s> [--closeup]`.
@@ -261,7 +261,7 @@ middle and bursts up (C2023 at 126.6–133.4 s).
 **Rule:** the reel starts where the song proper starts, on a downbeat. Downloaded tracks often have an intro: the reference
 shoot's track starts about 0:17, on the bar where the music returns after a break.
 **Code:** `music.analyse(start="auto" | seconds, start_hint=…)` picks the bar nearest the hint, and the window ends
-on a phrase boundary inside `length`.
+on a phrase boundary inside `max_len` (reel.json `length`).
 **Knob:** top-level `start_hint`.
 
 ## 17. Clean effect masks
