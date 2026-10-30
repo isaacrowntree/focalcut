@@ -106,7 +106,9 @@ def people(batch):
 def score(folder: str, source: str, out_dir: str) -> str:
     import cv2
     import numpy as np
-    out = os.path.join(out_dir, os.path.splitext(source)[0].replace("_stabilized", "").replace("_joined", "") + ".npz")
+
+    from .project import Project
+    out = os.path.join(out_dir, Project.score_name(source) + ".npz")
     if os.path.exists(out):
         return f"{source}: cached"
     path = os.path.join(folder, source)
