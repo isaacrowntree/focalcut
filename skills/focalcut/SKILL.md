@@ -71,6 +71,8 @@ Read `references/concepts.md` for the rule, the reason, the numbers and the code
 | Band members | individual players cut in on the hardest musical hits | `plan.band_in` | `members`, `member_clips`, `band_in` |
 | Ending | a chosen last shot that runs out exactly at its end time; its stretch reserved | `plan.ending_record/reserve_ending` | `ending` |
 | Song start | start on the bar nearest where the song proper begins | `music.analyse` | top-level `start_hint` |
+| Several songs | one song per act (a festival's sets), each around its drop, crossfaded beat on beat or cut on the downbeat; never remixed | `music.join/mix`, `plan.clock` | top-level `songs` |
+| Headliner last | the last set's footage kept for the climax and finale | `plan.story` | `late` |
 | Clean masks | BiRefNet matte inside the SAM 3 mask, never raw upscaled SAM | `fx/masks.py` | — |
 
 ## Before rendering, check the plan against the rules

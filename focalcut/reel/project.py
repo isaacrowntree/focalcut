@@ -8,6 +8,8 @@
 
 reel.json keys (all optional except song):
     song               path to the track
+    songs              several tracks instead of song, one per act group: [{"song": path, "bars": n | null,
+                                         "pre": 8, "acts": {"<act>": bars | null}}, ...] (music.join)
     start              "auto" (first bar after the intro) or seconds
     start_hint         seconds: pick the bar nearest this instead of detecting the intro
     length             total reel length in seconds, stinger included (default 180: Instagram's Reels-tab limit)
@@ -24,6 +26,7 @@ reel.json keys (all optional except song):
                                          "more": 2}}  the editor's
                                          calls, times in that export file's own timeline; merged over picks.json
                                          in this folder (the review step's page gives a copyable line per shot)
+    hips               false: the semantic step leaves out its hips prompts (an audience, not performers)
     logo               image file (PNG with transparency) laid front and centre over the opening shots
     plan               {"landscape": {...}, "portrait": {...}}  overrides for plan.CFG
 """
@@ -71,7 +74,7 @@ class Project:
     @staticmethod
     def score_name(source: str) -> str:
         """scores/<name>.npz for a source file (stabilised / joined versions share the camera clip's name)."""
-        return os.path.splitext(source)[0].replace("_stabilized", "").replace("_joined", "")
+        return os.path.splitext(os.path.basename(source))[0].replace("_stabilized", "").replace("_joined", "")
 
     def decode_from(self, source: str, t: float) -> tuple[str, float]:
         """File and time to decode a source's time t from: its proxy when one is configured."""

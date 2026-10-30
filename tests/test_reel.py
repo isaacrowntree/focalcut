@@ -697,3 +697,67 @@ def test_picks_take_single_times_and_hours():
                moments=[dict(t=20.0, score=1.0), dict(t=3725.0, score=1.0)])
     P.apply_picks([rec], {"U1": {"ban": ["0:20"], "prefer": ["1:02:05"]}})
     assert [m["t"] for m in rec["moments"]] == [3725.0] and rec["moments"][0]["pick"]
+
+
+def test_plan_on_joined_songs_cuts_on_their_real_beats(tmp_path):
+    # two songs at different tempos (music.join): cuts land on each song's own beats, the acts sit on the songs
+    pr, _, moments = fake_reel(tmp_path)
+    a, b = list(np.arange(0, 32 * 4 * 0.6, 0.6)), list(32 * 4 * 0.6 + np.arange(0, 40 * 4 * 0.5, 0.5))
+    beats = [0.5 + x for x in a + b]
+    music = dict(song="mix.wav", beats=beats, start=0.5, length=beats[-1] + 0.5 - 0.5, beat=0.55,
+                 sections=[dict(song="a"), dict(song="b")],
+                 acts=[["teaser", 0, 2], ["arrival", 2, 16], ["shows", 16, 32], ["night", 32, 48], ["climax", 48, 62],
+                       ["finale", 62, 72]])
+    plan = P.build(pr, "landscape", music, moments, stinger_len=0.0)
+    grid = [x - beats[0] for x in beats] + [beats[-1] + 0.5 - beats[0]]
+    rec = 0
+    for s in plan["shots"]:
+        assert s["rec_in"] == pytest.approx(grid[rec], abs=1e-3)
+        assert s["frames"] == round(grid[rec + s["beats"]] * P.FPS) - round(grid[rec] * P.FPS)
+        assert s["beat"] == pytest.approx((grid[rec + s["beats"]] - grid[rec]) / s["beats"], abs=1e-4)
+        rec += s["beats"]
+    assert rec == len(beats)
+    assert plan["acts"]["night"][0] == pytest.approx(grid[32 * 4], abs=1e-3)   # the second song's first beat
+
+
+def test_drops_find_the_bass_coming_back_after_a_build():
+    from focalcut.reel.music import drops, song_window
+    sr, bar = 22050, 2.0
+    t = np.arange(int(48 * bar * sr)) / sr
+    hats = 0.2 * np.sin(2 * np.pi * 6000 * t)
+    bass = 0.8 * np.sin(2 * np.pi * 55 * t) * ((t >= 16 * bar) & (t < 24 * bar) | (t >= 32 * bar))
+    bars = np.arange(0, 48 * bar + 1e-9, bar)
+    d = drops((hats + bass).astype(np.float32), sr, bars)
+    assert int(np.argmax(d)) in (16, 32)
+    s, e = song_window(dict(bars=bars.tolist()), d, 24)
+    assert e - s == 24 and s <= int(np.argmax(d)) < e
+
+
+def test_mix_crossfades_matching_tempos_and_cuts_the_rest(tmp_path):
+    import soundfile as sf
+
+    from focalcut.reel.music import mix
+    sr = 48000
+    for name, f in (("a", 220), ("b", 330)):
+        sf.write(tmp_path / f"{name}.wav", 0.5 * np.sin(2 * np.pi * f * np.arange(20 * sr) / sr), sr)
+    secs = [dict(song=str(tmp_path / "a.wav"), src_start=2.0, src_end=10.0, at=0.5, out="xfade", bar=2.0),
+            dict(song=str(tmp_path / "b.wav"), src_start=4.0, src_end=12.0, at=8.5, out="end", bar=2.0)]
+    y, _ = sf.read(mix(secs, str(tmp_path / "m.wav"), tail=1.0))
+
+    def rms(a, b):
+        return float(np.sqrt((y[int(a * sr):int(b * sr), 0] ** 2).mean()))
+    assert rms(0.6, 7.0) == pytest.approx(0.5 / np.sqrt(2), rel=0.05)          # a alone
+    assert rms(10.0, 16.0) == pytest.approx(0.5 / np.sqrt(2), rel=0.05)        # b alone
+    assert rms(8.3, 8.7) > 0.2                                                 # no dip through the crossfade
+    assert len(y) == pytest.approx((8.5 + 8.0 + 1.0) * sr, abs=sr * 0.01)
+
+
+def test_late_categories_wait_for_the_climax(tmp_path):
+    pr, music, moments = fake_reel(tmp_path, n_units=20)
+    for r in moments[16:]:
+        r["category"] = r["unit"]["category"] = "headline"
+    pr.config = {"plan": {"landscape": {"late": ["headline"]}}}
+    plan = P.build(pr, "landscape", music, moments, stinger_len=0.0)
+    late = {r["unit"]["clip"] for r in moments[16:]}
+    early_acts = {s["act"] for s in plan["shots"] if s["unit"]["clip"] in late}
+    assert early_acts and early_acts <= {"climax", "finale"}

@@ -155,7 +155,7 @@ def apply_transitions(plan, files):
         a_out, b_out = files[i - 1].replace(".mp4", f"_o{tag}.mp4"), files[i].replace(".mp4", f"_i{tag}.mp4")
         if not (os.path.exists(a_out) and os.path.exists(b_out)):
             A, B = read_frames(files[i - 1]), read_frames(files[i])
-            ctx = fx.Context(fps=FPS, beat=plan["beat"], seed=i)
+            ctx = fx.Context(fps=FPS, beat=s.get("beat", plan["beat"]), seed=i)
             tr = fx.TRANSITIONS[name]()
             n = min(tr.frames(ctx), len(A), len(B)) // 2 * 2
             mid = tr.apply(A[len(A) - n // 2:], B[:n // 2], ctx)
@@ -195,7 +195,7 @@ def run(project, fmt, draft=False, cut=None) -> str:
         if s.get("fx") and not draft:
             out = os.path.join(work, f"shot_{i:03d}_{key(s, plan['beat'])}_fx.mp4")
             if not os.path.exists(out):
-                fx_shot(project, s, fmt, plan["beat"], out)
+                fx_shot(project, s, fmt, s.get("beat", plan["beat"]), out)
                 print(f"\n  {'+'.join(s['fx'])}: {s['unit']['id']} @ {s['t']}s", flush=True)
         else:
             out = os.path.join(work, f"shot_{i:03d}_{key(s, plan['beat'])}.mp4")

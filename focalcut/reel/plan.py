@@ -81,6 +81,9 @@ _COMMON = dict(
     # shake.py's hf over the crop's width: above the second a stretch is unusable (another part of the clip is used),
     # above the first it plays stabilised
     shake=[0.0012, 0.006],
+    # categories or B-roll tags (substrings) kept for the climax and finale, e.g. the headliner's set: they stay out of
+    # the earlier acts, and the climax and finale cut from them first
+    late=[],
 )
 CFG = {
     "landscape": dict(_COMMON, heroes=4, night_pace="medium"),
@@ -523,20 +526,25 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None):
     P = Picker(fmt, recs)
     tag = lambda r: r["unit"].get("tag", "")
     cat = lambda r: r.get("category", "")
-    shows = [r for r in recs if r["role"] == "show"]
-    socials = [r for r in recs if r["role"] == "dance"]
-    broll = [r for r in recs if r["role"] == "transition"]
+    late = [r for r in recs if any(k in cat(r) or k in tag(r) for k in cfg["late"])]
+    early = [r for r in recs if r not in late]
+    late_dance = [r for r in late if r["role"] != "transition"]
+    late_crowd = [r for r in late if r["role"] == "transition"]
+    shows = [r for r in early if r["role"] == "show"]
+    socials = [r for r in early if r["role"] == "dance"]
+    broll = [r for r in early if r["role"] == "transition"]
     day = [r for r in broll if any(k in tag(r) for k in cfg["day"])]
     night = [r for r in broll if r not in day] or broll
     crowd = [r for r in night if "crowd" in tag(r)]
-    dance = shows + socials
+    dance = shows + socials or late_dance
     if not dance:
         raise SystemExit("no dance or show moments to cut a reel from (run the score and moments steps)")
     demos = [r for r in shows if any(k in cat(r) for k in cfg["day_shows"])]
     anim = [r for r in shows if any(k in cat(r) for k in cfg["night_shows"]) and r not in demos]
     stage = [r for r in shows if r not in demos and r not in anim] or shows or socials
     home = {**{r["id"]: "arrival" for r in demos + day}, **{r["id"]: "shows" for r in stage},
-            **{r["id"]: "night" for r in anim + socials + night}}
+            **{r["id"]: "night" for r in anim + socials + night},
+            **{r["id"]: "finale" if r["role"] == "transition" else "climax" for r in late}}
     bars = total_beats // 4
     acts = {name: (a * 4, b * 4) for name, a, b in (cfg["acts"] or default_acts(cfg, bars))}
     budget = {k: max(min(b, video_beats) - a, 0) for k, (a, b) in acts.items()}
@@ -625,7 +633,10 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None):
         x = min((2, 1, 1)[k % 3], left)
         slots.append(x); left -= x; k += 1
     slots.append("B")
-    pool = dance if fmt == "portrait" else shows
+    pool = dance if fmt == "portrait" else shows or dance
+    if late_dance:                                           # the headliner's set first, the rest of the day after
+        pool = late_dance if len(late_dance) >= 4 else late_dance + pool
+    crowd = [r for r in late_crowd if "crowd" in tag(r)] + crowd
     heroes = P.pool(pool, ("spin", "dip", "trick"), 0.45)
     n_h = slots.count("H")
     hero_moments, seen = [], set()
@@ -675,6 +686,7 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None):
 
     # finale: faces, the packed floor, and one last slow-motion move
     fi = []
+    dance = late_dance + dance if late_dance else dance
     closeups = P.pool(dance, ("closeup",), 0.3) or P.pool(dance, ("closeup",))
     faces = sorted(closeups, key=lambda x: -(x[1].get("face", 0) + 0.5 * rk(x[1], fmt)))
 
@@ -898,6 +910,18 @@ def assess(project, recs, fmt, cfg):
     json.dump(cache, open(path, "w"))
 
 
+def clock(music):
+    """Seconds from the reel's first beat to its beat k. One song: k beats of its fitted period. Several songs (music.join):
+    the joined grid's real beat times, since the tempo may change where one song hands over to the next."""
+    beat = music["beat"]
+    if not music.get("sections"):
+        return lambda k: k * beat
+    bt = np.array(music["beats"]); i0 = int(np.argmin(np.abs(bt - music["start"])))
+    g = bt[i0:] - bt[i0]
+    per = float(g[-1] - g[-2])
+    return lambda k: float(g[k]) if k < len(g) else float(g[-1] + (k - len(g) + 1) * per)
+
+
 def in_point(s, beat):
     """Source in-point: the move's peak lands on a beat inside the shot -- mid-shot for a speed effect, about 40% in
     for a plain shot, on the cut itself for a one-beat hit."""
@@ -926,7 +950,9 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
                fmt, cfg)
     music = dict(music, beat=music.get("beat") or float(np.median(np.diff(music["beats"]))))   # fitted period
     beat = music["beat"]
-    total_beats = round(music["length"] / beat)
+    total_beats = len(music["beats"]) if music.get("sections") else round(music["length"] / beat)
+    if cfg["acts"] is None and music.get("acts"):            # several songs: the acts sit on the songs
+        cfg["acts"] = music["acts"]
     video_beats = total_beats - (round(STINGER_OVERLAP / beat) if stinger_len else 0)   # the stinger covers the end
     seq, acts = story(fmt, cfg, music, moments, video_beats, total_beats, direction)
     plan = place(project, fmt, seq, music, cfg, direction, stinger_len, acts)
@@ -952,6 +978,7 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
     cfg = cfg or config(project, fmt)
     music = dict(music, beat=music.get("beat") or float(np.median(np.diff(music["beats"]))))
     beat = music["beat"]
+    T = clock(music)
     bt = np.array(music["beats"]); i0 = int(np.argmin(np.abs(bt - music["start"])))
     acc = list(np.array(music.get("beat_accent") or np.ones(len(bt)))[i0:])
     from . import shake
@@ -970,32 +997,33 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
         s["stab"] = bool(j is not None and j > lo and "_stabilized" not in u["source"])   # (not twice)
     rec = 0
     for s in seq:
-        L = s["beats"] * beat
+        L = T(rec + s["beats"]) - T(rec)
+        s["beat"] = round(L / s["beats"], 5)                  # this shot's own beat (the tempo may change)
         u = s["unit"]
         ramp = next((f for f in s["fx"] if f in V.RAMP), None)
         if ramp:                                             # velocity edit: slow on the landing, on a strong beat
             s["t"] = V.settle(project, u, s["t"])
             s["lead_beats"] = V.landing(s["beats"], ramp, s["kind"] == "closeup", acc[rec:])
-        src_in = in_point(s, beat)
+        src_in = in_point(s, s["beat"])
         if s.get("ending"):                                  # the configured ending runs out at its "to" time
             src_in = max(u.get("export_t0", 0.0) + cfg["ending"][2] - L, u["t0"])
-        f0, f1 = round(rec * beat * FPS), round((rec + s["beats"]) * beat * FPS)
-        s.update(rec_in=round(rec * beat, 3), length=round(L, 3), frames=f1 - f0, src_in=round(src_in, 3),
+        f0, f1 = round(T(rec) * FPS), round(T(rec + s["beats"]) * FPS)
+        s.update(rec_in=round(T(rec), 3), length=round(L, 3), frames=f1 - f0, src_in=round(src_in, 3),
                  peak=round(s["t"] - src_in, 3), group=u["role"] == "show")
         frame(s)
         rec += s["beats"]
     transitions(seq, music, cfg, direction)
     for s in seq:                                            # velocity edits changed some shots' speed effects
         if any(f in SPEED for f in s["fx"]) and not s.get("ending"):
-            src_in = round(in_point(s, beat), 3)
+            src_in = round(in_point(s, s["beat"]), 3)
             if src_in != s["src_in"]:
                 s.update(src_in=src_in, peak=round(s["t"] - src_in, 3))
                 frame(s)
-    video = round(rec * beat, 3)
+    video = round(T(rec), 3)
     plan = dict(format=fmt, beat=beat, music_start=round(music["start"] - ANTICIPATE, 3),
                 music_length=round(video + (STINGER_OVERLAP if stinger_len else 0), 3), video_length=video,
                 stinger_at=video, stinger=stinger_len, shots=seq,
-                acts={k: [a * beat, min(b, rec) * beat] for k, (a, b) in (acts or {}).items()})
+                acts={k: [T(a), T(min(b, rec))] for k, (a, b) in (acts or {}).items()})
     if song or music.get("song"):
         plan["song"] = song or music["song"]
     return plan

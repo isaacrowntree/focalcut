@@ -1,7 +1,8 @@
 """What a shot shows, from the subject's crop: SigLIP 2 zero-shot on every keyframe of the subject track.
   hips  hips and butt working -- shakes, rolls, the view from behind that animations and shines are about
   face  a face with expression, close enough to read
-against wide / empty / blurry / walking shots. Writes <reel>/scores/<name>_semantic.npz (t, hips, face).
+against wide / empty / blurry / walking shots. reel.json "hips": false leaves the hips prompts out (scored 0), e.g. for
+an audience filmed at a festival rather than dancers performing. Writes <reel>/scores/<name>_semantic.npz (t, hips, face).
 Resumable; only sources whose subject track exists.
 """
 from __future__ import annotations
@@ -44,8 +45,9 @@ def run(project) -> None:
     dt = torch.float16 if dev == "cuda" else torch.float32
     model = AutoModel.from_pretrained(MODEL).to(dev, dt).eval()
     proc = AutoProcessor.from_pretrained(MODEL)
-    prompts = [p for g in GROUPS.values() for p in g]
-    which = np.array([k for k, g in GROUPS.items() for _ in g])
+    groups = {k: g for k, g in GROUPS.items() if k != "hips" or project.config.get("hips", True)}
+    prompts = [p for g in groups.values() for p in g]
+    which = np.array([k for k, g in groups.items() for _ in g])
     with torch.inference_mode():
         tin = proc(text=prompts, return_tensors="pt", padding="max_length", max_length=64).to(dev)
         t = model.get_text_features(**tin)

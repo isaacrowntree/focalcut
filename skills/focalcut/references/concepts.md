@@ -264,6 +264,27 @@ shoot's track starts about 0:17, on the bar where the music returns after a brea
 on a phrase boundary inside `max_len` (reel.json `length`).
 **Knob:** top-level `start_hint`.
 
+### 16b. Several songs, one per act (a festival's run of sets)
+
+**Rule:** at a festival with a lineup, each act can play a song by the DJ whose set its footage comes from, in set
+order. The songs are used as they are, never remixed or time-stretched; only the hand-over is edited. Each song gives
+its window around its strongest drop (a few bars of build, then the drop). Two songs within 3% of each other's tempo
+crossfade over one bar centred on the cut, beat on beat, the way a DJ mixes; further apart, a clean cut on the
+downbeat, which an act change's own transition covers.
+**Code:** `music.join(songs, max_len)` (window per song by `drops`, the low end coming back after a build, and
+`song_window`); `music.mix` renders `music_mix.wav`. The joined grid keeps each song's real beat times, so
+`plan.clock` places cuts on them across a tempo change, and each shot carries its own `beat`.
+**Knob:** top-level `songs`: `[{"song": path, "bars": 16, "pre": 8, "acts": {"teaser": 2, "arrival": null}}, …]`; the
+last song's `bars` may be `null` (whatever fills `length`). `acts` names the acts each song carries, in bars (`null`:
+the rest of that song).
+
+### 16c. The headliner's set saved for the end
+
+**Rule:** the last set's footage (the biggest crowd) stays out of the earlier acts, and the climax and finale cut from
+it first.
+**Code:** `plan.story` with `late`.
+**Knob:** `plan.<fmt>.late`: categories or B-roll tags (substrings), e.g. `["headline"]`.
+
 ## 17. Clean effect masks
 
 **Rule:** subject effects need clean edges.
