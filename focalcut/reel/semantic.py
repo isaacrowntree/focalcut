@@ -1,8 +1,9 @@
 """What a shot shows, from the subject's crop: SigLIP 2 zero-shot on every keyframe of the subject track.
   hips  hips and butt working -- shakes, rolls, the view from behind that animations and shines are about
   face  a face with expression, close enough to read
-against wide / empty / blurry / walking shots. reel.json "hips": false leaves the hips prompts out (scored 0), e.g. for
-an audience filmed at a festival rather than dancers performing. Writes <reel>/scores/<name>_semantic.npz (t, hips, face).
+against wide / empty / blurry / walking shots. reel.json "hips": "movement" scores the hips channel on how someone is
+dancing (hips moving to the music, the whole body in it) with no view-from-behind or body close-up prompts -- for an
+audience filmed at a festival rather than performers; false leaves it out (scored 0). Writes <reel>/scores/<name>_semantic.npz (t, hips, face).
 Resumable; only sources whose subject track exists.
 """
 from __future__ import annotations
@@ -19,6 +20,9 @@ MODEL = "google/siglip2-base-patch16-512"
 GROUPS = {
     "hips": ["a dancer shaking her hips, seen from behind", "a close-up of a dancer's hips and butt while dancing",
              "a woman twerking", "a dancer rolling her hips", "a dancer's body from behind, hips swaying"],
+    "move": ["a dancer moving their hips to the music", "a person dancing energetically with their whole body",
+             "someone swaying and grooving to the beat", "a person dancing hard at a festival",
+             "a dancer bouncing and moving to the rhythm"],
     "face": ["a close-up of a dancer's smiling face", "a dancer laughing", "a dancer with an intense, expressive face",
              "a dancer looking straight at the camera"],
     "none": ["a wide shot of a stage with small dancers far away", "people standing around talking", "a blurry photo",
@@ -45,7 +49,9 @@ def run(project) -> None:
     dt = torch.float16 if dev == "cuda" else torch.float32
     model = AutoModel.from_pretrained(MODEL).to(dev, dt).eval()
     proc = AutoProcessor.from_pretrained(MODEL)
-    groups = {k: g for k, g in GROUPS.items() if k != "hips" or project.config.get("hips", True)}
+    mode = project.config.get("hips", True)
+    hips = {True: "hips", "movement": "move"}.get(mode)         # which prompts feed the hips channel (none: false)
+    groups = {("hips" if k == hips else k): g for k, g in GROUPS.items() if k not in ("hips", "move") or k == hips}
     prompts = [p for g in groups.values() for p in g]
     which = np.array([k for k, g in groups.items() for _ in g])
     with torch.inference_mode():
