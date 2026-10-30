@@ -118,6 +118,53 @@ focalcut cut "clip.mp4" --clips          # -> clip_dancers/ + clip.focalcut.xml
 focalcut cut "/folder" --engine image --clips --copy
 ```
 
+## Recap reels (recipe)
+
+Once a folder is cut and curated, `focalcut reel` builds beat-synced highlight reels from it — a landscape
+cut and a portrait cut, each up to Instagram's 3-minute Reels-tab limit — plus a Premiere timeline for each so
+you can keep editing from the original camera files.
+
+```bash
+pip install "focalcut[reel]"
+focalcut reel init "/footage/Show 2026" --song "track.mp3" \
+    --stinger-landscape end_16x9.mov --stinger-portrait end_9x16.mov
+focalcut reel run "/footage/Show 2026"        # units -> score -> shake -> focus -> subject -> … -> xml -> review
+```
+
+It reads your curated `export/<category>/` folders (category names set each clip's role: `segments` are
+dancing, `broll` is B-roll, anything else is a show) and finds who each shot is about — SAM 3 person masks
+scored by BiRefNet saliency and Depth Anything V2 nearness, so a dancer in motion blur still beats a sharp
+bystander. Every shot is reframed around that subject (a 4K source can be cropped 1.6× for a 1080p reel), and
+moments where the head is cut off by the camera's frame are marked down. It ranks moves — spins, dips, tricks,
+hip shakes (SigLIP 2 on the subject's crop), close-ups with strong expressions — and cuts a story in acts to
+the beat: an opening on the festival with the event's logo, the day's arrival, the shows, the night, a climax
+of short cuts and speed ramps, and a finale. It cuts the way music videos are cut:
+- shot lengths in varied 8-beat phrases that follow the music, rather than one length over and over
+- move peaks on the beat, and cuts a couple of frames ahead of it
+- every clip used, its shots shuffled through the others like a card shuffle
+- each cut carrying the movement on: a turn into a turn, travel continuing the same way
+Speed ramps are velocity edits: fast through the move (never above 1.5x on dancing), slowing to land exactly as
+the dancer does, holding so hair and faces play out, then easing back up. Most cuts are hard cuts on the beat; each
+act has a short vocabulary of transitions, and one goes in only where the cut has a reason (a spin cut between two
+turns, a whip when the same travel carries across, a push in to a face, a flash on a big hit). Camera shake is
+measured, so shaky stretches give way to steadier ones and mildly shaky shots are stabilised. In portrait the strip
+follows one dancer of a couple dancing apart and favours faces over backs. Band players cut in on the musical hits,
+and the reel can end on a shot you choose. See [docs/recipes/recap-reel.md](docs/recipes/recap-reel.md).
+
+Every one of these is a reusable piece. `plan.place()` turns any hand-built sequence of shots into a plan that
+renders and exports like a reel, so a teaser, a highlight or a promo uses the same rules (see
+[skills/focalcut/examples/teaser.py](skills/focalcut/examples/teaser.py)). [skills/focalcut](skills/focalcut/SKILL.md)
+is a Claude Code skill that lists each concept with the code behind it. To install it, run
+`ln -s "$PWD/skills/focalcut" ~/.claude/skills/focalcut`.
+
+The effects are standalone modules too:
+
+```bash
+focalcut fx list
+focalcut fx apply clip.mp4 -e hero,neon --peak 1.2
+focalcut fx gallery clip.mp4                  # every effect side by side
+```
+
 ## Benchmark
 
 `bench/` scores predicted cuts against hand-labelled ground truth — boundary

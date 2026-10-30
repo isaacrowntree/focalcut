@@ -3,7 +3,7 @@
 Pass one file or many (a whole folder of clips). The SAM 3 model is loaded once and
 reused across every clip, so batch runs amortise the load cost.
 
-Only `cut` needs SAM 3 (and therefore torch). The recommended contact-sheet pipeline
+Only `cut`, `reel` (scoring, faces, effects) and `fx` need torch / opencv. The recommended contact-sheet pipeline
 (`library`, `sheet`, `export`) is GPU-free, so the torch-backed modules are imported
 lazily inside `cut` — importing them here would make `pip install focalcut` drag in the
 whole CUDA stack for users who never touch the SAM engines.
@@ -239,9 +239,70 @@ def cmd_sheet(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reel_init(a: argparse.Namespace) -> int:
+    """Write <folder>/focalcut/reel/reel.json (merging into an existing one)."""
+    from .reel.project import Project
+    pr = Project(a.folder)
+    cfg = pr.config
+    cfg["song"] = os.path.abspath(a.song)
+    if a.start is not None:
+        cfg["start"] = a.start if a.start == "auto" else float(a.start)
+    cfg.setdefault("start", "auto")
+    if a.length is not None:
+        cfg["length"] = a.length
+    cfg.setdefault("length", 180)
+    st = cfg.setdefault("stingers", {})
+    if a.stinger_landscape:
+        st["landscape"] = os.path.abspath(a.stinger_landscape)
+    if a.stinger_portrait:
+        st["portrait"] = os.path.abspath(a.stinger_portrait)
+    print(pr.save_config())
+    return 0
+
+
+def cmd_reel_run(a: argparse.Namespace) -> int:
+    from . import reel
+    steps = a.steps.split(",") if a.steps else None
+    bad = [s for s in steps or [] if s not in reel.STEPS]
+    if bad:
+        print(f"unknown step(s): {bad}; choose from {reel.STEPS}", file=sys.stderr)
+        return 2
+    reel.run(a.folder, steps=steps, formats=a.formats.split(","), workers=a.workers, draft=a.draft)
+    return 0
+
+
+def cmd_fx(a: argparse.Namespace) -> int:
+    from .fx.__main__ import main as fx_main
+    fx_main(a.args)
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="focalcut")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    rl = sub.add_parser("reel", help="beat-synced recap reels from a curated export folder")
+    rsub = rl.add_subparsers(dest="reel_cmd", required=True)
+    ri = rsub.add_parser("init", help="write the reel config (song, start, length, stingers)")
+    ri.add_argument("folder")
+    ri.add_argument("--song", required=True, help="the track to cut to")
+    ri.add_argument("--start", help='"auto" (first bar after the intro, default) or seconds')
+    ri.add_argument("--length", type=float, help="total reel length in seconds, stinger included (default 180)")
+    ri.add_argument("--stinger-landscape", help="16:9 end stinger")
+    ri.add_argument("--stinger-portrait", help="9:16 end stinger")
+    ri.set_defaults(func=cmd_reel_init)
+    rr = rsub.add_parser("run", help="run the pipeline (or chosen steps)")
+    rr.add_argument("folder")
+    rr.add_argument("--steps", help="comma list of steps: units,score,shake,focus,subject,semantic,moments,faces,music,plan,render,xml,review "
+                    "(default: all)")
+    rr.add_argument("--formats", default="landscape,portrait")
+    rr.add_argument("--workers", type=int, default=2, help="scoring processes (2 suits a 12 GB GPU)")
+    rr.add_argument("--draft", action="store_true", help="render without effects or transitions (fast check)")
+    rr.set_defaults(func=cmd_reel_run)
+
+    fxp = sub.add_parser("fx", help="apply effect modules to a clip (list | apply | gallery)")
+    fxp.add_argument("args", nargs=argparse.REMAINDER)
+    fxp.set_defaults(func=cmd_fx)
 
     lb = sub.add_parser("library", help="coarse pass: build a contact sheet per clip in a folder (no cutting)")
     lb.add_argument("folder")
