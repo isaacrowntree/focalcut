@@ -40,13 +40,15 @@ L_WRI, R_WRI, L_ANK, R_ANK = 9, 10, 15, 16
 
 
 def clarity(luma, contrast, ring):
-    """How clearly the subject reads, 0.1..1: lit (a well-exposed subject with detail in it) or silhouetted (a dark
-    figure cut out against something bright: stage lights, a lit crowd), not murky (dim on dim, no contrast) and not
-    blown out. Night footage lives or dies on this."""
-    lit = np.clip((luma - 35) / 60, 0, 1) * np.clip((235 - luma) / 30, 0, 1)
+    """How clearly the subject reads, 0.1..1. What counts is definition, not brightness: a subject with detail in it,
+    or one that stands apart from what's behind it (a silhouette against stage lights is the extreme), reads even
+    when dim. Only near-black, blown-out and murky (dim on dim, no detail, no separation) shots are marked down."""
+    exposed = np.clip((luma - 15) / 30, 0, 1) * np.clip((235 - luma) / 30, 0, 1)
+    detail = np.clip((contrast - 15) / 20, 0, 1)
+    apart = np.clip((np.abs(ring - luma) - 15) / 30, 0, 1)
     sil = np.clip((ring - luma - 35) / 50, 0, 1) * np.clip((ring - 70) / 50, 0, 1)
-    detail = np.clip(contrast / 45, 0, 1)
-    return np.clip(np.maximum(lit * (0.45 + 0.55 * detail), sil * (0.6 + 0.4 * detail)), 0.1, 1)
+    return np.clip(np.maximum(exposed * (0.1 + 0.9 * np.maximum(detail, apart)), sil), 0.1, 1)
+
 
 def iou(a, b):
     x0, y0 = max(a[0], b[0]), max(a[1], b[1]); x1, y1 = min(a[2], b[2]), min(a[3], b[3])
