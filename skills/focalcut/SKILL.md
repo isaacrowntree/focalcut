@@ -30,7 +30,7 @@ cd <repo> && python -m venv .venv && .venv/bin/pip install -e ".[reel]"   # once
 
 1. **A full recap reel** (landscape + portrait, a story in acts):
    `focalcut reel init <folder> --song x.mp3 …`, then `focalcut reel run <folder>`.
-   Steps: units, score, shake, focus, subject, semantic, moments, faces, music, plan, render, xml, review.
+   Steps: units, score, shake, focus, subject, semantic, moments, faces, people, music, plan, render, xml, review.
    Each step caches, so `--steps plan,render,xml,review` re-cuts in minutes. Full guide:
    `docs/recipes/recap-reel.md`.
 2. **Any other cut** (teaser, a player's highlight, a band promo, a 15 s story) from an analysed project:
@@ -74,6 +74,7 @@ Read `references/concepts.md` for the rule, the reason, the numbers and the code
 | Several songs | one song per act (a festival's sets), each around its drop, crossfaded beat on beat or cut on the downbeat; never remixed | `music.join/mix`, `plan.clock` | top-level `songs` |
 | Headliner last | the last set's footage kept for the climax and finale | `plan.story` | `late` |
 | EDM light show | MilkDrop-style presets (tunnels, mandala, kaleidoscope, lasers, particles, plasma, flame) in changing palettes every 8 bars, beat blinks, drop bursts; ≤1 full flash per beat | `overlay.py` | top-level `overlay` |
+| Everyone in it | every person found by face (YuNet + SFace, grouped across clips) and every kiss (SigLIP 2) gets a shot; the moment showing the most missing people goes in first, splitting long shots when needed | `people.py`, `plan.cover_people` | — (the `people` step) |
 | Clean masks | BiRefNet matte inside the SAM 3 mask, never raw upscaled SAM | `fx/masks.py` | — |
 
 ## Before rendering, check the plan against the rules

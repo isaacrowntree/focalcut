@@ -400,6 +400,118 @@ def include_adds(P, seq, recs, home):
             seq[i] = P.take(r, m, beats=old["beats"], act=act); seq[i]["add"] = True   # (the act's grid stays exact)
 
 
+KISS_Q = 0.92            # SigLIP kiss confidence that makes a kiss a must-have
+SEEN = 0.045             # a face this big (fraction of frame height) counts as the person being in the shot
+
+
+def split_for(seq, cover, count, shows, items, act, clip, role="dance"):
+    """A shot to split for an extra one after it: long enough (4+ beats, so both keep 2; 3+ in the climax),
+    plain, and still showing everyone it is the only shot of once it is shorter. The longest in the act first."""
+    def ok(i):
+        x = seq[i]
+        need = 3 if x["act"] == "climax" else 4                    # both halves keep 2 beats (climax: 1 for the insert)
+        if (x["beats"] < need or x["fx"] or x.get("ending") or x.get("logo") or x.get("band") or x.get("reaction")
+                or not 0 < i < len(seq) - 1 or clip in (x["unit"]["clip"], seq[i + 1]["unit"]["clip"])
+                or (role == "transition" and "transition" in (x["unit"]["role"], seq[i + 1]["unit"]["role"]))):
+            return False                                         # (no B-roll beside B-roll)
+        short = dict(x, beats=x["beats"] - (2 if x["beats"] >= 4 else 1))
+        return all(count[c] > 1 or shows(short, items[c]) for c in cover[i])
+    idx = [i for i in range(len(seq)) if seq[i]["act"] == act and ok(i)] or \
+        [i for i in range(len(seq)) if seq[i]["act"] not in ("teaser", "finale") and ok(i)]
+    return max(idx, key=lambda i: (seq[i]["act"] == act, seq[i]["beats"])) if idx else None
+
+
+def cover_people(P, seq, recs, home, people, fmt, beat):
+    """Everyone in it (people.json: the people step): every kiss, then every person not yet seen in a shot. The
+    moment that shows the most people still missing goes in first (a group beats a single face), in place of the
+    weakest plain shot in its act -- never a shot that is someone's only appearance, never one that would take a
+    unit out of the reel, never beside its own clip -- or, when there is no such shot, by splitting a long one
+    (split_for). A person is in a shot when their face is big enough inside the shot's stretch (and, in portrait,
+    inside the 9:16 strip). Returns (people shown, people, kisses shown, kisses)."""
+    if not people:
+        return None
+    by = {r["unit"]["id"]: r for r in recs if r["moments"]}
+    half_w = 0.28 if fmt == "portrait" else 0.5
+
+    def window(x):
+        h = x["beats"] * beat / 2 + 0.25
+        return x["unit"]["id"], x["t"] - h, x["t"] + h
+
+    def shows(x, item):
+        uid, a, b = window(x)
+        if item[0] == "kiss":
+            return item[1] == uid and a <= item[2] <= b
+        return any(ap["unit"] == uid and a <= ap["t"] <= b and ap["h"] >= SEEN and abs(ap["cx"] - 0.5) <= half_w
+                   for ap in item[1]["appearances"])
+
+    kisses = [("kiss", u, t) for u, v in (people.get("kisses") or {}).items() for t, q in v if q >= KISS_Q]
+    persons = [("person", p) for p in people.get("people", [])]
+    items = kisses + persons
+    cover = [[j for j, it in enumerate(items) if shows(x, it)] for x in seq]
+    count = np.zeros(len(items), int)
+    for c in cover:
+        count[c] += 1
+    # every moment a shot could be made of: kisses, and each person's clear, framed appearances (half-second grid)
+    spots = {(u, t) for _, u, t in kisses}
+    for _, p in persons:
+        spots |= {(a["unit"], round(a["t"] * 2) / 2) for a in p["appearances"]
+                  if a["unit"] in by and a["h"] >= SEEN * 1.3 and abs(a["cx"] - 0.5) <= half_w}
+    probe = {sp: [k for k, it in enumerate(items) if shows(dict(unit=dict(id=sp[0]), t=sp[1], beats=2), it)]
+             for sp in spots}
+    tried = set()
+    while True:
+        gain = {sp: [k for k in ks if not count[k]] for sp, ks in probe.items() if sp not in tried}
+        gain = {sp: ks for sp, ks in gain.items() if ks}
+        if not gain:
+            break
+        sp = max(gain, key=lambda sp: (any(items[k][0] == "kiss" for k in gain[sp]), len(gain[sp])))
+        tried.add(sp)
+        r, t = by[sp[0]], sp[1]
+        near = min(r["moments"], key=lambda m: abs(m["t"] - t))
+        m = dict(near, t=t, pick=True)
+        act = home.get(r["id"], "night" if r["role"] == "transition" else "climax")
+        clip = r["unit"]["clip"]
+        units = {}
+        for x in seq:
+            units[x["unit"]["id"]] = units.get(x["unit"]["id"], 0) + 1
+
+        def ok(i, r=r, clip=clip, units=units):
+            x = seq[i]
+            return (not x["fx"] and not x.get("reaction") and not x.get("ending") and not x.get("band")
+                    and not x.get("logo") and not x.get("add") and 0 < i < len(seq) - 1
+                    and units[x["unit"]["id"]] > 1 and all(count[c] > 1 for c in cover[i])
+                    and clip not in (seq[i - 1]["unit"]["clip"], seq[i + 1]["unit"]["clip"])
+                    and not (r["role"] == "transition" and "transition" in (seq[i - 1]["unit"]["role"],
+                                                                            seq[i + 1]["unit"]["role"])))
+        idx = [i for i in range(len(seq)) if seq[i]["act"] == act and ok(i)] or \
+            [i for i in range(len(seq)) if seq[i]["act"] not in ("teaser", "finale") and ok(i)]
+        if idx:                                                  # take a plain shot's place
+            i = max(idx, key=lambda i: (seq[i]["act"] == act, P.load(seq[i]["unit"]["clip"]), -seq[i]["rank"]))
+            old = seq[i]
+            P.count[old["unit"]["clip"]] -= 1
+            count[cover[i]] -= 1
+            seq[i] = P.take(r, m, beats=old["beats"], act=old["act"])   # (the grid stays exact)
+        else:                                                    # or split one: it keeps most of its beats
+            i = split_for(seq, cover, count, shows, items, act, clip, r["role"])
+            if i is None:
+                continue
+            old = seq[i]
+            give = 2 if old["beats"] >= 4 else 1
+            count[cover[i]] -= 1
+            old["beats"] -= give
+            cover[i] = [k for k, it in enumerate(items) if shows(old, it)]
+            count[cover[i]] += 1
+            i += 1
+            seq.insert(i, P.take(r, m, beats=give, act=old["act"]))
+            cover.insert(i, [])
+        seq[i]["add"] = True
+        seq[i]["person"] = True
+        cover[i] = [k for k, it in enumerate(items) if shows(seq[i], it)]
+        count[cover[i]] += 1
+    nk = len(kisses)
+    return int((count[nk:] > 0).sum()), len(persons), int((count[:nk] > 0).sum()), nk
+
+
 def _secs(x):
     """'1:23.5' or 83.5 -> seconds."""
     if isinstance(x, (int, float)):
@@ -723,6 +835,9 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None):
     seq += fit(fi, budget["finale"], 2)
     cover_all(P, seq, recs, home)
     include_adds(P, seq, recs, home)
+    cov = cover_people(P, seq, recs, home, cfg.get("people"), fmt, music["beat"])
+    if cov:
+        print(f"[reel] {fmt}: people shown {cov[0]}/{cov[1]}, kisses {cov[2]}/{cov[3]}")
     band_in(P, seq, recs, music, cfg)
     # an act's first and last shots carry its signature transition: give them at least 2 beats, from a neighbour
     for k, s in enumerate(seq):
@@ -941,6 +1056,8 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     format (framing, face, shake) first."""
     picks = project.picks() if picks is None else picks
     cfg = config(project, fmt)
+    if os.path.exists(project.path("people.json")):          # everyone in it (the people step)
+        cfg["people"] = project.load("people.json")
     moments = copy.deepcopy(moments)
     if picks:
         apply_picks(moments, picks)

@@ -2,6 +2,7 @@
 No GPU, no models: scores and moments are synthesised."""
 from __future__ import annotations
 
+import copy
 import json
 import os
 from itertools import pairwise
@@ -806,3 +807,48 @@ def test_clarity_favours_defined_subjects_over_murky_ones():
     assert lit == silhouette == 1.0
     assert murky < 0.25 and blown < 0.2
     assert c(40, 35, 45) > 0.8 and c(35, 20, 80) > 0.6               # dim but defined: detail, or set apart
+
+
+def test_everyone_and_every_kiss_gets_a_shot(tmp_path):
+    pr, music, moments = fake_reel(tmp_path, n_units=20)
+    people, kisses = [], {"U05": [[40.0, 0.98], [70.0, 0.5]]}          # the second kiss is unsure: not required
+    for i in range(30):                                                # 30 people, each seen in one unit only
+        u = f"U{i % 20:02d}"
+        t = 10.0 + 2.5 * (i // 20) + 30 * (i % 3)
+        apps = [dict(unit=u, t=t + d, cx=0.5, cy=0.4, h=0.12, q=0.8) for d in (0.0, 0.5)]
+        people.append(dict(id=i + 1, units=[u], best=apps[0], appearances=apps))
+    os.makedirs(os.path.dirname(pr.path("people.json")), exist_ok=True)
+    with open(pr.path("people.json"), "w") as f:
+        json.dump(dict(people=people, kisses=kisses), f)
+    plan = P.build(pr, "landscape", music, moments, stinger_len=0.0)
+    shots, beat = plan["shots"], plan["beat"]
+
+    def shown(p):
+        return any(s["unit"]["id"] == a["unit"] and abs(s["t"] - a["t"]) <= s["beats"] * beat / 2 + 0.25
+                   for s in shots for a in p["appearances"])
+    assert sum(map(shown, people)) >= 27                               # (a few may have no free slot)
+    assert any(s["unit"]["id"] == "U05" and abs(s["t"] - 40.0) <= s["beats"] * beat / 2 + 0.25 for s in shots)
+    assert len({s["unit"]["id"] for s in shots}) == 20                 # still every unit
+    assert sum(s["beats"] for s in shots) == sum(s["beats"] for s in P.build(
+        pr, "landscape", music, copy.deepcopy(moments), stinger_len=0.0)["shots"])
+
+
+def test_faces_are_tracked_through_lighting_changes():
+    from focalcut.reel.people import tracks_in
+    rng = np.random.default_rng(0)
+    a, b = rng.normal(size=128), rng.normal(size=128)
+    emb = []
+    for k in range(6):                                                 # person A drifts in embedding, steady in place
+        e = a + rng.normal(size=128) * (0.4 * k)
+        emb.append(e / np.linalg.norm(e))
+    emb.append(b / np.linalg.norm(b))                                  # someone else, across the frame
+    d = dict(t=np.array([0, 0.5, 1, 1.5, 2, 2.5, 1.0]), cx=np.array([0.3] * 6 + [0.8]),
+             cy=np.full(7, 0.4), h=np.full(7, 0.15), emb=np.array(emb, np.float32))
+    groups = sorted(sorted(g.tolist()) for g in tracks_in(d))
+    assert groups == [[0, 1, 2, 3, 4, 5], [6]]
+
+
+def test_effects_clear_the_centre_of_the_frame():
+    from focalcut.reel.overlay import edge_mask
+    m = edge_mask(320, 180, 0.3)
+    assert m[90, 160, 0] == 0 and m[0, 0, 0] == 1 and 0 < m[90, 230, 0] < 1

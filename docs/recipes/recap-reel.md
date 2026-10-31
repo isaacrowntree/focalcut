@@ -48,7 +48,7 @@ Everything the recipe writes goes to `focalcut/reel/`: `reel.json` (settings), `
 | `picks` | the editor's calls, by export file name, times in that file's own timeline: `{"C2025": {"ban": ["0:00-0:20"], "prefer": ["0:41-0:46"], "add": ["1:12.5"], "more": 2}, "C1984-05_couple": {"ban": ["all"]}}` (`add`: extra shots the reel must include; `more`: more shots from that clip). Merged over `focalcut/reel/picks.json`, which is the easier place to keep them |
 | `name` | output file prefix (default: the folder name) |
 | `hips` | `"movement"`: the semantic step scores hips on how someone dances (hips moving to the music, the whole body in it), with no view-from-behind or body close-up prompts — for an audience filmed at a festival, not performers. `false` leaves it out (scored 0) |
-| `overlay` | `true` (or `{"strength": {act: 0..1}, "opacity": 0..1, "presets": [[[effects], palette], ...], "beat": [...]}`): a MilkDrop-style light show over the cut, driven by the mix. A new preset every 8 bars, each two or three effects in one palette: geometric (`tunnel`, `mandala`, `kaleido`, `lasers`, `grid`), particles (`starfield`, `embers`, `confetti`, `bokeh`, `sparks`), light (`plasma`, `leaks`, `flare`, `flame`); palettes `neon`, `synthwave`, `vaporwave`, `acid`, `halloween`, `ice`, `fire`, `rainbow`. Beat layer: a blink and zoom punch every beat, RGB split on bars, and on drops a white flash, kaleidoscope flood, duotone recolour and confetti and spark bursts. Calmer presets and less strength in the day acts; eased back under the logo; light goes into the dark parts of the frame. `"engine": "milkdrop"` swaps the hand-built presets for real MilkDrop ones (Butterchurn in headless Chromium on the GPU, driven frame by frame from the mix; `milkdrop` / `milkdrop_calm` name the presets), keyed by brightness and saturation so only their light shows; needs `node` and a Chromium (`FOCALCUT_CHROME`, else Playwright's). Not in the Premiere XML |
+| `overlay` | `true` (or `{"strength": {act: 0..1}, "opacity": 0..1, "presets": [[[effects], palette], ...], "beat": [...]}`): a MilkDrop-style light show over the cut, driven by the mix. A new preset every 8 bars, each two or three effects in one palette: geometric (`tunnel`, `mandala`, `kaleido`, `lasers`, `grid`), particles (`starfield`, `embers`, `confetti`, `bokeh`, `sparks`), light (`plasma`, `leaks`, `flare`, `flame`); palettes `neon`, `synthwave`, `vaporwave`, `acid`, `halloween`, `ice`, `fire`, `rainbow`. Beat layer: a blink and zoom punch every beat, RGB split on bars, and on drops a white flash, kaleidoscope flood, duotone recolour and confetti and spark bursts. Calmer presets and less strength in the day acts; eased back under the logo; light goes into the dark parts of the frame. `"engine": "milkdrop"` swaps the hand-built presets for real MilkDrop ones (Butterchurn in headless Chromium on the GPU, driven frame by frame from the mix; `milkdrop` / `milkdrop_calm` name the presets), keyed by brightness and saturation so only their light shows; needs `node` and a Chromium (`FOCALCUT_CHROME`, else Playwright's). Every effect fades out towards the centre of the frame, where the subject is (`"clear"`: the clear radius, default 0.3 of the half-frame). Not in the Premiere XML |
 | `logo` | the event's logo (a PNG with transparency) — laid big and centred over the opening shots |
 | `plan` | per-format overrides of the planner: `acts` (`[["teaser", 0, 2], ["arrival", 2, 12], …]` in bars — put them on your song's section changes), `split` (the default act proportions), `opening` (B-roll tags the reel opens on, best first), `day` (B-roll tag keywords for the arrival act), `day_shows` / `night_shows` (show categories danced by day / at night), `night_pace` (`"medium"` or `"fast"`), `heroes`, `grammar` / `caps` / `flash_at` (each act's transitions, how many of each, how hard a beat must hit for a flash), `members` / `member_clips` (B-roll tags and clips of individual band players), `band_in` (player inserts per act), `ending` (`["C2023", 126.6, 133.4, 0.45]`: the last shot, export file and its own seconds, optional crop centre), `shake` (`[0.0012, 0.006]`: stabilise above the first, avoid above the second), `late` (categories or B-roll tags kept for the climax and finale, e.g. the headliner's set) |
 
@@ -92,10 +92,19 @@ Everything the recipe writes goes to `focalcut/reel/`: `reel.json` (settings), `
    routines rarely show their best in the walk-on.
 8. **faces** — a full-resolution frame per moment, face crops from the pose keypoints, and a SigLIP 2 zero-shot
    expression score (joy, laughter, intensity vs. neutral or turned away). Cached, so re-planning is instant.
-9. **music** — librosa beat tracking. Salsa tracks at half-time, so one detected bar is an 8-count, which is the
+9. **people** — everyone in the footage, for events where people asked to be filmed and should all be in it. Each
+   unit's export is sampled twice a second through OpenCV's YuNet face detector and SFace recogniser (built into
+   cv2; MIT / Apache 2.0 models). Faces that move smoothly from one sample to the next are one person whatever the
+   lighting does; tracks that look alike join, inside a unit and then across units. A person counts once seen
+   clearly twice (a confident detection of a usable size). Kisses are found by SigLIP 2 on a frame a second. The
+   plan then makes sure every kiss and as many people as it can are in a shot (`cover_people`): the moment showing
+   the most people still missing goes in first, in place of the weakest plain shot in its act, or by splitting a
+   long shot when nothing can be replaced -- never a shot that is someone's only appearance, never a unit dropped.
+   `review/people.jpg` shows one face per person, numbered, to check nobody was missed.
+10. **music** — librosa beat tracking. Salsa tracks at half-time, so one detected bar is an 8-count, which is the
    cut grid. The window starts on a downbeat and ends on a phrase boundary that keeps the reel inside `length`.
    Each beat's accent (how hard it hits against its neighbours) marks horn stabs and breaks.
-10. **plan** — a story in acts on the song's bars:
+11. **plan** — a story in acts on the song's bars:
 
    | Act | What | Into it |
    |---|---|---|
@@ -114,13 +123,13 @@ Everything the recipe writes goes to `focalcut/reel/`: `reel.json` (settings), `
    subject centred: one zoom per shot, the centre gliding with the dancers like a camera operator. Between the
    subject step's keyframes (~1 s apart) the crop follows the subject's own pose boxes at 5 fps, and a portrait
    strip cut from landscape footage (a third of the frame wide) follows twice as fast.
-11. **render** — 1080p 50 fps (Instagram's ceiling), effects and transitions applied, music mixed to −14 LUFS.
-12. **xml** — an FCP7 XML per reel for Premiere: plain shots link the original camera files (scaled to fit, with
+12. **render** — 1080p 50 fps (Instagram's ceiling), effects and transitions applied, music mixed to −14 LUFS.
+13. **xml** — an FCP7 XML per reel for Premiere: plain shots link the original camera files (scaled to fit, with
    handles); shots with effects, transitions, reframing or rotation use their rendered files (copied to
    `out/<fmt>_media/`), with the untouched source on a disabled track above. The song sits on A1 from the
    reel's start point, the stinger's sound on A2. Animated position keyframes are avoided — they don't survive
    FCP XML import reliably.
-13. **review** — `review/<fmt>.html`: a frame per shot, from the rendered reel or else its source. Each shot shows
+14. **review** — `review/<fmt>.html`: a frame per shot, from the rendered reel or else its source. Each shot shows
    its export file, the time range it uses in that file, and a copyable picks line. Paste the line into
    `focalcut/reel/picks.json` and leave it as `ban`, or change it to `prefer` with a better range. Then re-run
    `--steps plan,render,xml,review`.

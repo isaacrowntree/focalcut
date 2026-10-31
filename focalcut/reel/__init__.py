@@ -1,6 +1,7 @@
 """Recap reels: beat-synced highlight reels cut from a curated footage folder.
 
-    units -> score -> shake -> focus -> subject -> semantic -> moments -> faces -> music -> plan -> render -> xml -> review
+    units -> score -> shake -> focus -> subject -> semantic -> moments -> faces -> people -> music -> plan -> render
+          -> xml -> review
 
   score     poses, people, camera / subject motion, sharpness and exposure (RT-DETR + ViTPose, 5-10 fps)
   shake     camera jitter per source: shaky stretches are avoided, mildly shaky ones stabilised at render
@@ -8,6 +9,7 @@
   subject   who each shot is about: SAM 3 person masks scored by BiRefNet saliency and Depth Anything V2 nearness
   semantic  what the subject's crop shows (SigLIP 2 zero-shot): hips / butt working, an expressive face
   moments   ranked moves per unit, with how well each frames after reframing the 4K source
+  people    everyone in the footage by face (YuNet + SFace), grouped across clips, so the plan can show every person
   plan      the story in acts, locked to the beat grid; effects and transitions chosen per cut (picks.json: the
             editor's bans and preferences, by export file and time)
   review    a local HTML page per reel: a frame per shot, its export file and time range, a copyable picks line
@@ -24,8 +26,8 @@ import subprocess
 
 from .project import Project
 
-STEPS = ["units", "score", "shake", "focus", "subject", "semantic", "moments", "faces", "music", "plan", "render", "xml",
-         "review"]
+STEPS = ["units", "score", "shake", "focus", "subject", "semantic", "moments", "faces", "people", "music", "plan", "render",
+         "xml", "review"]
 FORMATS = ["landscape", "portrait"]
 
 
@@ -66,5 +68,5 @@ def run(folder: str, steps=None, formats=None, workers: int = 2, draft: bool = F
                 mod.run(project, f)
         elif step in ("shake", "focus"):
             mod.run(project, workers=max(workers, 1) + 1)
-        else:                                       # units, subject, semantic, moments, faces
+        else:                                       # units, subject, semantic, moments, faces, people
             mod.run(project)

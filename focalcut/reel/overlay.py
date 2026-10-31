@@ -22,7 +22,8 @@ effects cross-fade over a beat as one preset hands over to the next.
              duotone burst; song joins count as drops)
 
 Each act has a strength (day sets lighter, night and climax full) and calmer presets in the daytime; shots under
-the logo ease it back so the logo reads. Light goes mostly into the dark parts of the frame, so faces stay clean.
+the logo ease it back so the logo reads. Every effect fades out towards the centre of the frame, where the subject
+is, so the subject is always seen clean (reel.json "clear": the clear radius). Light goes mostly into the dark parts of the frame, so faces stay clean.
 Full-frame flashes never come faster than one per beat (photosensitivity: about 2 a second at 125 BPM).
 
 reel.json: "overlay": true, or {"strength": {act: 0..1}, "opacity": 0..1, "presets": [[effects], palette], ...],
@@ -79,7 +80,7 @@ def options(cfg) -> dict | None:
     if not cfg:
         return None
     cfg = {} if cfg is True else dict(cfg)
-    return dict(strength={**STRENGTH, **cfg.get("strength", {})}, opacity=float(cfg.get("opacity", 1.0)),
+    return dict(strength={**STRENGTH, **cfg.get("strength", {})}, opacity=float(cfg.get("opacity", 1.0)), clear=float(cfg.get("clear", 0.3)),
                 presets=[(list(e), p) for e, p in cfg.get("presets", PRESETS)],
                 beat=tuple(cfg.get("beat", ("kick", "split", "drops"))), engine=cfg.get("engine", "builtin"),
                 milkdrop=list(cfg.get("milkdrop", MILKDROP)), milkdrop_calm=list(cfg.get("milkdrop_calm", MILKDROP_CALM)))
@@ -230,6 +231,7 @@ class Show:
         q = np.mgrid[0:h // 4, 0:w // 4].astype(np.float32) / max(h, w) * 4
         self.qy, self.qx = q[0], q[1]
         self.weight = {}
+        self.edge = None                                         # full-size centre mask (set by apply)
         self.pal, self.ramp = Palette("neon"), Palette("neon").ramp()
         self.fire = np.zeros((h, w), np.float32)
         self.burst = np.zeros((h, w, 3), np.float32)
@@ -480,6 +482,16 @@ def key(md, W, H):
     return cv2.resize(a, (W, H), interpolation=cv2.INTER_LINEAR)[..., None]
 
 
+def edge_mask(W, H, clear=0.3):
+    """Where the effects may show, (H, W, 1) in 0..1: nothing in the centre of the frame, where the subject is (the
+    crop keeps them there), fading in to full strength towards the edges. clear: the radius of the clear centre as a
+    fraction of the half-frame (an ellipse, so it fits both formats); the fade takes as long again."""
+    y, x = np.mgrid[0:H, 0:W].astype(np.float32)
+    e = np.hypot((x - W / 2) / (W / 2), (y - H / 2) / (H / 2))
+    m = np.clip((e - clear) / max(clear, 0.15), 0, 1)
+    return (m * m * (3 - 2 * m))[..., None]                       # smoothstep: no visible ring
+
+
 def zoom(f, z):
     H, W = f.shape[:2]
     M = cv2.getRotationMatrix2D((W / 2, H / 2), 0, z)
@@ -517,11 +529,11 @@ def frame(f, k, show, F, G, S, preset, opts, md=None):
     a *= s
     if a > 0.02:
         c["frame"] = f
-        x = x * (1 - a) + cv2.resize(show.kaleido(c), up) * a
+        x = x * (1 - a * show.edge) + cv2.resize(show.kaleido(c), up) * (a * show.edge)
     if drop >= 0:                                                # and recolours the footage into the palette
         d = 0.6 * s * float(np.exp(-since / (0.8 * beat))) * (1.0 if drop == 0 else 0.6) * (0.5 if md is not None else 1)
         if d > 0.02:
-            x = x * (1 - d) + show.duotone(f) * d
+            x = x * (1 - d * show.edge) + show.duotone(f) * (d * show.edge)
     light = None
     for e in LIGHT:
         wgt = show.weight.get(e, 0)
@@ -532,9 +544,9 @@ def frame(f, k, show, F, G, S, preset, opts, md=None):
     if light is not None:
         dark = 1.15 - x.mean(-1, keepdims=True) / 255            # light goes mostly into the dark: faces stay clean
         light = cv2.resize(np.clip(light, 0, 255), up, interpolation=cv2.INTER_LINEAR)
-        x = 255 - (255 - x) * (255 - light * np.minimum(1.0, s * dark)) / 255
+        x = 255 - (255 - x) * (255 - light * np.minimum(1.0, s * dark) * show.edge) / 255
     if md is not None:                                           # the MilkDrop layer, keyed: its light, cut out
-        am = key(md, show.W, show.H) * s * (0.6 + 0.3 * kick + 0.1 * min(bass, 1.0))
+        am = key(md, show.W, show.H) * s * (0.6 + 0.3 * kick + 0.1 * min(bass, 1.0)) * show.edge
         x = x * (1 - am) + cv2.resize(md, up, interpolation=cv2.INTER_LINEAR).astype(np.float32) * am
     blink = (0.14 if down else 0.07) * s * kick if "kick" in B else 0.0
     if "drops" in B and drop >= 0:
@@ -596,6 +608,7 @@ def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, en
     S = strength(plan, n, opts)
     A = acts(plan, n)
     show = Show(W, H, fps, plan["beat"], np.random.default_rng(7))
+    show.edge = edge_mask(W, H, opts["clear"])
     layer = None
     if opts["engine"] == "milkdrop":                             # drop bursts only; the visuals are MilkDrop's
         pals = list(HEX) + ["rainbow"]
