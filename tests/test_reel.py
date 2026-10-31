@@ -851,4 +851,4 @@ def test_faces_are_tracked_through_lighting_changes():
 def test_effects_clear_the_centre_of_the_frame():
     from focalcut.reel.overlay import edge_mask
     m = edge_mask(320, 180, 0.3)
-    assert m[90, 160, 0] == 0 and m[0, 0, 0] == 1 and 0 < m[90, 230, 0] < 1
+    assert m[90, 160, 0] == 0 and m[0, 0, 0] == 1 and 0 < m[90, 250, 0] < 1

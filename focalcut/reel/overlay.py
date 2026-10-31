@@ -23,7 +23,9 @@ effects cross-fade over a beat as one preset hands over to the next.
 
 Each act has a strength (day sets lighter, night and climax full) and calmer presets in the daytime; shots under
 the logo ease it back so the logo reads. Every effect fades out towards the centre of the frame, where the subject
-is, so the subject is always seen clean (reel.json "clear": the clear radius). Light goes mostly into the dark parts of the frame, so faces stay clean.
+is, so the subject is always seen clean (reel.json "clear": the clear radius). With MilkDrop the footage also fades to
+near black towards the edges ("vignette": how dark) and MilkDrop fills them in, rendered at full size; pattern
+presets are zoomed in 2x ("milkdrop_zoom"). Light goes mostly into the dark parts of the frame, so faces stay clean.
 Full-frame flashes never come faster than one per beat (photosensitivity: about 2 a second at 125 BPM).
 
 reel.json: "overlay": true, or {"strength": {act: 0..1}, "opacity": 0..1, "presets": [[effects], palette], ...],
@@ -69,6 +71,11 @@ MILKDROP = [                                       # real MilkDrop presets (Butt
     "martin - tunnel race", "martin - cope - laser dome", "Phat+fiShbRaiN+Eo.S_Mandala_Chasers_remix",
     "flexi - jelly fish mandala", "Rovastar - Explosive Minds", "martin - dark galaxy", "martin - into the fireworks",
 ]
+MILKDROP_ZOOM = {                                  # pattern-filling presets read better zoomed in: bigger, bolder shapes
+    "Cope - The Neverending Explosion of Red Liquid Fire": 2, "ech0 - liquid firesticks I": 2, "martin - ice flames": 2,
+    "Rovastar + Geiss - Hyperspace - kaleidoscope": 2, "Rovastar + Geiss - Hyperkaleidoscope Glow 2 motion blur (Jelly)": 2,
+    "Phat+fiShbRaiN+Eo.S_Mandala_Chasers_remix": 2, "flexi - jelly fish mandala": 2, "Rovastar - Explosive Minds": 2,
+}
 MILKDROP_CALM = ["martin - dark galaxy", "martin - into the fireworks",
                  "Rovastar + Geiss - Hyperkaleidoscope Glow 2 motion blur (Jelly)", "martin - ice flames"]
 BUTTERCHURN = ["butterchurn@2.6.7/lib/butterchurn.min.js", "butterchurn-presets@2.4.7/lib/butterchurnPresets.min.js",
@@ -80,10 +87,11 @@ def options(cfg) -> dict | None:
     if not cfg:
         return None
     cfg = {} if cfg is True else dict(cfg)
-    return dict(strength={**STRENGTH, **cfg.get("strength", {})}, opacity=float(cfg.get("opacity", 1.0)), clear=float(cfg.get("clear", 0.3)),
+    return dict(strength={**STRENGTH, **cfg.get("strength", {})}, opacity=float(cfg.get("opacity", 1.0)), clear=float(cfg.get("clear", 0.42)),
                 presets=[(list(e), p) for e, p in cfg.get("presets", PRESETS)],
                 beat=tuple(cfg.get("beat", ("kick", "split", "drops"))), engine=cfg.get("engine", "builtin"),
-                milkdrop=list(cfg.get("milkdrop", MILKDROP)), milkdrop_calm=list(cfg.get("milkdrop_calm", MILKDROP_CALM)))
+                milkdrop=list(cfg.get("milkdrop", MILKDROP)), milkdrop_calm=list(cfg.get("milkdrop_calm", MILKDROP_CALM)),
+                milkdrop_zoom={**MILKDROP_ZOOM, **cfg.get("milkdrop_zoom", {})}, vignette=float(cfg.get("vignette", 0.85)))
 
 
 class Palette:
@@ -232,6 +240,7 @@ class Show:
         self.qy, self.qx = q[0], q[1]
         self.weight = {}
         self.edge = None                                         # full-size centre mask (set by apply)
+        self.zoom = None                                         # MilkDrop zoom per frame (set by apply)
         self.pal, self.ramp = Palette("neon"), Palette("neon").ramp()
         self.fire = np.zeros((h, w), np.float32)
         self.burst = np.zeros((h, w, 3), np.float32)
@@ -482,13 +491,13 @@ def key(md, W, H):
     return cv2.resize(a, (W, H), interpolation=cv2.INTER_LINEAR)[..., None]
 
 
-def edge_mask(W, H, clear=0.3):
+def edge_mask(W, H, clear=0.42):
     """Where the effects may show, (H, W, 1) in 0..1: nothing in the centre of the frame, where the subject is (the
     crop keeps them there), fading in to full strength towards the edges. clear: the radius of the clear centre as a
-    fraction of the half-frame (an ellipse, so it fits both formats); the fade takes as long again."""
+    fraction of the half-frame (an ellipse, so it fits both formats); the fade takes another 0.45."""
     y, x = np.mgrid[0:H, 0:W].astype(np.float32)
     e = np.hypot((x - W / 2) / (W / 2), (y - H / 2) / (H / 2))
-    m = np.clip((e - clear) / max(clear, 0.15), 0, 1)
+    m = np.clip((e - clear) / 0.45, 0, 1)
     return (m * m * (3 - 2 * m))[..., None]                       # smoothstep: no visible ring
 
 
@@ -499,6 +508,8 @@ def zoom(f, z):
 
 
 def frame(f, k, show, F, G, S, preset, opts, md=None):
+    """One output frame: the beat layer, the effects (built-in, or the MilkDrop layer md at full size), all clear of
+    the centre; with MilkDrop the footage also fades to near black at the edges and MilkDrop fills them."""
     s, beat, fps = float(S[k]), show.beat, show.fps
     since, down, drop = float(G["since"][k]), bool(G["down"][k]), int(G["drop"][k])
     kick = float(np.exp(-since / (0.22 * beat)))                 # 1 on the beat, gone within half a beat
@@ -545,9 +556,18 @@ def frame(f, k, show, F, G, S, preset, opts, md=None):
         dark = 1.15 - x.mean(-1, keepdims=True) / 255            # light goes mostly into the dark: faces stay clean
         light = cv2.resize(np.clip(light, 0, 255), up, interpolation=cv2.INTER_LINEAR)
         x = 255 - (255 - x) * (255 - light * np.minimum(1.0, s * dark) * show.edge) / 255
-    if md is not None:                                           # the MilkDrop layer, keyed: its light, cut out
-        am = key(md, show.W, show.H) * s * (0.6 + 0.3 * kick + 0.1 * min(bass, 1.0)) * show.edge
-        x = x * (1 - am) + cv2.resize(md, up, interpolation=cv2.INTER_LINEAR).astype(np.float32) * am
+    if md is not None:                                           # the MilkDrop layer
+        z = float(show.zoom[k]) if show.zoom is not None else 1.0
+        if z > 1.01:                                             # zoomed: the centre of it, scaled up
+            h, w = md.shape[:2]
+            cw, ch = int(w / z), int(h / z)
+            md = md[(h - ch) // 2:(h - ch) // 2 + ch, (w - cw) // 2:(w - cw) // 2 + cw]
+        mdu = cv2.resize(md, up, interpolation=cv2.INTER_LINEAR).astype(np.float32)
+        e = show.edge
+        x = x * (1 - opts["vignette"] * min(1.0, 1.2 * s) * e)   # the footage fades to near black at the edges...
+        k_ = key(md, show.W, show.H)                             # ...and MilkDrop fills them in: whole at the edges,
+        am = (k_ + (1 - k_) * e) * e * min(1.0, s * (0.75 + 0.25 * kick))   # keyed nearer the middle, none in it
+        x = x * (1 - am) + mdu * am
     blink = (0.14 if down else 0.07) * s * kick if "kick" in B else 0.0
     if "drops" in B and drop >= 0:
         blink = max(blink, (0.85 if drop == 0 else 0.35) * float(np.exp(-since / (0.12 * beat))))
@@ -613,8 +633,11 @@ def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, en
     if opts["engine"] == "milkdrop":                             # drop bursts only; the visuals are MilkDrop's
         pals = list(HEX) + ["rainbow"]
         P = [([], pals[(int(G["bar"][k]) // 8) % len(pals)]) for k in range(n)]
-        path = milkdrop_layer(os.path.dirname(out), song, plan["music_start"], n, fps, show.w, show.h,
-                              phrases(G, A, opts["milkdrop"], opts["milkdrop_calm"]), plan["beat"])
+        names = phrases(G, A, opts["milkdrop"], opts["milkdrop_calm"])
+        path = milkdrop_layer(os.path.dirname(out), song, plan["music_start"], n, fps, W, H, names, plan["beat"])
+        zk = np.ones(max(1, int(plan["beat"] * fps))) / max(1, int(plan["beat"] * fps))   # zoom eases over a beat
+        z = np.array([opts["milkdrop_zoom"].get(nm, 1) for nm in names], np.float32)
+        show.zoom = np.convolve(np.pad(z, (len(zk) // 2, len(zk) - 1 - len(zk) // 2), mode="edge"), zk, "valid")
         layer = subprocess.Popen(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                                  stdout=subprocess.PIPE)
     else:
@@ -631,8 +654,8 @@ def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, en
         f = np.frombuffer(b, np.uint8).reshape(H, W, 3)
         md = None
         if layer is not None and k < n:
-            lb = layer.stdout.read(show.w * show.h * 3)
-            md = np.frombuffer(lb, np.uint8).reshape(show.h, show.w, 3) if len(lb) == show.w * show.h * 3 else None
+            lb = layer.stdout.read(W * H * 3)
+            md = np.frombuffer(lb, np.uint8).reshape(H, W, 3) if len(lb) == W * H * 3 else None
         g = frame(f, k, show, F, G, S, P[k], opts, md) if k < n else f
         wr.stdin.write(np.ascontiguousarray(g).tobytes())
         k += 1
