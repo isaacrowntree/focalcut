@@ -1,7 +1,8 @@
 """First-pass shot scoring over every source file the units use (reduced resolution).
 
 Per sampled frame (10 fps): global camera motion and subject motion (Farneback flow), sharpness and exposure in the
-main subject box. Every 2nd frame (5 fps): people (RT-DETR) and their 17-point poses (ViTPose).
+main subject box, plus the box's contrast and the brightness of a ring around it (lit, silhouetted or murky: see
+moments.clarity). Every 2nd frame (5 fps): people (RT-DETR) and their 17-point poses (ViTPose).
 Writes <reel>/scores/<name>.npz. Resumable: sources with an existing npz are skipped.
 
 Decoding 4K 10-bit 4:2:2 HEVC is CPU-bound, so sources are shared across a few worker processes; more than two
@@ -115,6 +116,7 @@ def score(folder: str, source: str, out_dir: str) -> str:
     dur, w, h = probe(path)
     t0 = time.time()
     T, CAM, SUBJ, SHARP, LUMA, AREA, CX, NP = [], [], [], [], [], [], [], []
+    CONTR, RING = [], []
     PT, KP, BX = [], [], []
     prev, pending = None, []                      # pending: (frame index, frame, flow magnitude) awaiting people()
 
@@ -135,6 +137,14 @@ def score(folder: str, source: str, out_dir: str) -> str:
             if crop.size >= 100:
                 SHARP[fi] = cv2.Laplacian(crop, cv2.CV_32F).var()
                 LUMA[fi] = crop.mean()
+                CONTR[fi] = crop.std()
+                bw, bh = x1 - x0, y1 - y0                  # a ring half the box's size around it: what it stands against
+                X0, Y0 = max(x0 - bw // 2, 0), max(y0 - bh // 2, 0)
+                X1, Y1 = min(x1 + bw // 2, f.shape[1]), min(y1 + bh // 2, f.shape[0])
+                outer = cv2.cvtColor(f[Y0:Y1, X0:X1], cv2.COLOR_RGB2GRAY).astype(np.float64)
+                n_ring = outer.size - crop.size
+                if n_ring > 100:
+                    RING[fi] = (outer.sum() - crop.astype(np.float64).sum()) / n_ring
             AREA[fi] = (x1 - x0) * (y1 - y0) / (f.shape[0] * f.shape[1])
             CX[fi] = (x0 + x1) / 2 / f.shape[1]
             if mag is not None:                    # flow inside the main person's box, minus the camera's own motion
@@ -151,6 +161,7 @@ def score(folder: str, source: str, out_dir: str) -> str:
         prev = g
         T.append(i / FPS); CAM.append(float(np.median(mag)) if mag is not None else 0.0)
         SUBJ.append(0.0); SHARP.append(0.0); LUMA.append(0.0); AREA.append(0.0); CX.append(0.5); NP.append(0)
+        CONTR.append(0.0); RING.append(0.0)
         if i % 2 == 0:                             # people + poses at 5 fps
             pending.append((i, f, mag))
             if len(pending) == 16:
@@ -159,7 +170,8 @@ def score(folder: str, source: str, out_dir: str) -> str:
         flush()
     os.makedirs(out_dir, exist_ok=True)
     np.savez_compressed(out, t=np.array(T), cam=np.array(CAM), subj=np.array(SUBJ), sharp=np.array(SHARP),
-                        luma=np.array(LUMA), area=np.array(AREA), cx=np.array(CX), npeople=np.array(NP),
+                        luma=np.array(LUMA), contrast=np.array(CONTR), ring=np.array(RING), area=np.array(AREA),
+                        cx=np.array(CX), npeople=np.array(NP),
                         pose_t=np.array(PT), kp=np.array(KP), boxes=np.array(BX), size=np.array([w, h]), dur=dur)
     return f"{source}: {dur:.0f}s in {time.time() - t0:.0f}s"
 

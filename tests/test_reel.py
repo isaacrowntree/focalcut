@@ -797,3 +797,12 @@ def test_overlay_pulses_on_the_beat_and_flashes_on_drops(tmp_path):
                      bar=k, beat_now=True, frame=f)
             for e in every:
                 assert getattr(show, e)(c).shape[:2] == (90, 160), e
+
+
+def test_clarity_favours_lit_and_silhouetted_subjects_over_murky_ones():
+    from focalcut.reel.moments import clarity
+    c = lambda luma, contrast, ring: float(clarity(np.array(luma), np.array(contrast), np.array(ring)))  # noqa: E731
+    lit, silhouette, murky, blown = c(120, 50, 90), c(30, 60, 150), c(40, 18, 45), c(245, 10, 200)
+    assert lit == silhouette == 1.0
+    assert murky < 0.2 and blown < 0.2
+    assert c(55, 30, 50) < c(90, 40, 60) < lit                       # brighter and crisper reads better

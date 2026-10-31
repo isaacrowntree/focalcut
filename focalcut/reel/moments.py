@@ -38,6 +38,16 @@ NOSE, L_EYE, R_EYE = 0, 1, 2
 L_WRI, R_WRI, L_ANK, R_ANK = 9, 10, 15, 16
 
 
+
+def clarity(luma, contrast, ring):
+    """How clearly the subject reads, 0.1..1: lit (a well-exposed subject with detail in it) or silhouetted (a dark
+    figure cut out against something bright: stage lights, a lit crowd), not murky (dim on dim, no contrast) and not
+    blown out. Night footage lives or dies on this."""
+    lit = np.clip((luma - 35) / 60, 0, 1) * np.clip((235 - luma) / 30, 0, 1)
+    sil = np.clip((ring - luma - 35) / 50, 0, 1) * np.clip((ring - 70) / 50, 0, 1)
+    detail = np.clip(contrast / 45, 0, 1)
+    return np.clip(np.maximum(lit * (0.45 + 0.55 * detail), sil * (0.6 + 0.4 * detail)), 0.1, 1)
+
 def iou(a, b):
     x0, y0 = max(a[0], b[0]), max(a[1], b[1]); x1, y1 = min(a[2], b[2]), min(a[3], b[3])
     i = max(0, x1 - x0) * max(0, y1 - y0)
@@ -160,8 +170,12 @@ def clip_series(path):
     # energy: subject motion relative to this clip, but also absolute (a still clip shouldn't look energetic)
     energy = np.clip(subj / (np.percentile(subj, 90) + 1e-6), 0, 1) * np.clip(subj / 6, 0, 1)
     steady = np.clip(1.4 - cam / 12, 0.2, 1)
+    if "contrast" in d:
+        light = clarity(luma, d["contrast"][idx], d["ring"][idx])
+    else:                                          # scored before contrast and ring were measured: exposure alone
+        light = np.clip(1 - np.abs(luma - 115) / 110, 0.15, 1)
     quality = (np.clip(np.log1p(sharp) / np.log1p(150), 0, 1) ** 0.7
-               * np.clip(1 - np.abs(luma - 115) / 110, 0.15, 1) * steady * np.clip(area / 0.04, 0.25, 1))
+               * light * steady * np.clip(area / 0.04, 0.25, 1))
     # the subject in focus, relative to the sharpest this clip gets (soft or missed focus marks a moment down)
     if not np.isnan(sub_sharp).all():
         rel = np.nan_to_num(sub_sharp / (np.nanpercentile(sub_sharp, 90) + 1e-6), nan=0.5)
