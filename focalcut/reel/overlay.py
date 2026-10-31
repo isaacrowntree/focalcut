@@ -491,12 +491,15 @@ def key(md, W, H):
     return cv2.resize(a, (W, H), interpolation=cv2.INTER_LINEAR)[..., None]
 
 
-def edge_mask(W, H, clear=0.42):
+def edge_mask(W, H, clear=0.42, cy=None, tall=None):
     """Where the effects may show, (H, W, 1) in 0..1: nothing in the centre of the frame, where the subject is (the
     crop keeps them there), fading in to full strength towards the edges. clear: the radius of the clear centre as a
     fraction of the half-frame (an ellipse, so it fits both formats); the fade takes another 0.45."""
+    portrait = H > W                                             # 9:16 frames the face high: the clear area sits
+    cy = (0.4 if portrait else 0.5) if cy is None else cy       # higher and taller, so heads are never covered
+    tall = (0.6 if portrait else 0.5) if tall is None else tall
     y, x = np.mgrid[0:H, 0:W].astype(np.float32)
-    e = np.hypot((x - W / 2) / (W / 2), (y - H / 2) / (H / 2))
+    e = np.hypot((x - W / 2) / (W / 2), (y - H * cy) / (H * tall))
     m = np.clip((e - clear) / 0.45, 0, 1)
     return (m * m * (3 - 2 * m))[..., None]                       # smoothstep: no visible ring
 

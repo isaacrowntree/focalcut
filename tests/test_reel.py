@@ -852,3 +852,5 @@ def test_effects_clear_the_centre_of_the_frame():
     from focalcut.reel.overlay import edge_mask
     m = edge_mask(320, 180, 0.3)
     assert m[90, 160, 0] == 0 and m[0, 0, 0] == 1 and 0 < m[90, 250, 0] < 1
+    p = edge_mask(180, 320, 0.42)                                      # portrait: clear higher up, where faces sit
+    assert p[110, 90, 0] == 0 and p[319, 0, 0] == 1
