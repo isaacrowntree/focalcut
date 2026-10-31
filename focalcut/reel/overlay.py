@@ -101,9 +101,9 @@ def hsv(h, s=1.0, v=1.0):
 
 def features(song: str, start: float, n: int, fps: int) -> dict:
     """Per output frame: NB band levels (0..1), bass level, and the waveform (256 samples, -1..1)."""
-    import soundfile as sf
-    y, sr = sf.read(song, dtype="float32", always_2d=True)
-    y = y.mean(1)
+    sr = 48000                                     # decoded with ffmpeg: no audio library needed in the render's env
+    y = np.frombuffer(subprocess.run(["ffmpeg", "-v", "error", "-i", song, "-ac", "1", "-ar", str(sr), "-f", "f32le",
+                                      "-"], capture_output=True, check=True).stdout, np.float32)
     win = 2048
     hann = np.hanning(win).astype(np.float32)
     freqs = np.fft.rfftfreq(win, 1 / sr)
