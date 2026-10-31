@@ -58,6 +58,9 @@ focalcut = "focalcut.cli:main"
 [tool.setuptools.packages.find]
 include = ["focalcut*"]
 
+[tool.setuptools.package-data]
+"focalcut.reel" = ["milkdrop/*.mjs"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

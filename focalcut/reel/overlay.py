@@ -30,6 +30,7 @@ reel.json: "overlay": true, or {"strength": {act: 0..1}, "opacity": 0..1, "prese
 """
 from __future__ import annotations
 
+import os
 import subprocess
 
 import cv2
@@ -61,6 +62,17 @@ PRESETS = [                                        # (effects, palette); "calm" 
 CALM = [(["leaks", "bokeh"], "synthwave"), (["mandala", "bokeh"], "vaporwave"), (["leaks", "flare"], "fire"),
         (["plasma", "bokeh"], "ice")]
 DAY = ("arrival",)
+MILKDROP = [                                       # real MilkDrop presets (Butterchurn's packs), loud ones for the night
+    "Cope - The Neverending Explosion of Red Liquid Fire", "ech0 - liquid firesticks I", "martin - ice flames",
+    "Rovastar + Geiss - Hyperspace - kaleidoscope", "Rovastar + Geiss - Hyperkaleidoscope Glow 2 motion blur (Jelly)",
+    "martin - tunnel race", "martin - cope - laser dome", "Phat+fiShbRaiN+Eo.S_Mandala_Chasers_remix",
+    "flexi - jelly fish mandala", "Rovastar - Explosive Minds", "martin - dark galaxy", "martin - into the fireworks",
+]
+MILKDROP_CALM = ["martin - dark galaxy", "martin - into the fireworks",
+                 "Rovastar + Geiss - Hyperkaleidoscope Glow 2 motion blur (Jelly)", "martin - ice flames"]
+BUTTERCHURN = ["butterchurn@2.6.7/lib/butterchurn.min.js", "butterchurn-presets@2.4.7/lib/butterchurnPresets.min.js",
+               "butterchurn-presets@2.4.7/lib/butterchurnPresetsExtra.min.js",
+               "butterchurn-presets@2.4.7/lib/butterchurnPresetsExtra2.min.js"]
 
 
 def options(cfg) -> dict | None:
@@ -69,7 +81,8 @@ def options(cfg) -> dict | None:
     cfg = {} if cfg is True else dict(cfg)
     return dict(strength={**STRENGTH, **cfg.get("strength", {})}, opacity=float(cfg.get("opacity", 1.0)),
                 presets=[(list(e), p) for e, p in cfg.get("presets", PRESETS)],
-                beat=tuple(cfg.get("beat", ("kick", "split", "drops"))))
+                beat=tuple(cfg.get("beat", ("kick", "split", "drops"))), engine=cfg.get("engine", "builtin"),
+                milkdrop=list(cfg.get("milkdrop", MILKDROP)), milkdrop_calm=list(cfg.get("milkdrop_calm", MILKDROP_CALM)))
 
 
 class Palette:
@@ -178,24 +191,28 @@ def acts(plan: dict, n: int) -> list:
     return (out + [out[-1] if out else None] * n)[:n]
 
 
-def schedule(G: dict, A: list, opts: dict, seed: int = 7) -> list:
-    """The preset for each frame: a new one every 8 bars, never the same twice running, calm ones in the daytime."""
+def phrases(G: dict, A: list, pool: list, calm: list, seed: int = 7) -> list:
+    """One choice per frame: a new one every 8 bars, never the same twice running, calm ones in the daytime."""
     rng = np.random.default_rng(seed)
-    order, calm, last, out, cur = [], [], None, [], {}
+    queues, last, out, cur = {False: [], True: []}, None, [], {}
     for k in range(len(A)):
         ph = int(G["bar"][k]) // 8
         day = A[k] in DAY
         if (ph, day) not in cur:
-            pool = calm if day else order
-            if not pool:
-                pool.extend(rng.permutation(len(CALM if day else opts["presets"])).tolist())
-            p = pool.pop(0)
-            choice = (CALM if day else opts["presets"])[p]
-            if choice == last and pool:
-                pool.append(p); choice = (CALM if day else opts["presets"])[pool.pop(0)]
+            src, q = (calm if day else pool), queues[day]
+            if not q:
+                q.extend(rng.permutation(len(src)).tolist())
+            choice = src[q.pop(0)]
+            if choice == last and q:
+                choice = src[q.pop(0)]
             cur[(ph, day)] = last = choice
         out.append(cur[(ph, day)])
     return out
+
+
+def schedule(G: dict, A: list, opts: dict, seed: int = 7) -> list:
+    """The built-in preset (effects, palette) for each frame."""
+    return phrases(G, A, opts["presets"], CALM, seed)
 
 
 class Show:
@@ -451,13 +468,25 @@ LIGHT = ("tunnel", "mandala", "lasers", "grid", "starfield", "embers", "confetti
          "leaks", "flare", "flame")
 
 
+def key(md, W, H):
+    """Alpha for a MilkDrop frame (it has none: every preset draws a full opaque frame): transparent below about a
+    fifth of full brightness, solid from about half, and grey, low-saturation textures mostly keyed out so only its
+    vivid light shows. Returned at W x H, shape (H, W, 1)."""
+    m = md.astype(np.float32) / 255
+    lum = m.mean(-1)
+    sat = m.max(-1) - m.min(-1)
+    a = np.clip((lum - 0.2) / 0.35, 0, 1) ** 1.5 * (0.3 + 0.7 * np.clip((sat - 0.12) / 0.35, 0, 1))
+    a = cv2.GaussianBlur(a, (0, 0), 1.0)                         # soft edges
+    return cv2.resize(a, (W, H), interpolation=cv2.INTER_LINEAR)[..., None]
+
+
 def zoom(f, z):
     H, W = f.shape[:2]
     M = cv2.getRotationMatrix2D((W / 2, H / 2), 0, z)
     return cv2.warpAffine(f, M, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
 
 
-def frame(f, k, show, F, G, S, preset, opts):
+def frame(f, k, show, F, G, S, preset, opts, md=None):
     s, beat, fps = float(S[k]), show.beat, show.fps
     since, down, drop = float(G["since"][k]), bool(G["down"][k]), int(G["drop"][k])
     kick = float(np.exp(-since / (0.22 * beat)))                 # 1 on the beat, gone within half a beat
@@ -484,13 +513,13 @@ def frame(f, k, show, F, G, S, preset, opts):
     if down and kw:
         a = max(a, 0.7 * kw * float(np.exp(-since / (0.5 * beat))))
     if drop >= 0:                                                # every drop floods in the kaleidoscope
-        a = max(a, (0.85 if drop == 0 else 0.55) * float(np.exp(-since / (0.6 * beat))))
+        a = max(a, (0.85 if drop == 0 else 0.55) * float(np.exp(-since / (0.6 * beat))) * (0.6 if md is not None else 1))
     a *= s
     if a > 0.02:
         c["frame"] = f
         x = x * (1 - a) + cv2.resize(show.kaleido(c), up) * a
     if drop >= 0:                                                # and recolours the footage into the palette
-        d = 0.6 * s * float(np.exp(-since / (0.8 * beat))) * (1.0 if drop == 0 else 0.6)
+        d = 0.6 * s * float(np.exp(-since / (0.8 * beat))) * (1.0 if drop == 0 else 0.6) * (0.5 if md is not None else 1)
         if d > 0.02:
             x = x * (1 - d) + show.duotone(f) * d
     light = None
@@ -504,12 +533,58 @@ def frame(f, k, show, F, G, S, preset, opts):
         dark = 1.15 - x.mean(-1, keepdims=True) / 255            # light goes mostly into the dark: faces stay clean
         light = cv2.resize(np.clip(light, 0, 255), up, interpolation=cv2.INTER_LINEAR)
         x = 255 - (255 - x) * (255 - light * np.minimum(1.0, s * dark)) / 255
+    if md is not None:                                           # the MilkDrop layer, keyed: its light, cut out
+        am = key(md, show.W, show.H) * s * (0.6 + 0.3 * kick + 0.1 * min(bass, 1.0))
+        x = x * (1 - am) + cv2.resize(md, up, interpolation=cv2.INTER_LINEAR).astype(np.float32) * am
     blink = (0.14 if down else 0.07) * s * kick if "kick" in B else 0.0
     if "drops" in B and drop >= 0:
         blink = max(blink, (0.85 if drop == 0 else 0.35) * float(np.exp(-since / (0.12 * beat))))
     if blink:
         x = x + (255 - x) * blink
     return np.clip(x, 0, 255).astype(np.uint8)
+
+
+def chrome() -> str:
+    """A Chromium for the MilkDrop layer: FOCALCUT_CHROME, else Playwright's download."""
+    import glob
+    c = os.environ.get("FOCALCUT_CHROME") or next(iter(sorted(glob.glob(os.path.expanduser(
+        "~/.cache/ms-playwright/chromium-*/chrome-linux/chrome")), reverse=True)), None)
+    if not c:
+        raise RuntimeError("the MilkDrop layer needs Chromium: set FOCALCUT_CHROME or `playwright install chromium`")
+    return c
+
+
+def butterchurn() -> str:
+    """Butterchurn (MilkDrop in WebGL) and its preset packs, downloaded once to ~/.cache/focalcut/milkdrop."""
+    import urllib.request
+    lib = os.path.expanduser("~/.cache/focalcut/milkdrop")
+    os.makedirs(lib, exist_ok=True)
+    for f in BUTTERCHURN:
+        dst = os.path.join(lib, os.path.basename(f))
+        if not os.path.exists(dst):
+            urllib.request.urlretrieve("https://cdn.jsdelivr.net/npm/" + f, dst + ".part")
+            os.replace(dst + ".part", dst)
+    return lib
+
+
+def milkdrop_layer(work, song, start, n, fps, w, h, per_frame, beat) -> str:
+    """Render the MilkDrop layer (cached in work/): the presets per frame, each change blended over a beat."""
+    import hashlib
+    import json
+    sched = [[k, p, round(beat, 3)] for k, p in enumerate(per_frame) if k == 0 or p != per_frame[k - 1]]
+    sched[0][2] = 0
+    key = hashlib.md5(json.dumps([song, os.path.getmtime(song), start, n, fps, w, h, sched]).encode()).hexdigest()[:10]
+    out = os.path.join(work, f"milkdrop_{key}.mp4")
+    if os.path.exists(out):
+        return out
+    job = dict(song=song, start=start, frames=n, fps=fps, width=w, height=h, out=out + ".part.mp4", schedule=sched,
+               chrome=chrome(), lib=butterchurn())
+    jf = os.path.join(work, f"milkdrop_{key}.json")
+    with open(jf, "w") as f:
+        json.dump(job, f)
+    subprocess.run(["node", os.path.join(os.path.dirname(__file__), "milkdrop", "render.mjs"), jf], check=True)
+    os.replace(out + ".part.mp4", out)
+    return out
 
 
 def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, enc: list, fps: int) -> None:
@@ -519,8 +594,18 @@ def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, en
     F = features(song, plan["music_start"], n, fps)
     G = grid(music, plan, n, fps)
     S = strength(plan, n, opts)
-    P = schedule(G, acts(plan, n), opts)
+    A = acts(plan, n)
     show = Show(W, H, fps, plan["beat"], np.random.default_rng(7))
+    layer = None
+    if opts["engine"] == "milkdrop":                             # drop bursts only; the visuals are MilkDrop's
+        pals = list(HEX) + ["rainbow"]
+        P = [([], pals[(int(G["bar"][k]) // 8) % len(pals)]) for k in range(n)]
+        path = milkdrop_layer(os.path.dirname(out), song, plan["music_start"], n, fps, show.w, show.h,
+                              phrases(G, A, opts["milkdrop"], opts["milkdrop_calm"]), plan["beat"])
+        layer = subprocess.Popen(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                                 stdout=subprocess.PIPE)
+    else:
+        P = schedule(G, A, opts)
     rd = subprocess.Popen(["ffmpeg", "-v", "error", "-i", src, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                           stdout=subprocess.PIPE)
     wr = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
@@ -531,12 +616,18 @@ def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, en
         if len(b) < size:
             break
         f = np.frombuffer(b, np.uint8).reshape(H, W, 3)
-        g = frame(f, k, show, F, G, S, P[k], opts) if k < n else f
+        md = None
+        if layer is not None and k < n:
+            lb = layer.stdout.read(show.w * show.h * 3)
+            md = np.frombuffer(lb, np.uint8).reshape(show.h, show.w, 3) if len(lb) == show.w * show.h * 3 else None
+        g = frame(f, k, show, F, G, S, P[k], opts, md) if k < n else f
         wr.stdin.write(np.ascontiguousarray(g).tobytes())
         k += 1
         if k % 250 == 0:
             print(f"\r[reel] overlay: {k}/{n}", end="", flush=True)
     print()
     rd.wait(); wr.stdin.close(); wr.wait()
+    if layer is not None:
+        layer.stdout.close(); layer.wait()
     if wr.returncode:
         raise RuntimeError("overlay encode failed")
