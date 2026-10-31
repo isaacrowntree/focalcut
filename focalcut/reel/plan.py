@@ -401,6 +401,7 @@ def include_adds(P, seq, recs, home):
 
 
 KISS_Q = 0.92            # SigLIP kiss confidence that makes a kiss a must-have
+LINGER = 2.5             # seconds the camera stays on someone (people.linger): filmed on purpose, placed first
 SEEN = 0.045             # a face this big (fraction of frame height) counts as the person being in the shot
 
 
@@ -444,6 +445,9 @@ def cover_people(P, seq, recs, home, people, fmt, beat):
         return any(ap["unit"] == uid and a <= ap["t"] <= b and ap["h"] >= SEEN and abs(ap["cx"] - 0.5) <= half_w
                    for ap in item[1]["appearances"])
 
+    def featured(it):
+        return it[0] == "person" and it[1].get("linger", 0) >= LINGER
+
     kisses = [("kiss", u, t) for u, v in (people.get("kisses") or {}).items() for t, q in v if q >= KISS_Q]
     persons = [("person", p) for p in people.get("people", [])]
     items = kisses + persons
@@ -464,7 +468,9 @@ def cover_people(P, seq, recs, home, people, fmt, beat):
         gain = {sp: ks for sp, ks in gain.items() if ks}
         if not gain:
             break
-        sp = max(gain, key=lambda sp: (any(items[k][0] == "kiss" for k in gain[sp]), len(gain[sp])))
+        sp = max(gain, key=lambda sp: (any(items[k][0] == "kiss" for k in gain[sp]),       # kisses, then the people
+                                       sum(featured(items[k]) for k in gain[sp]),           # the camera stayed on,
+                                       len(gain[sp])))                                      # then anyone
         tried.add(sp)
         r, t = by[sp[0]], sp[1]
         near = min(r["moments"], key=lambda m: abs(m["t"] - t))
@@ -475,11 +481,15 @@ def cover_people(P, seq, recs, home, people, fmt, beat):
         for x in seq:
             units[x["unit"]["id"]] = units.get(x["unit"]["id"], 0) + 1
 
-        def ok(i, r=r, clip=clip, units=units):
+        trade = any(featured(items[k]) for k in gain[sp])        # someone filmed on purpose may displace passers-by
+
+        def ok(i, r=r, clip=clip, units=units, trade=trade):
             x = seq[i]
             return (not x["fx"] and not x.get("reaction") and not x.get("ending") and not x.get("band")
-                    and not x.get("logo") and not x.get("add") and 0 < i < len(seq) - 1
-                    and units[x["unit"]["id"]] > 1 and all(count[c] > 1 for c in cover[i])
+                    and not x.get("logo") and not (x.get("add") and not x.get("person")) and 0 < i < len(seq) - 1
+                    and units[x["unit"]["id"]] > 1
+                    and all(count[c] > 1 or (trade and items[c][0] == "person" and not featured(items[c]))
+                            for c in cover[i])
                     and clip not in (seq[i - 1]["unit"]["clip"], seq[i + 1]["unit"]["clip"])
                     and not (r["role"] == "transition" and "transition" in (seq[i - 1]["unit"]["role"],
                                                                             seq[i + 1]["unit"]["role"])))
@@ -509,7 +519,9 @@ def cover_people(P, seq, recs, home, people, fmt, beat):
         cover[i] = [k for k, it in enumerate(items) if shows(seq[i], it)]
         count[cover[i]] += 1
     nk = len(kisses)
-    return int((count[nk:] > 0).sum()), len(persons), int((count[:nk] > 0).sum()), nk
+    feat = [k for k, it in enumerate(items) if featured(it)]
+    return (int((count[nk:] > 0).sum()), len(persons), int((count[:nk] > 0).sum()), nk,
+            int((count[feat] > 0).sum()), len(feat))
 
 
 def _secs(x):
@@ -837,7 +849,8 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None):
     include_adds(P, seq, recs, home)
     cov = cover_people(P, seq, recs, home, cfg.get("people"), fmt, music["beat"])
     if cov:
-        print(f"[reel] {fmt}: people shown {cov[0]}/{cov[1]}, kisses {cov[2]}/{cov[3]}")
+        print(f"[reel] {fmt}: people the camera stayed on {cov[4]}/{cov[5]}, everyone {cov[0]}/{cov[1]}, "
+              f"kisses {cov[2]}/{cov[3]}")
     band_in(P, seq, recs, music, cfg)
     # an act's first and last shots carry its signature transition: give them at least 2 beats, from a neighbour
     for k, s in enumerate(seq):

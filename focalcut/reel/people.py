@@ -223,6 +223,23 @@ def scan_kisses(project, units, cand) -> dict:
     return out
 
 
+def linger(apps) -> float:
+    """How long the camera stays on this person, in seconds: their longest unbroken run of samples in one unit with
+    the face big (8%+ of the frame height) and near the centre. Someone filmed on purpose, not a passer-by."""
+    best = 0
+    runs = {}
+    for a in apps:
+        if a["h"] >= 0.08 and abs(a["cx"] - 0.5) <= 0.3:
+            runs.setdefault(a["unit"], set()).add(a["t"])
+    for ts in runs.values():
+        ts, run = sorted(ts), 1
+        best = max(best, 1)
+        for x, y in zip(ts, ts[1:]):
+            run = run + 1 if y - x <= 1.5 / RATE else 1
+            best = max(best, run)
+    return best / RATE
+
+
 def cluster(units: list, D: dict) -> list:
     """People: faces tracked and grouped inside each unit, then the groups across units."""
     tracks = []                                                  # (unit id, indices into its faces)
@@ -249,7 +266,7 @@ def cluster(units: list, D: dict) -> list:
         if len(clear) < 2:                                       # glimpsed, or a false detection
             continue
         best = max(clear, key=lambda a: a["h"] * a["q"] * (1.2 - abs(a["cx"] - 0.5)))
-        people.append(dict(units=sorted({a["unit"] for a in clear}), seen=len(apps), best=best,
+        people.append(dict(units=sorted({a["unit"] for a in clear}), seen=len(apps), best=best, linger=linger(apps),
                            appearances=sorted(apps, key=lambda a: (a["unit"], a["t"]))))
     people.sort(key=lambda p: (-p["best"]["h"], p["best"]["unit"]))
     for k, p in enumerate(people):
