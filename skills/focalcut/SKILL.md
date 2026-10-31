@@ -73,7 +73,7 @@ Read `references/concepts.md` for the rule, the reason, the numbers and the code
 | Song start | start on the bar nearest where the song proper begins | `music.analyse` | top-level `start_hint` |
 | Several songs | one song per act (a festival's sets), each around its drop, crossfaded beat on beat or cut on the downbeat; never remixed | `music.join/mix`, `plan.clock` | top-level `songs` |
 | Headliner last | the last set's footage kept for the climax and finale | `plan.story` | `late` |
-| EDM visualiser layer | audio-reactive trails, spectrum bars, beat blinks and drop flashes over the cut; ≤1 full flash per beat | `overlay.py` | top-level `overlay` |
+| EDM light show | MilkDrop-style presets (tunnels, mandala, kaleidoscope, lasers, particles, plasma, flame) in changing palettes every 8 bars, beat blinks, drop bursts; ≤1 full flash per beat | `overlay.py` | top-level `overlay` |
 | Clean masks | BiRefNet matte inside the SAM 3 mask, never raw upscaled SAM | `fx/masks.py` | — |
 
 ## Before rendering, check the plan against the rules

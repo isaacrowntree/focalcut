@@ -780,9 +780,20 @@ def test_overlay_pulses_on_the_beat_and_flashes_on_drops(tmp_path):
                  sections=[dict(at=0.0), dict(at=2.0)])               # a song join at 2 s: a drop
     plan = dict(music_start=0.0, beat=beat, shots=[dict(act="night", frames=75), dict(act="climax", frames=75)])
     out = tmp_path / "o.mp4"
-    overlay.apply(str(src), str(out), plan, music, str(tmp_path / "song.wav"), overlay.options(True), ENC, FPS)
+    beat_only = overlay.options({"presets": [[[], "neon"]]})
+    overlay.apply(str(src), str(out), plan, music, str(tmp_path / "song.wav"), beat_only, ENC, FPS)
     lum = np.array([f.mean() for f in read_frames(str(out))])
     assert len(lum) == 150
     assert lum[100] > lum[110] + 40                                   # the drop's white flash, then gone
     assert lum[50] > lum[60]                                          # every beat blinks
     assert overlay.options(None) is None and overlay.options({"strength": {"night": 0}})["strength"]["climax"] == 1
+    every = sorted({e for p in overlay.PRESETS + overlay.CALM for e in p[0]})       # every effect and palette runs
+    show = overlay.Show(320, 180, FPS, beat, np.random.default_rng(0))
+    f = np.full((180, 320, 3), 40, np.uint8)
+    for pal in [*overlay.HEX, "rainbow"]:
+        show.palette(pal)
+        for k in range(3):
+            c = dict(t=k / FPS, bass=0.8, bands=np.full(overlay.NB, 0.7), kick=1.0, since=0.0, down=True, drop=0,
+                     bar=k, beat_now=True, frame=f)
+            for e in every:
+                assert getattr(show, e)(c).shape[:2] == (90, 160), e
