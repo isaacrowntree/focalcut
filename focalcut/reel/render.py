@@ -208,6 +208,17 @@ def run(project, fmt, draft=False, cut=None) -> str:
         files = apply_transitions(plan, files)
     with open(os.path.join(outdir, f"{cut}_shots.json"), "w") as f:
         json.dump([os.path.relpath(p, project.reel_dir) for p in files], f, indent=1)
+    from . import overlay
+    ov = overlay.options(project.config.get("overlay"))
+    if ov and not draft:                           # the visualiser layer over the cut (not the stinger)
+        lst = os.path.join(work, "list_shots.txt")
+        with open(lst, "w") as f:
+            f.writelines("file '" + p.replace("'", "'\\''") + "'\n" for p in files)
+        joined, layered = os.path.join(work, "shots.mp4"), os.path.join(work, "shots_overlay.mp4")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", joined],
+                       check=True)
+        overlay.apply(joined, layered, plan, music, plan.get("song") or music["song"], ov, ENC, FPS)
+        files = [layered]
     stinger = project.stinger(fmt) if plan.get("stinger") else None
     if stinger:                                    # the stinger as the last "shot", conformed to size and rate
         sting = os.path.join(work, "stinger.mp4")

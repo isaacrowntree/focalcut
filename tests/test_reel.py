@@ -761,3 +761,28 @@ def test_late_categories_wait_for_the_climax(tmp_path):
     late = {r["unit"]["clip"] for r in moments[16:]}
     early_acts = {s["act"] for s in plan["shots"] if s["unit"]["clip"] in late}
     assert early_acts and early_acts <= {"climax", "finale"}
+
+
+@needs_ffmpeg
+def test_overlay_pulses_on_the_beat_and_flashes_on_drops(tmp_path):
+    import soundfile as sf
+
+    from focalcut.reel import overlay
+    from focalcut.reel.render import ENC, FPS, read_frames
+    sr, beat = 48000, 0.5
+    t = np.arange(4 * sr) / sr
+    y = 0.3 * np.sin(2 * np.pi * 60 * t) * np.exp(-(t % beat) * 12) + 0.05 * np.sin(2 * np.pi * 2000 * t)
+    sf.write(tmp_path / "song.wav", y, sr)
+    src = tmp_path / "v.mp4"
+    _synth(src, 3, 320, 180, FPS, source="color")
+    beats = list(np.arange(0, 4, beat))
+    music = dict(beats=beats, bars=beats[::4], beat_energy=[1.0] * len(beats),
+                 sections=[dict(at=0.0), dict(at=2.0)])               # a song join at 2 s: a drop
+    plan = dict(music_start=0.0, beat=beat, shots=[dict(act="night", frames=75), dict(act="climax", frames=75)])
+    out = tmp_path / "o.mp4"
+    overlay.apply(str(src), str(out), plan, music, str(tmp_path / "song.wav"), overlay.options(True), ENC, FPS)
+    lum = np.array([f.mean() for f in read_frames(str(out))])
+    assert len(lum) == 150
+    assert lum[100] > lum[110] + 40                                   # the drop's white flash, then gone
+    assert lum[50] > lum[60]                                          # every beat blinks
+    assert overlay.options(None) is None and overlay.options({"strength": {"night": 0}})["strength"]["climax"] == 1
