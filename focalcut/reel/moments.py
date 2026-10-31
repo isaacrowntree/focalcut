@@ -134,8 +134,8 @@ def moves(K):
         x = np.where(np.isnan(x), np.nanmean(x, 0, keepdims=True), x)
         x = np.nan_to_num(x)
         k = np.ones(HZ) / HZ
-        hp = x - np.apply_along_axis(lambda c: np.convolve(c, k, mode="same"), 0, x)
-        return np.sqrt(np.apply_along_axis(lambda c: np.convolve(c ** 2, k, mode="same"), 0, hp))
+        hp = x - np.apply_along_axis(lambda c: same(c, k), 0, x)
+        return np.sqrt(np.apply_along_axis(lambda c: same(c ** 2, k), 0, hp))
     sway = (hip[..., 0] - sho[..., 0]) / (torso + 1e-6)
     twist = np.abs(lh[..., 0] - rh[..., 0]) / (torso + 1e-6)
     bounce = (hip[..., 1] - sho[..., 1]) / (torso + 1e-6)
@@ -145,8 +145,18 @@ def moves(K):
             dict(spin=spin, dip=dip, trick=trick, style=style, shake=shake).items()}
 
 
+def same(x, k):
+    """np.convolve(x, k, "same"), but always len(x) long (numpy returns len(k) when the kernel is the longer: clips
+    under a few seconds)."""
+    y = np.convolve(x, k, mode="same")
+    if len(y) > len(x):
+        o = (len(y) - len(x)) // 2
+        y = y[o:o + len(x)]
+    return y
+
+
 def smooth(x, k=3):
-    return np.convolve(x, np.ones(k) / k, mode="same")
+    return same(x, np.ones(k) / k)
 
 
 def clip_series(path):
@@ -185,7 +195,7 @@ def clip_series(path):
     # framing after reframing the 4K source, per output format, averaged over ~2 s (a shot has to hold it)
     w, h = d["size"]
     k2 = np.ones(2 * HZ) / (2 * HZ)
-    frm = {fmt: np.convolve(FR.framing(union, w, h, *size, touch=touch)[0], k2, mode="same")
+    frm = {fmt: same(FR.framing(union, w, h, *size, touch=touch)[0], k2)
            for fmt, size in (("landscape", (1920, 1080)), ("portrait", (1080, 1920)))}
     parts = {k: smooth(mv[k]) for k in ("spin", "dip", "trick", "style", "shake")}
     parts["shake"] *= np.clip(1 - 1.5 * parts["spin"], 0, 1)      # a turn swings the hips too: that's a spin
@@ -203,8 +213,8 @@ def clip_series(path):
     parts["energy"] = smooth(energy)
     # turn pattern: several turns inside ~4 s with arms passing overhead (hand-overs)
     k4 = np.ones(int(4 * HZ)) / (4 * HZ)
-    turns = np.convolve((mv["spin"] > 0.5).astype(float), k4, mode="same") * 4 * HZ / 6   # ~one turn = 6 flagged frames
-    arms = np.convolve(mv["style"], k4, mode="same")
+    turns = same((mv["spin"] > 0.5).astype(float), k4) * 4 * HZ / 6   # ~one turn = 6 flagged frames
+    arms = same(mv["style"], k4)
     parts["pattern"] = np.clip((turns - 0.5) / 1.5, 0, 1) * (0.6 + 0.4 * np.clip(arms * 3, 0, 1))
     # close-up: a face-forward person filling a big part of the frame (expression decides the rank later)
     w, h = d["size"]
@@ -214,10 +224,10 @@ def clip_series(path):
     parts["closeup"] = smooth(np.clip((np.nanmax(sw, axis=1) / aw - 0.28) / 0.25, 0, 1))   # shoulders span the frame
     # travelling shot: the camera moves steadily (smooth, sustained motion) while the subject stays framed and sharp
     k1 = np.ones(HZ) / HZ
-    cm = np.convolve(cam, k1, mode="same")
-    cv = np.sqrt(np.maximum(np.convolve(cam ** 2, k1, mode="same") - cm ** 2, 0))
+    cm = same(cam, k1)
+    cv = np.sqrt(np.maximum(same(cam ** 2, k1) - cm ** 2, 0))
     cxs = np.interp(pt_, t10, d["cx"])
-    cxv = np.sqrt(np.maximum(np.convolve(cxs ** 2, k1, mode="same") - np.convolve(cxs, k1, mode="same") ** 2, 0))
+    cxv = np.sqrt(np.maximum(same(cxs ** 2, k1) - same(cxs, k1) ** 2, 0))
     parts["travel"] = (np.clip((cm - 2) / 5, 0, 1) * np.clip(1 - cv / (cm + 1e-6), 0, 1)
                        * np.clip(1 - cxv / 0.12, 0, 1) * (area > 0.03))
     # a travelling shot shouldn't be marked down as camera shake
