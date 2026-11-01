@@ -23,7 +23,7 @@ effects cross-fade over a beat as one preset hands over to the next.
 
 Each act has a strength (day sets lighter, night and climax full) and calmer presets in the daytime; shots under
 the logo ease it back so the logo reads. Every effect fades out towards the centre of the frame, where the subject
-is, so the subject is always seen clean (reel.json "clear": the clear radius, 0.6 of the half-frame). With MilkDrop
+is, so the subject is always seen clean (reel.json "clear": the clear radius, 0.8 of the half-frame). With MilkDrop
 the footage fades steadily darker towards the edges ("vignette": how dark at the corners) as MilkDrop comes in, rendered at full size; pattern
 presets are zoomed in 2x ("milkdrop_zoom"). Light goes mostly into the dark parts of the frame, so faces stay clean.
 Full-frame flashes never come faster than one per beat (photosensitivity: about 2 a second at 125 BPM).
@@ -87,7 +87,7 @@ def options(cfg) -> dict | None:
     if not cfg:
         return None
     cfg = {} if cfg is True else dict(cfg)
-    return dict(strength={**STRENGTH, **cfg.get("strength", {})}, opacity=float(cfg.get("opacity", 1.0)), clear=float(cfg.get("clear", 0.6)),
+    return dict(strength={**STRENGTH, **cfg.get("strength", {})}, opacity=float(cfg.get("opacity", 1.0)), clear=float(cfg.get("clear", 0.8)),
                 presets=[(list(e), p) for e, p in cfg.get("presets", PRESETS)],
                 beat=tuple(cfg.get("beat", ("kick", "split", "drops"))), engine=cfg.get("engine", "builtin"),
                 milkdrop=list(cfg.get("milkdrop", MILKDROP)), milkdrop_calm=list(cfg.get("milkdrop_calm", MILKDROP_CALM)),
@@ -491,17 +491,16 @@ def key(md, W, H):
     return cv2.resize(a, (W, H), interpolation=cv2.INTER_LINEAR)[..., None]
 
 
-def edge_mask(W, H, clear=0.6, cy=None, tall=None, full=1.25):
-    """Where the effects may show, (H, W, 1) in 0..1: nothing in the centre of the frame, where the subject is (the
-    crop keeps them there), growing steadily stronger towards the edges and whole only near the corners. clear: the
-    radius of the clear centre as a fraction of the half-frame (an ellipse, so it fits both formats); full: where it
-    reaches full strength (the frame's edge midpoints are at 1, its corners about 1.4)."""
-    portrait = H > W                                             # 9:16 frames the face high: the clear area sits
-    cy = (0.4 if portrait else 0.5) if cy is None else cy       # higher and taller, so heads are never covered
-    tall = (0.6 if portrait else 0.5) if tall is None else tall
-    y, x = np.mgrid[0:H, 0:W].astype(np.float32)
-    e = np.hypot((x - W / 2) / (W / 2), (y - H * cy) / (H * tall))
-    m = np.clip((e - clear) / max(full - clear, 1e-3), 0, 1)
+def edge_mask(W, H, clear=0.8, cy=None):
+    """Where the effects may show, (H, W, 1) in 0..1: nothing in the centre of the frame, where the subjects are (a
+    radius of 0.8 of the half-frame holds about 80% of the faces the reel shows, more after the crop pulls them in),
+    then growing steadily all the way out to full strength in every corner. The ellipse is scaled to each side of
+    its centre, so the corners all reach 1 even when the centre sits high (portrait frames faces high: cy 0.4)."""
+    cy = (0.4 if H > W else 0.5) if cy is None else cy
+    y, x = np.mgrid[0:H, 0:W].astype(np.float32) + 0.5
+    sy = np.where(y < H * cy, H * cy, H * (1 - cy))
+    e = np.hypot((x - W / 2) / (W / 2), (y - H * cy) / sy)
+    m = np.clip((e - clear) / (1.39 - clear), 0, 1)
     return (m ** 1.6 * (1.6 - 0.6 * m))[..., None]               # eased: a soft start, no ring, steepest at the edges
 
 
@@ -568,9 +567,13 @@ def frame(f, k, show, F, G, S, preset, opts, md=None):
             md = md[(h - ch) // 2:(h - ch) // 2 + ch, (w - cw) // 2:(w - cw) // 2 + cw]
         mdu = cv2.resize(md, up, interpolation=cv2.INTER_LINEAR).astype(np.float32)
         e = show.edge
-        x = x * (1 - opts["vignette"] * min(1.0, 1.2 * s) * e)   # the footage fades to near black at the edges...
-        k_ = key(md, show.W, show.H)                             # ...and MilkDrop fills them in: whole at the edges,
-        am = (k_ + (1 - k_) * e) * e * min(1.0, s * (0.75 + 0.25 * kick))   # keyed nearer the middle, none in it
+        x = x * (1 - opts["vignette"] * e) ** 2                  # the footage darkens to almost black in the corners
+        k_ = key(md, show.W, show.H)                             # ...and MilkDrop fills them in: keyed nearer the
+        g = min(1.0, s * (0.75 + 0.25 * kick))                   # middle (lighter in calm acts, between beats), whole
+        am = (k_ + (1 - k_) * e) * e * (g + (1 - g) * e)         # and at full strength in the corners, none in the
+        am = 1 - (1 - am) ** 2                                   # centre
+        grey = mdu.mean(-1, keepdims=True)                       # and more vivid: richer colour, a little brighter
+        mdu = np.clip(grey + (mdu - grey) * 1.4, 0, 255) * 1.1
         x = x * (1 - am) + mdu * am
     blink = (0.14 if down else 0.07) * s * kick if "kick" in B else 0.0
     if "drops" in B and drop >= 0:
