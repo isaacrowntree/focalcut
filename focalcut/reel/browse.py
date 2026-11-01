@@ -121,7 +121,8 @@ header{display:flex;gap:10px;align-items:center;padding:8px 14px;border-bottom:1
 background:var(--panel);flex-wrap:wrap}
 header h1{font-size:15px;margin:0 8px 0 0}#saved{color:var(--mut);font-size:12px}#saved.ok{color:var(--sel)}
 #saved.err{color:var(--ban)}.sp{flex:1}
-#views{display:flex;gap:4px}
+#views{display:flex;gap:4px}#counts{color:var(--mut);font-size:12px}#counts b{color:var(--fg)}
+#counts .y b{color:var(--sel)}#counts .f b{color:var(--io)}#counts .x b{color:var(--ban)}
 #clipsview{display:grid;grid-template-columns:290px 1fr;min-height:0}
 #side{border-right:1px solid var(--line);overflow:auto;background:var(--panel)}
 #filters{position:sticky;top:0;background:var(--panel);padding:8px;display:flex;gap:4px;flex-wrap:wrap;
@@ -216,7 +217,7 @@ font:12px ui-monospace,monospace;pointer-events:none}.frl b{color:var(--io)}
 .fk{top:1px;bottom:1px;width:6px;margin-left:-3px;background:var(--io);border-radius:2px;pointer-events:none;z-index:2}
 </style>
 <header><h1>%TITLE%</h1>
-<div id=views><button id=v1 class=on>Sources</button><button id=v2>Picks <b id=nsel>0</b></button></div>
+<div id=views><button id=v1 class=on>Sources</button><button id=v2 title="the cut, shot by shot, with your picks in it">Cut &amp; picks</button></div><span id=counts></span>
 <span class=sp></span><span id=saved></span>
 <button id=copy title="copy picks.json to the clipboard">Copy picks</button><button id=dl>Download picks.json</button>
 </header>
@@ -413,7 +414,18 @@ $("mysel").onclick=ev=>{const b=ev.target.closest("button");if(!b)return;const s
  if(b.dataset.d!==undefined){ss.splice(+b.dataset.d,1);act=-1;setSels(C().id,ss)}
  else{const k=+(b.dataset.p??b.dataset.l);act=k;loop=b.dataset.l!==undefined;seek(ss[k][0]);vid.play();renderAll()}};
 function renderAll(){list();draw();mysel();selview();
- $("nsel").textContent=D.clips.reduce((a,c)=>a+sels(c.id).length,0)}
+ counts()}
+// what's in play: the planner's shots per reel, and the editor's own calls
+function counts(){const n=f=>D.clips.reduce((a,c)=>a+f(c),0),L=n(c=>c.L.length),Pn=n(c=>c.P.length),
+  my=n(c=>sels(c.id).length+points(c.id).length),fk=n(c=>fkeys(c.id).length),
+  bc=n(c=>banned(c.id).includes("all")?1:0),br=n(c=>banned(c.id).filter(v=>v!="all").length),
+  more=n(c=>(P[c.id]||{}).more?1:0),unseen=D.clips.length-D.clips.filter(c=>seen.has(c.id)).length;
+ const it=(v,t,cls="")=>`<span class="${cls}" title="${t}"><b>${v}</b> ${t.split(":")[0]}</span>`;
+ $("counts").innerHTML=[it(L,"landscape shots: in the current landscape cut"),it(Pn,"portrait shots: in the current portrait cut"),
+  it(my,"your picks: selections and marked moments the next re-plan must use","y"),
+  fk?it(fk,"focus points: where the portrait crop goes","f"):"",
+  bc+br?it(bc+br,"bans: "+bc+" whole clips, "+br+" stretches","x"):"",more?it(more,"clips asked for more"):"",
+  it(unseen,"clips not looked at yet")].filter(Boolean).join(" · ")}
 // timeline mouse: scrub on ruler/strip/overview; make, move and trim selections in the selections lane
 function tAt(el,ev,A=va,B=vb){const r=el.getBoundingClientRect();return A+Math.min(Math.max((ev.clientX-r.left)/r.width,0),1)*(B-A)}
 function showHover(ev,t,el){const c=C();hov.style.display="block";hov.querySelector("div").setAttribute("style",thumbAt(c,t,108));
