@@ -1167,3 +1167,11 @@ def test_bans_keep_shot_windows_out_and_picks_keep_their_length():
     P.fit_pick(seq, 2, 0.5)
     assert seq[2]["beats"] == 4 and sum(s["beats"] for s in seq) == 10
     assert [s["beats"] for s in seq if s is not seq[2]] == [2, 1, 2, 1]   # the two weakest gave a beat each
+
+
+def test_a_pick_plays_once_at_real_speed():
+    pick = dict(unit=dict(id="U1"), act="night", beats=3, fx=["bullet"], effect="bullet", span=[1.0, 2.5])
+    seq = [dict(unit=dict(id="U0"), act="night", beats=2, fx=[]), pick, dict(unit=dict(id="U2"), act="night", beats=2, fx=[]),
+           dict(pick, fx=[], beats=2)]
+    P.picks_once(seq)
+    assert [s["beats"] for s in seq] == [2, 3, 4] and seq[1]["fx"] == [] and seq[1]["effect"] is None

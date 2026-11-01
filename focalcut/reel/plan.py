@@ -411,13 +411,34 @@ def cover_all(P, seq, recs, home):
 
 
 PICK_BEATS = 32          # an editor's selection is one shot, however long (this only guards against a runaway)
-PICK_CURVE = 4.0         # a selection longer than this (seconds) plays whole on a speed curve (fx "fit"), averaging
+PICK_CURVE = 1e9         # (no speed curve: a selection plays at real speed, however long; it was 4 s, at PICK_PACE)
 PICK_PACE = {"dance": 1.05, "transition": 1.8}   # this fast: dancing peaks near 1.5x at its ends, B-roll quicker
 
 
 def plain(x):
     return not x["fx"] and not x.get("reaction") and not x.get("ending") and not x.get("band") \
         and not x.get("logo") and not x.get("add")
+
+
+def picks_once(seq):
+    """The editor's picks take precedence: each plays once (a repeat's beats go to the shot before it, or after it at
+    an act's start), at real speed (no speed effect on it). Changes seq in place."""
+    seen = set()
+    i = 0
+    while i < len(seq):
+        s = seq[i]
+        if s.get("span"):
+            if s["fx"] and any(f in SPEED for f in s["fx"]):
+                s["fx"] = [f for f in s["fx"] if f not in SPEED]
+                s["effect"] = s["fx"][0] if s["fx"] else None
+            k = (s["unit"]["id"], tuple(s["span"]))
+            if k in seen and len(seq) > 1:
+                j = i - 1 if i > 0 and seq[i - 1]["act"] == s["act"] else i + 1 if i + 1 < len(seq) else i - 1
+                seq[j]["beats"] += s["beats"]
+                seq.pop(i)
+                continue
+            seen.add(k)
+        i += 1
 
 
 def fit_pick(seq, i, beat):
@@ -684,6 +705,9 @@ def apply_picks(recs, picks):
             m["pick"] = m["add"] = True
             if b - a > 0.05:
                 m["span"] = [round(a, 3), round(b, 3)]
+                # the pick's footage is the pick's alone: no other moment in it, and no other shot over it
+                r["moments"] = [x for x in r["moments"] if x is m or not a <= x["t"] <= b]
+                u["bans"] = [*u.get("bans", []), [a, b]]
         if p.get("more"):
             r["more"] = max(int(p["more"]), 0)
             for m in r["moments"]:
@@ -996,6 +1020,7 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None):
         a, b = seq[k - 1], seq[k]
         if a["act"] != b["act"] and a["fx"] and b["fx"] and b["effect"] in ("hero", "spotlight", "neon"):
             b["fx"], b["effect"] = [], None
+    picks_once(seq)
     for s in [s for s in seq if s.get("span")]:            # later passes may have moved beats: the editor's picks last
         fit_pick(seq, seq.index(s), music["beat"])
     # whatever the acts could not fill (or overfilled) comes off / goes on the plain shots, so the grid stays exact
@@ -1031,7 +1056,8 @@ def transitions(seq, music, cfg, direction=None):
         if why != "act change" and (seq[i - 1].get("transition") or (i + 1 < len(seq) and seq[i + 1].get("transition"))):
             return False                                    # never back to back
         A, B = seq[i - 1], seq[i]
-        if velocity and not (any(f in SPEED for f in A["fx"] + B["fx"]) or A["beats"] < 2 or B["beats"] < 2):
+        if velocity and not (any(f in SPEED for f in A["fx"] + B["fx"]) or A["beats"] < 2 or B["beats"] < 2
+                             or A.get("span") or B.get("span")):        # (an editor's pick plays at real speed)
             A["fx"].append("flashout"); B["fx"].insert(0, "flashin"); A["velocity"] = B["velocity"] = True
         seq[i]["transition"] = name; seq[i]["why"] = why
         room[i - 1] -= h; room[i] -= h
