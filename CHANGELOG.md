@@ -9,6 +9,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Show the landing**: every plain dance shot keeps the end of its move and about a beat of the dancer at rest
+  after it lands (`velocity.landed`, `plan.lands`; `land_hold`), borrowing a beat from a neighbour when it must.
+- **Every export file in the reel**: coverage is per unit (export file), not per camera clip, so all of a clip's
+  segments appear; long shots are split to make room. Band inserts and extra shots never take a unit's only shot.
+- **Faces from YuNet**: portrait framing and ranking read the `people` step's face scan when there is one;
+  ViTPose keypoints mark backs of heads as faces on the social floor.
 - **Recap reels** — `focalcut reel init|run` turns a curated export folder into beat-synced landscape and
   portrait reels plus Premiere (FCP7 XML) timelines: pose/flow/expression moment detection, coverage of every
   clip, frame-exact beat cuts and SAM 3 effects. Optional `reel` extra. See `docs/recipes/recap-reel.md`.

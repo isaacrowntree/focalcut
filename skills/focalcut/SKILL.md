@@ -57,16 +57,17 @@ Read `references/concepts.md` for the rule, the reason, the numbers and the code
 |---|---|---|---|
 | Opening | festival B-roll (band, crowd) with the event logo centred, never dance first | `plan.story` teaser | `opening`, top-level `logo` |
 | Story in acts | teaser, arrival (day), shows, night, climax, finale on the song's sections | `plan.story`, `default_acts` | `acts`, `split`, `day`, `day_shows`, `night_shows` |
-| Use everything / card shuffle | every clip appears, several scenes each, spread out and interleaved, never a block | `Picker`, `cover`, `weave`, `cover_all` | — |
+| Use everything / card shuffle | every export file appears in each format it belongs to (hard requirement: more cuts, never a file dropped), several scenes each, spread out and interleaved, never a block | `Picker`, `cover`, `weave`, `cover_all` | — |
 | Cut on the action | turn→turn, travel keeps direction, a movement carries 2–3 cuts | `flow.py`, `flow_link` | — |
 | No same-y runs | static footage gets one long shot; never near-identical neighbours | `weave` | — |
 | Music-video rhythm | 8-beat phrases of varied lengths, peaks on beats, cuts 2 frames early, beat-exact frames | `rhythm`, `in_point`, `ANTICIPATE` | `night_pace` |
 | Subject | the salient, near, large dancer (+ partner/line), not just the sharpest | `subject.py`, `frame.track` | — |
 | Moments | middle of routines; spins, dips, tricks, shakes, close-ups; dancing the whole shot | `moments.py` | — |
 | Velocity edits | fast through the move (≤1.5x dancing) → ease → slow on the landing → hold → ease up | `velocity.settle/landing`, `fx/speed.py` | `heroes` |
+| Show the landing | every dance shot keeps the end of the move and about a beat of rest after it lands, borrowing a beat from a neighbour if needed | `velocity.landed/hold_in`, `plan.lands` | `land_hold` |
 | Transition grammar | mostly hard cuts; each act's own short vocabulary; a reason for every transition | `grammar.py`, `plan.transitions` | `grammar`, `caps`, `flash_at` |
 | Cohesive effects | one effect at a time, one subject effect (on the drop), effects target the subject | `give_slot_fx`, `fx/subject.py` | — |
-| Portrait framing | strip follows one dancer of a split couple; faces strongly favoured; no backs; whole subject in frame | `frame.follow/faces`, `plan.reframe`, `plan.assess` | — |
+| Portrait framing | strip follows one dancer of a split couple; faces (YuNet, not pose keypoints) strongly favoured; no backs; whole subject in frame | `frame.follow/face_seen`, `plan.reframe`, `plan.assess` | — |
 | Shake | measure; too shaky → another part of the clip; mildly shaky → stabilise | `shake.py`, `plan.assess`, `render.stab` | `shake` |
 | Band members | individual players cut in on the hardest musical hits | `plan.band_in` | `members`, `member_clips`, `band_in` |
 | Ending | a chosen last shot that runs out exactly at its end time; its stretch reserved | `plan.ending_record/reserve_ending` | `ending` |
@@ -82,7 +83,9 @@ Read `references/concepts.md` for the rule, the reason, the numbers and the code
 The planner prints a summary per act: shots, transitions, effects. Look at `plan_<cut>.json`, or render with
 `--draft` and open the review page, and check:
 
-- Every clip is present; no clip cuts to itself; no B-roll sits next to B-roll.
+- Every export file is present in each format it belongs to (the summary's `units` reads n/n); no clip cuts to
+  itself; no B-roll sits next to B-roll.
+- Dance shots with a landing show the rest after it (`land`, `land_fits` in the plan).
 - Transitions are few (about 15 in 3 minutes) and each has a `why`; none are back to back.
 - Speed effects never sit side by side; there is one subject effect; dancing is never above 1.5x.
 - Portrait: `crop.face` is high on social-floor shots, there are no backs, and `inside` is near 1.

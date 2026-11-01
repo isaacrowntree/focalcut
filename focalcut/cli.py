@@ -260,6 +260,13 @@ def cmd_reel_init(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reel_serve(a: argparse.Namespace) -> int:
+    from .reel import serve
+    from .reel.project import Project
+    serve.run(Project(a.folder), port=a.port)
+    return 0
+
+
 def cmd_reel_run(a: argparse.Namespace) -> int:
     from . import reel
     steps = a.steps.split(",") if a.steps else None
@@ -299,6 +306,10 @@ def main(argv=None) -> int:
     rr.add_argument("--workers", type=int, default=2, help="scoring processes (2 suits a 12 GB GPU)")
     rr.add_argument("--draft", action="store_true", help="render without effects or transitions (fast check)")
     rr.set_defaults(func=cmd_reel_run)
+    rv = rsub.add_parser("serve", help="serve the review pages; they save picks.json as you make picks")
+    rv.add_argument("folder")
+    rv.add_argument("--port", type=int, default=8765)
+    rv.set_defaults(func=cmd_reel_serve)
 
     fxp = sub.add_parser("fx", help="apply effect modules to a clip (list | apply | gallery)")
     fxp.add_argument("args", nargs=argparse.REMAINDER)

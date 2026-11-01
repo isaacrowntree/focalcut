@@ -12,7 +12,9 @@
   people    everyone in the footage by face (YuNet + SFace), grouped across clips, so the plan can show every person
   plan      the story in acts, locked to the beat grid; effects and transitions chosen per cut (picks.json: the
             editor's bans and preferences, by export file and time)
-  review    a local HTML page per reel: a frame per shot, its export file and time range, a copyable picks line
+  review    a local HTML page per reel: a frame per shot, its export file and time range, a copyable picks line;
+            and one source browser for the project (browse.py): every clip on a wide timeline, in-out selections
+            (`focalcut reel serve` lets the pages save picks.json themselves)
 
 Each step reads and writes JSON / npz under <folder>/focalcut/reel/, so any step can be re-run on its own, and the
 model passes skip sources they have already done. Everything except `units`, `xml` and `review` needs the `reel` extra
@@ -66,6 +68,9 @@ def run(folder: str, steps=None, formats=None, workers: int = 2, draft: bool = F
         elif step in ("xml", "review"):
             for f in formats:
                 mod.run(project, f)
+            if step == "review":
+                from . import browse
+                browse.run(project)
         elif step in ("shake", "focus"):
             mod.run(project, workers=max(workers, 1) + 1)
         else:                                       # units, subject, semantic, moments, faces, people

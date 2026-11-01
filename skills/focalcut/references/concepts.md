@@ -38,7 +38,10 @@ on a dance shot.
 
 ## 3. Use everything: card shuffle and fair share
 
-**Rule:** every clip in the export appears, with several different scenes from each.
+**Rule:** every file in the export appears in each format it belongs to, with several different scenes from each.
+This is a hard requirement: use more, shorter cuts rather than leave a file out. A file is the unit, not the camera
+clip: one clip split into five social segments is five files, and each one appears. Footage shot in portrait (the
+social segments) is portrait-only; landscape never uses it.
 - A clip's shots are spread through the reel and interleaved with others of the same style (the matinee routines
   weave through each other).
 - Never play one clip as a block of consecutive shots, cut a clip to itself, or put B-roll next to B-roll.
@@ -50,7 +53,9 @@ blocks feel like separate videos.
   unit's shots sit `APART` = 6 s apart.
 - `cover` orders clips by their best moment as it plays in this format.
 - `weave` deals the act like cards.
-- `cover_all` swaps a missing clip in for the weakest plain shot of the clip with the most shots.
+- `cover_all` puts every missing unit in: it takes the place of the weakest plain shot of a unit with several, in
+  its home act (the social floor may also go in the climax), or splits a long plain shot to make room. The band
+  inserts and the editor's extra shots never take a unit's only shot.
 
 ## 4. Cut on the action: movement flow
 
@@ -140,6 +145,20 @@ gets it backwards: the fast part looks slow and the hold has nothing to show.
 
 **Knob:** `heroes`, the slow-motion holds in the shows act.
 
+### 9b. Show the landing (every dance shot)
+
+**Rule:** when a dancer finishes a trick and comes to rest, the shot stays on them a little longer so the audience
+sees them land gracefully. Never "dancer does a trick" without "dancer finishes the trick".
+**Code:**
+- `velocity.landed(project, unit, t)` finds where the move around the peak comes to rest (burst then rest, from
+  0.3 s before the peak to 1.6 s after), or None.
+- `plan.lands` marks each plain dance shot's landing and, when the shot is too short to show the end of the move
+  (`velocity.PRE` = 0.5 s) and the rest, takes a beat from a plain neighbour in the same act.
+- `velocity.hold_in` moves the in-point as little as possible so both fit; a one-beat hit too short for both lands
+  40% in.
+
+**Knob:** `land_hold`, beats of rest after the landing (default 1, at least 0.45 s).
+
 ## 10. Transition grammar: cohesive, motivated, mostly hard cuts
 
 **Rule:** mostly hard cuts on the beat. Each act has its own short vocabulary and a cap on each transition, and
@@ -196,7 +215,11 @@ the subject effects in `fx/subject.py` (`aura`, `neon`, `spotlight`, …).
     0.12) and holds the last position through gaps.
   - The dancer is scored by face ×2, coverage, √area and sharpness.
   - Otherwise it reports the face of the main (largest) member.
-- `frame.faces(kp)`: nose and both eyes above 0.6 confidence, left eye right of right eye (frontal).
+- `frame.face_seen`: with the unit's YuNet face scan (`scores/faces_<unit>.npz`, the `people` step), a person
+  shows their face when a confident face (score ≥ 0.8, height ≥ 3% of the frame) sits in the head of their pose
+  box within 0.3 s. ViTPose puts confident eyes on the backs of heads on the social floor, so the pose test
+  `frame.faces(kp)` (nose and both eyes above 0.6, left eye right of right eye) is only the fallback. Run the
+  `people` step (or at least its face scan) before planning a portrait cut of social dancing.
 - `plan.reframe` returns the crop plus `present` (≥60% of the subject inside), `inside` (≥92% inside and not cut
   by the camera's edge) and `face`, each as a fraction of the shot.
   - The crop centre is smoothed over about 0.3 s in a narrow strip and 0.6 s otherwise.

@@ -133,8 +133,33 @@ def subject(boxes, focus, aw, ah):
 
 
 def faces(kp):
-    """Which pose people show their face to the camera: nose and both eyes confidently seen (a back has none)."""
+    """Which pose people show their face to the camera, from the pose alone: nose and both eyes confidently seen.
+    ViTPose often puts confident eyes on the back of a head, so this is only the fallback for face_seen."""
     return (kp[..., 0, 2] > 0.6) & (kp[..., 1, 2] > 0.6) & (kp[..., 2, 2] > 0.6) & (kp[..., 1, 0] > kp[..., 2, 0])
+
+
+FACE_SCORE, FACE_H = 0.8, 0.03                    # a YuNet face that counts: detector score, height (of the frame)
+
+
+def face_seen(d, times, boxes, kp):
+    """Which pose people (F, P) show their face to the camera. With a face scan of the unit (d["yf"]: the people
+    step's YuNet detections, which a back of a head never sets off), a person shows their face when a confident face
+    sits in the head of their box within 0.3 s; otherwise from the pose keypoints (faces)."""
+    if "yf" not in d:
+        return faces(kp)
+    y = d["yf"]
+    keep = (y["score"] >= FACE_SCORE) & (y["h"] >= FACE_H)
+    yt, cx, cy = y["t"][keep], y["cx"][keep], y["cy"][keep]
+    nb = boxes[..., :4] / [d["aw"], d["ah"], d["aw"], d["ah"]]
+    out = np.zeros(boxes.shape[:2], bool)
+    for f, t in enumerate(times):
+        near = np.abs(yt - t) <= 0.3
+        if not near.any():
+            continue
+        x0, y0, x1, y1 = (nb[f, :, k][:, None] for k in range(4))
+        head = (cx[near] >= x0) & (cx[near] <= x1) & (cy[near] >= y0 - 0.02) & (cy[near] <= y0 + 0.4 * (y1 - y0))
+        out[f] = np.nan_to_num(head).astype(bool).any(1)
+    return out
 
 
 def follow(d, times, union, cw, split=0.8):
@@ -156,7 +181,7 @@ def _follow(d, times, union, cw, split):
     boxes, kp = d["boxes"][idx], d["kp"][idx]
     foc = d["focus"][idx] if "focus" in d else np.zeros(boxes.shape[:2])
     m = members(boxes, grown, d["aw"], d["ah"]) & close[:, None]
-    fv = faces(kp) & m
+    fv = face_seen(d, times, boxes, kp) & m
     wide = np.nan_to_num(w) > split * cw
     if wide.mean() < 0.3:
         # the face that counts is the main person's (the biggest in the group): a partner's face over a back

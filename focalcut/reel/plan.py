@@ -34,7 +34,9 @@ from __future__ import annotations
 import copy
 import itertools
 import json
+import math
 import os
+from collections import Counter
 
 import numpy as np
 
@@ -84,6 +86,7 @@ _COMMON = dict(
     # categories or B-roll tags (substrings) kept for the climax and finale, e.g. the headliner's set: they stay out of
     # the earlier acts, and the climax and finale cut from them first
     late=[],
+    land_hold=1.0,                                # beats of the dancer at rest a shot keeps after a move lands
 )
 CFG = {
     "landscape": dict(_COMMON, heroes=4, night_pace="medium"),
@@ -140,8 +143,11 @@ class Picker:
     def take(self, r, m, **kw):
         self.used.setdefault(r["id"], []).append(m["t"])
         self.count[r["unit"]["clip"]] = self.count.get(r["unit"]["clip"], 0) + 1
-        return dict(unit=r["unit"], t=m["t"], kind=m["kind"], rank=round(rk(m, self.fmt), 3), face=m.get("face", 0),
-                    framing=fr(m, self.fmt), thumb=m.get("thumb"), fx=[], effect=None, **kw)
+        out = dict(unit=r["unit"], t=m["t"], kind=m["kind"], rank=round(rk(m, self.fmt), 3), face=m.get("face", 0),
+                   framing=fr(m, self.fmt), thumb=m.get("thumb"), fx=[], effect=None, **kw)
+        if m.get("span"):                                    # the editor's own in-out (picks "add" range)
+            out["span"] = m["span"]
+        return out
 
     def pool(self, recs, kinds=None, min_frame=0.0):
         out = [(r, m) for r in recs for m in r["moments"] if self.free(r, m) and (kinds is None or m["kind"] in kinds)
@@ -355,49 +361,135 @@ def broll_slots(lengths, n_shots, nb):
     return slots
 
 
+PLAIN = ("reaction", "ending", "band", "logo")               # shots a coverage pass never replaces or splits
+
+
 def cover_all(P, seq, recs, home):
-    """Every clip in the reel: a clip with no shot takes the place of the weakest plain shot of the clip with the
-    most, in the act where it belongs (home: record id -> act), never beside itself or another B-roll shot."""
-    for clip in sorted({r["unit"]["clip"] for r in recs} - {s["unit"]["clip"] for s in seq}):
-        mine = [r for r in recs if r["unit"]["clip"] == clip]
-        x = P.best(mine)
+    """Every export file in the reel -- a unit, not just its camera clip: a clip the editor split into five social
+    segments is five files, and each one appears. A unit with no shot takes the place of the weakest plain shot of a
+    unit that has several, in the act where it belongs (home: record id -> act; the social floor may also go in the
+    climax); with no such shot, a long plain shot there is split to make room (more cuts, the grid unchanged). Never
+    beside its own clip, never B-roll beside B-roll."""
+    have = {s["unit"]["id"] for s in seq}
+    for r in sorted([r for r in recs if r["unit"]["id"] not in have],
+                    key=lambda r: -max((rk(m, P.fmt) for m in r["moments"]), default=0)):
+        x = P.best([r])
         if not x:
             continue
-        act = home.get(x[0]["id"], "night" if x[0]["role"] == "transition" else "climax")
-        idx = [i for i, s in enumerate(seq) if s["act"] == act and not s["fx"] and not s.get("reaction")
-               and 0 < i < len(seq) - 1 and seq[i - 1]["act"] == act and seq[i + 1]["act"] == act
-               and clip not in (seq[i - 1]["unit"]["clip"], seq[i + 1]["unit"]["clip"])
-               and not (x[0]["role"] == "transition" and "transition" in (seq[i - 1]["unit"]["role"],
-                                                                          seq[i + 1]["unit"]["role"]))]
-        if not idx:
-            continue
-        i = max(idx, key=lambda i: (P.load(seq[i]["unit"]["clip"]), -seq[i]["rank"]))
-        old = seq[i]
-        P.count[old["unit"]["clip"]] -= 1
-        seq[i] = P.take(*x, beats=old["beats"], act=act)
+        act = home.get(r["id"], "night" if r["role"] == "transition" else "climax")
+        acts = [act] + (["climax", "night"] if r["role"] == "dance" else [])
+        acts = list(dict.fromkeys(acts))
+        clip, units = r["unit"]["clip"], Counter(s["unit"]["id"] for s in seq)
 
+        def fits(i, j, r=r, clip=clip):                      # the new shot at i, between seq[i - 1] and seq[j]
+            nb = [seq[k] for k in (i - 1, j) if 0 <= k < len(seq)]
+            return all(n["unit"]["clip"] != clip for n in nb) and \
+                not (r["role"] == "transition" and any(n["unit"]["role"] == "transition" for n in nb))
 
-def include_adds(P, seq, recs, home):
-    """The editor's extra shots (picks "add") are in the reel: each one not already shown takes the place of the
-    weakest plain shot in its act (home: record id -> act), never beside its own clip."""
-    for r in recs:
-        for m in [m for m in r["moments"] if m.get("add")]:
-            if any(x["unit"]["id"] == r["unit"]["id"] and abs(x["t"] - m["t"]) < 1.5 for x in seq):
-                continue
-            act = home.get(r["id"], "night" if r["role"] == "transition" else "climax")
-            clip = r["unit"]["clip"]
-            idx = [i for i, x in enumerate(seq) if x["act"] == act and not x["fx"] and not x.get("reaction")
-                   and not x.get("ending") and not x.get("band") and not x.get("logo")
-                   and not x.get("add") and 0 < i < len(seq) - 1 and P.count.get(x["unit"]["clip"], 0) > 1
-                   and clip not in (seq[i - 1]["unit"]["clip"], seq[i + 1]["unit"]["clip"])
-                   and not (r["role"] == "transition" and "transition" in (seq[i - 1]["unit"]["role"],
-                                                                           seq[i + 1]["unit"]["role"]))]
-            if not idx:
-                continue
-            i = max(idx, key=lambda i: (P.load(seq[i]["unit"]["clip"]), -seq[i]["rank"]))
+        def plain(x):
+            return not x["fx"] and not any(x.get(f) for f in PLAIN) and not x.get("add")
+        idx = [i for i, x in enumerate(seq) if x["act"] in acts and plain(x) and 0 < i < len(seq) - 1
+               and units[x["unit"]["id"]] > 1 and fits(i, i + 1)]
+        if idx:
+            i = max(idx, key=lambda i: (-acts.index(seq[i]["act"]), units[seq[i]["unit"]["id"]],
+                                        P.load(seq[i]["unit"]["clip"]), -seq[i]["rank"]))
             old = seq[i]
             P.count[old["unit"]["clip"]] -= 1
-            seq[i] = P.take(r, m, beats=old["beats"], act=act); seq[i]["add"] = True   # (the act's grid stays exact)
+            seq[i] = P.take(*x, beats=old["beats"], act=old["act"])
+            continue
+        idx = [i for i, x in enumerate(seq) if x["act"] in acts and plain(x) and x["beats"] >= 2
+               and 0 < i < len(seq) - 1 and x["unit"]["clip"] != clip and fits(i + 1, i + 1)
+               and not (r["role"] == "transition" and x["unit"]["role"] == "transition")]
+        if not idx:
+            print(f"[reel] {P.fmt}: no room for {r['unit']['id']}")
+            continue
+        i = max(idx, key=lambda i: (seq[i]["beats"], -acts.index(seq[i]["act"]), -seq[i]["rank"]))
+        old = seq[i]
+        give = old["beats"] // 2
+        old["beats"] -= give
+        seq.insert(i + 1, P.take(*x, beats=give, act=old["act"]))
+
+
+PICK_MAX = 4.0           # an editor's selection longer than this becomes several shots (seconds each, at most)
+PICK_BEATS = 8           # and no one shot of it runs longer than this many beats
+
+
+def plain(x):
+    return not x["fx"] and not x.get("reaction") and not x.get("ending") and not x.get("band") \
+        and not x.get("logo") and not x.get("add")
+
+
+def fit_pick(seq, i, beat):
+    """The editor's selection plays as long as they chose: its shot takes beats from (or gives them to) the plain shots
+    nearest it in its act, which keep at least 2 -- or takes a whole short neighbour's place when that neighbour's
+    unit is in the reel elsewhere -- so the act's grid stays exact."""
+    s = seq[i]
+    if not s.get("span") or not beat:
+        return
+    want = max(1, min(PICK_BEATS, round((s["span"][1] - s["span"][0]) / beat)))
+    while s["beats"] != want:
+        i = next(k for k, x in enumerate(seq) if x is s)
+        near = sorted((j for j in range(len(seq)) if j != i and seq[j]["act"] == s["act"] and plain(seq[j])),
+                      key=lambda j: abs(j - i))
+        d = want - s["beats"]
+        if not near:
+            return
+        if d < 0:
+            seq[near[0]]["beats"] -= d; s["beats"] += d
+            return
+        j = next((j for j in near if seq[j]["beats"] > 2), None)
+        if j is not None:
+            g = min(seq[j]["beats"] - 2, d)
+            seq[j]["beats"] -= g; s["beats"] += g
+            continue
+        units = Counter(x["unit"]["id"] for x in seq)
+        j = next((j for j in near if units[seq[j]["unit"]["id"]] > 1 and 0 < j < len(seq) - 1), None)
+        if j is None:
+            return
+        s["beats"] += seq.pop(j)["beats"]
+
+
+def include_adds(P, seq, recs, home, beat=None):
+    """The editor's extra shots (picks "add") are in the reel: each one not already shown takes the place of the
+    weakest plain shot in its act (home: record id -> act), never beside its own clip -- or, with no such shot, splits
+    the longest plain one. A selection (an in-out) runs its own length (fit_pick)."""
+    for r in recs:
+        for m in [m for m in r["moments"] if m.get("add")]:
+            near = [k for k, x in enumerate(seq) if x["unit"]["id"] == r["unit"]["id"] and abs(x["t"] - m["t"]) < 1.5
+                    and not (m.get("span") and x.get("span") and x["span"] != m["span"])]
+            if near:
+                if m.get("span"):
+                    seq[near[0]].update(span=m["span"], add=True)
+                    fit_pick(seq, near[0], beat)
+                continue
+            act = home.get(r["id"], "night" if r["role"] == "transition" else "climax")
+            clip, units = r["unit"]["clip"], Counter(x["unit"]["id"] for x in seq)
+
+            def fits(i, act=act, clip=clip, units=units, r=r):
+                return (plain(seq[i]) and 0 < i < len(seq) - 1 and units[seq[i]["unit"]["id"]] > 1
+                        and clip not in (seq[i - 1]["unit"]["clip"], seq[i + 1]["unit"]["clip"])
+                        and not (r["role"] == "transition" and "transition" in (seq[i - 1]["unit"]["role"],
+                                                                                seq[i + 1]["unit"]["role"])))
+            idx = [i for i, x in enumerate(seq) if x["act"] == act and fits(i)] or \
+                [i for i, x in enumerate(seq) if x["act"] not in ("teaser", "finale") and fits(i)]
+            if idx:
+                i = max(idx, key=lambda i: (seq[i]["act"] == act, P.load(seq[i]["unit"]["clip"]), -seq[i]["rank"]))
+                old = seq[i]
+                P.count[old["unit"]["clip"]] -= 1
+                seq[i] = P.take(r, m, beats=old["beats"], act=old["act"])   # (the act's grid stays exact)
+            else:                                            # split the longest plain shot that is not beside its clip
+                long = [i for i, x in enumerate(seq) if plain(x) and x["beats"] >= 3 and 0 < i < len(seq) - 1
+                        and x["act"] not in ("teaser", "finale") and clip not in (x["unit"]["clip"],
+                                                                                   seq[i + 1]["unit"]["clip"])]
+                if not long:
+                    print(f"[reel] no room for the pick {r['unit']['id']} {m['t']:.1f}")
+                    continue
+                j = max(long, key=lambda i: seq[i]["beats"])
+                seq[j]["beats"] -= 1
+                i = j + 1
+                seq.insert(i, P.take(r, m, beats=1, act=seq[j]["act"]))
+            seq[i]["add"] = True
+            fit_pick(seq, i, beat)
 
 
 KISS_Q = 0.92            # SigLIP kiss confidence that makes a kiss a must-have
@@ -411,7 +503,7 @@ def split_for(seq, cover, count, shows, items, act, clip, role="dance"):
     def ok(i):
         x = seq[i]
         need = 3 if x["act"] == "climax" else 4                    # both halves keep 2 beats (climax: 1 for the insert)
-        if (x["beats"] < need or x["fx"] or x.get("ending") or x.get("logo") or x.get("band") or x.get("reaction")
+        if (x["beats"] < need or x["fx"] or x.get("ending") or x.get("logo") or x.get("band") or x.get("reaction") or x.get("span")
                 or not 0 < i < len(seq) - 1 or clip in (x["unit"]["clip"], seq[i + 1]["unit"]["clip"])
                 or (role == "transition" and "transition" in (x["unit"]["role"], seq[i + 1]["unit"]["role"]))):
             return False                                         # (no B-roll beside B-roll)
@@ -538,7 +630,8 @@ def apply_picks(recs, picks):
          "C1984-05_couple": {"ban": ["all"]}}
     Banned stretches lose their moments ("all": the whole clip); preferred ones jump the queue (+1.0) -- and if no
     detected moment falls inside, one is made at the middle of the range (kind and framing from the nearest), so a
-    suggestion always lands. "add": extra shots the reel must include, each at that time (include_adds). "more":
+    suggestion always lands. "add": extra shots the reel must include, each at that time (include_adds); a range
+    ("1:12.4-1:15.1", from the source browser) is the editor's in-out, and the shot starts at its in-point. "more":
     ask for more shots from this clip -- its fair-share discount is divided by 1 + more and its moments rank up.
     Keys starting with "_" are notes. Changes recs in place."""
     picks = {k: v for k, v in (picks or {}).items() if not k.startswith("_")}
@@ -567,9 +660,13 @@ def apply_picks(recs, picks):
                 for k in [k for k in ("score_l", "score_p") if k in m] or ["score"]:
                     m[k] += 1.0
                 m["pick"] = True
+        adds = []
         for v in p.get("add", []):
-            t = u.get("export_t0", 0.0) + (_secs(v) if not isinstance(v, str) or "-" not in v
-                                           else sum(map(_secs, v.split("-", 1))) / 2)
+            a, b = span(v)
+            n = max(1, math.ceil((b - a) / PICK_MAX - 1e-6))     # a long selection: several shots, all of it used
+            adds += [(a + (b - a) * k / n, a + (b - a) * (k + 1) / n) for k in range(n)]
+        for a, b in adds:
+            t = (a + b) / 2
             if not r["moments"]:
                 continue
             near = min(r["moments"], key=lambda m: abs(m["t"] - t))
@@ -579,6 +676,8 @@ def apply_picks(recs, picks):
             for k in [k for k in ("score_l", "score_p") if k in m] or ["score"]:
                 m[k] += 1.0
             m["pick"] = m["add"] = True
+            if b - a > 0.05:
+                m["span"] = [round(a, 3), round(b, 3)]
         if p.get("more"):
             r["more"] = max(int(p["more"]), 0)
             for m in r["moments"]:
@@ -617,6 +716,7 @@ def band_in(P, seq, recs, music, cfg):
     for x in seq:
         pos.append(rec); rec += x["beats"]
     for act, n in cfg["band_in"].items():
+        units = Counter(x["unit"]["id"] for x in seq)
         idx = [i for i, x in enumerate(seq) if x["act"] == act]
         if not idx:
             continue
@@ -625,7 +725,7 @@ def band_in(P, seq, recs, music, cfg):
             aim = lo + (k + 0.5) * (hi - lo + 1) / n
             cand = [i for i in range(lo + 1, hi) if seq[i]["unit"]["role"] != "transition" and not seq[i]["fx"]
                     and not any(seq[i].get(f) for f in ("ending", "add", "reaction", "logo")) and seq[i]["beats"] <= 2
-                    and P.count.get(seq[i]["unit"]["clip"], 0) > 1
+                    and units[seq[i]["unit"]["id"]] > 1
                     and not any(seq[j]["unit"]["role"] == "transition" for j in (i - 1, i + 1))
                     and not any(seq[j].get("band") or seq[j]["fx"] for j in (i - 1, i + 1))]
             if not cand:
@@ -638,6 +738,7 @@ def band_in(P, seq, recs, music, cfg):
                 break
             old = seq[i]
             P.count[old["unit"]["clip"]] -= 1
+            units[old["unit"]["id"]] -= 1; units[x[0]["unit"]["id"]] += 1
             seq[i] = P.take(*x, beats=old["beats"], act=act); seq[i]["band"] = True
 
 
@@ -846,7 +947,7 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None):
     fi.append(s)
     seq += fit(fi, budget["finale"], 2)
     cover_all(P, seq, recs, home)
-    include_adds(P, seq, recs, home)
+    include_adds(P, seq, recs, home, music["beat"])
     cov = cover_people(P, seq, recs, home, cfg.get("people"), fmt, music["beat"])
     if cov:
         print(f"[reel] {fmt}: people the camera stayed on {cov[4]}/{cov[5]}, everyone {cov[0]}/{cov[1]}, "
@@ -857,9 +958,11 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None):
         edge = (k > 0 and seq[k - 1]["act"] != s["act"]) or (k + 1 < len(seq) and seq[k + 1]["act"] != s["act"])
         if edge and s["beats"] < 2:
             near = sorted(seq, key=lambda d: abs(seq.index(d) - k))
-            donor = next((d for d in near if d["act"] == s["act"] and d is not s and d["beats"] >= 3 and not d["fx"]),
+            donor = next((d for d in near if d["act"] == s["act"] and d is not s and d["beats"] >= 3 and not d["fx"]
+                          and not d.get("span")),
                          None) or \
-                next((d for d in near if d["act"] == s["act"] and d is not s and d["beats"] == 2 and not d["fx"]), None)
+                next((d for d in near if d["act"] == s["act"] and d is not s and d["beats"] == 2 and not d["fx"]
+                      and not d.get("span")), None)
             if donor:
                 donor["beats"] -= 1; s["beats"] += 1
     for k in range(1, len(seq)):                             # one effect at a time across act changes too
@@ -868,7 +971,7 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None):
             b["fx"], b["effect"] = [], None
     # whatever the acts could not fill (or overfilled) comes off / goes on the plain shots, so the grid stays exact
     over = sum(s["beats"] for s in seq) - video_beats
-    plain = sorted([s for s in seq if not s["fx"]], key=lambda s: s["rank"]) or seq
+    plain = sorted([s for s in seq if not s["fx"] and not s.get("span")], key=lambda s: s["rank"]) or seq
     i = 0
     while over != 0 and i < 50 * len(plain):
         s = plain[i % len(plain)]
@@ -936,6 +1039,9 @@ def reframe(project, unit, t0, length, fmt):
     W, H = SIZE[fmt]
     path = project.path("scores", unit["score"] + ".npz")
     d = FR.load(path) if os.path.exists(path) else None
+    yf = project.path("scores", f"faces_{unit['id']}.npz")   # the unit's face scan (people step), when there is one
+    if d is not None and os.path.exists(yf) and not unit.get("rotate"):
+        d["yf"] = dict(np.load(yf))
     src_w, src_h = sorted((int(d["size"][0]), int(d["size"][1])) if d is not None else (2160, 3840))[::-1]
     if unit["orient"] == "portrait":                        # as the reel sees it: after any rotation
         src_w, src_h = src_h, src_w
@@ -1009,8 +1115,9 @@ def assess(project, recs, fmt, cfg):
     cache = json.load(open(path)) if os.path.exists(path) else {}
     for r in recs:
         u = r["unit"]
+        yf = "|yf" if os.path.exists(project.path("scores", f"faces_{u['id']}.npz")) else ""   # (face scan: re-assess)
         for m in r["moments"]:
-            k = f"{fmt}|{u['id']}|{m['t']}"
+            k = f"{fmt}|{u['id']}|{m['t']}{yf}"
             if k not in cache:
                 c = reframe(project, u, m["t"] - 0.8, 2.4, fmt) or {}
                 cache[k] = [c.get("present", 1.0), c.get("inside", 1.0), c.get("face", 0.0), c.get("w", 1.0)]
@@ -1054,6 +1161,8 @@ def in_point(s, beat):
     """Source in-point: the move's peak lands on a beat inside the shot -- mid-shot for a speed effect, about 40% in
     for a plain shot, on the cut itself for a one-beat hit."""
     u, L = s["unit"], s["beats"] * beat
+    if s.get("span"):                                        # the editor's selection: it starts at their in-point
+        return min(max(s["span"][0], u["t0"]), max(u["t1"] - L, u["t0"]))
     if "lead_beats" in s:                                    # a velocity edit: the landing on its chosen beat
         lead = s["lead_beats"] * beat
     elif any(f in SPEED for f in s["fx"]):
@@ -1100,6 +1209,33 @@ def shot(r, m, fmt, beats, act="shows", fx=(), **kw):
     return s
 
 
+def lands(project, seq, beat, hold):
+    """Where each plain dance shot's move lands (velocity.landed), and the beats it needs to show it: the end of the
+    move and hold seconds of rest. A shot too short for that takes a beat from a plain neighbour in its act that can
+    spare one (an act's edge shots keep 2 for their transition; a neighbour with its own landing keeps what it needs)."""
+    need = math.ceil((V.PRE + hold) / beat - 1e-6)
+    for i, s in enumerate(seq):
+        if (s["unit"]["role"] == "transition" or any(s.get(f) for f in ("ending", "logo", "reaction"))
+                or any(f in SPEED for f in s["fx"])):
+            continue
+        s["land"] = V.landed(project, s["unit"], s["t"])
+        if s["land"] is None:
+            continue
+
+        def spare(j, s=s):
+            d = seq[j]
+            edge = (j > 0 and seq[j - 1]["act"] != d["act"]) or (j + 1 < len(seq) and seq[j + 1]["act"] != d["act"])
+            keep = max(need if d.get("land") is not None else 1, 2 if edge else 1)
+            return (d["act"] == s["act"] and not d["fx"] and not any(d.get(f) for f in ("ending", "logo", "span"))
+                    and d["beats"] - 1 >= keep)
+        while s["beats"] < need:
+            donors = [j for j in (i + 1, i - 1) if 0 <= j < len(seq) and spare(j)]
+            if not donors:
+                break
+            j = max(donors, key=lambda j: seq[j]["beats"])
+            seq[j]["beats"] -= 1; s["beats"] += 1
+
+
 def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, acts=None, song=None):
     """Turn a sequence of shots (beats, act, fx; from story() or built by hand with shot()) into a plan that render,
     xml_export and review can use: record positions locked to the beat grid, velocity edits slowed on the dancer's
@@ -1125,6 +1261,8 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
         j = j / max((s["crop"] or {}).get("w", 1.0), 0.2) if j is not None else None
         s["jitter"] = round(j, 5) if j is not None else None
         s["stab"] = bool(j is not None and j > lo and "_stabilized" not in u["source"])   # (not twice)
+    hold = max(cfg.get("land_hold", 1.0) * beat, 0.45)
+    lands(project, seq, beat, hold)
     rec = 0
     for s in seq:
         L = T(rec + s["beats"]) - T(rec)
@@ -1135,6 +1273,11 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
             s["t"] = V.settle(project, u, s["t"])
             s["lead_beats"] = V.landing(s["beats"], ramp, s["kind"] == "closeup", acc[rec:])
         src_in = in_point(s, s["beat"])
+        if s.get("land") is not None:                        # the move's finish and the rest after it
+            src_in, s["land_fits"] = V.hold_in(src_in, L, s["land"], hold)
+            src_in = min(max(src_in, u["t0"]), max(u["t1"] - L, u["t0"]))
+        if s.get("span"):                                    # the editor's selection starts at their in-point
+            src_in = in_point(s, s["beat"])
         if s.get("ending"):                                  # the configured ending runs out at its "to" time
             src_in = max(u.get("export_t0", 0.0) + cfg["ending"][2] - L, u["t0"])
         f0, f1 = round(T(rec) * FPS), round(T(rec + s["beats"]) * FPS)
@@ -1146,6 +1289,7 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
     for s in seq:                                            # velocity edits changed some shots' speed effects
         if any(f in SPEED for f in s["fx"]) and not s.get("ending"):
             src_in = round(in_point(s, s["beat"]), 3)
+            s["land"] = s["land_fits"] = None                 # (a speed effect times itself on the peak)
             if src_in != s["src_in"]:
                 s.update(src_in=src_in, peak=round(s["t"] - src_in, 3))
                 frame(s)

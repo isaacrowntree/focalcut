@@ -498,6 +498,55 @@ def test_picks_reach_the_plan(tmp_path):
     assert moments[0]["moments"]                                 # the caller's moments are left alone
 
 
+def test_picks_add_ranges_are_the_editors_in_out_and_long_ones_split():
+    r = picks_rec()
+    P.apply_picks([r], {"C200-01_couple": {"add": ["0:20-0:22.5", "0:40-0:46", "0:05"]}})
+    spans = sorted(m["span"] for m in r["moments"] if m.get("span"))
+    assert spans == [[30.0, 32.5], [50.0, 53.0], [53.0, 56.0]]   # 6 s -> two 3 s shots; export + 10 s = source
+    assert any(m.get("add") and not m.get("span") and m["t"] == 15.0 for m in r["moments"])   # a point stays a point
+    s = dict(unit=r["unit"], t=31.0, beats=4, fx=[], span=[30.0, 32.5])
+    assert P.in_point(s, 0.5) == 30.0                                # starts at the editor's in-point
+
+
+def test_fit_pick_gives_a_selection_its_length_and_keeps_the_grid():
+    u = lambda i: dict(id=f"U{i}", clip=f"C{i}", role="dance")      # noqa: E731
+    seq = [dict(unit=u(k % 3), act="night", beats=2, fx=[]) for k in range(8)]
+    seq[3].update(span=[0.0, 3.0], add=True)                         # 3 s at 0.5 s a beat: 6 beats
+    total = sum(x["beats"] for x in seq)
+    P.fit_pick(seq, 3, 0.5)
+    assert next(x for x in seq if x.get("span"))["beats"] == 6 and sum(x["beats"] for x in seq) == total
+
+
+def test_source_browser_page_and_server_save_picks(tmp_path):
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    from focalcut.reel import browse, serve
+    clip = dict(id="C1", cat="night", tag="", clock="21:00", sort="1", dur=10.0, video="v.mp4", strip="sources/C1.jpg",
+                step=1.0, n=10, moments=[[2.0, "spin"]], L=[[1.0, 2.0, 5]], P=[])
+    html_ = browse.page([clip], {"C1": {"add": ["0:01-0:02"]}})
+    assert '"id": "C1"' in html_ and "/api/picks" in html_ and "Play all" in html_
+    pr, _, _ = fake_reel(tmp_path)
+    os.makedirs(pr.path("review"), exist_ok=True)
+    with open(pr.path("review", "sources.html"), "w") as f:
+        f.write(html_)
+    with open(os.path.join(pr.folder, "v.bin"), "wb") as f:
+        f.write(bytes(range(256)))
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), serve.handler(pr))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    try:
+        req = urllib.request.Request(base + "/api/picks", data=b'{"C1": {"add": ["0:03-0:04"]}}', method="PUT")
+        assert urllib.request.urlopen(req).status == 200
+        assert json.load(open(pr.path("picks.json"))) == {"C1": {"add": ["0:03-0:04"]}}
+        assert json.load(urllib.request.urlopen(base + "/api/picks")) == {"C1": {"add": ["0:03-0:04"]}}
+        part = urllib.request.urlopen(urllib.request.Request(base + "/v.bin", headers={"Range": "bytes=10-19"}))
+        assert part.status == 206 and part.read() == bytes(range(10, 20))
+    finally:
+        srv.shutdown()
+
+
 def test_activity_gate_marks_down_someone_standing_still():
     from focalcut.reel.moments import activity
     pt = np.arange(0, 10, 0.2)
@@ -854,3 +903,57 @@ def test_effects_clear_the_centre_of_the_frame():
     assert m[90, 160, 0] == 0 and m[0, 0, 0] == 1 and 0 < m[90, 250, 0] < 1
     p = edge_mask(180, 320, 0.42)                                      # portrait: clear higher up, where faces sit
     assert p[110, 90, 0] == 0 and p[319, 0, 0] == 1
+
+
+def test_landed_and_hold_in_show_the_finish_and_the_rest(tmp_path):
+    from focalcut.reel import velocity as V
+    pr = Project(str(tmp_path))
+    os.makedirs(pr.path("scores"))
+    t = np.arange(0, 20, 0.1)
+    subj = np.where((t > 9.0) & (t < 10.8), 4.0, 0.5)       # a trick from 9 s that lands at 10.8 s
+    np.savez(pr.path("scores", "C1.npz"), t=t, subj=subj, size=np.array([3840, 2160]),
+             boxes=np.zeros((1, 1, 5)), pose_t=np.zeros(1))
+    u = dict(score="C1", t0=0.0, t1=20.0)
+    land = V.landed(pr, u, 10.0)
+    assert land == pytest.approx(10.8, abs=0.15)
+    assert V.landed(pr, dict(u, score="missing"), 10.0) is None
+    s_in, fits = V.hold_in(9.4, 1.2, land, 0.6)              # 1.2 s from 9.4 would cut 0.2 s after landing
+    assert fits and s_in + 1.2 >= land + 0.6 - 1e-6 and s_in <= land - V.PRE + 1e-6
+    s_in, fits = V.hold_in(10.0, 0.6, land, 0.6)             # one beat: too short for both, lands 40% in
+    assert not fits and s_in == pytest.approx(land - 0.24)
+
+
+def test_lands_borrows_a_beat_for_a_landing_from_a_plain_neighbour(tmp_path, monkeypatch):
+    from focalcut.reel import velocity as V
+    monkeypatch.setattr(V, "landed", lambda project, unit, t: t + 0.3)
+    seq = [shot("spin", "A", beats=2), shot("spin", "B", beats=1), shot("shake", "C", beats=3)]
+    seq[0]["fx"] = ["hero"]                                   # (a speed effect lands itself: no donor, no landing)
+    P.lands(None, seq, 0.6, 0.6)
+    assert [s["beats"] for s in seq] == [2, 2, 2]
+    assert seq[0].get("land") is None and seq[1]["land"] == pytest.approx(10.3)
+
+
+def test_every_export_file_is_in_the_reel_not_just_every_camera_clip(tmp_path):
+    pr, music, moments = fake_reel(tmp_path, n_units=24)
+    extra = []
+    for r in [r for r in moments if r["role"] == "dance"]:   # each social clip split into four segment files
+        for k in range(1, 4):
+            x = copy.deepcopy(r)
+            x["id"] = x["unit"]["id"] = f"{r['id']}-{k:02d}"
+            extra.append(x)
+    moments += extra
+    shots = P.build(pr, "portrait", music, moments)["shots"]
+    assert {s["unit"]["id"] for s in shots} == {r["id"] for r in moments}
+    assert all(a["unit"]["clip"] != b["unit"]["clip"] for a, b in pairwise(shots))
+
+
+def test_face_seen_trusts_the_face_scan_over_the_pose():
+    from focalcut.reel import frame as FR
+    d, _ = _couple(faces=(True, True))                       # the pose says both face the camera
+    d["yf"] = dict(t=np.array([0.0, 0.0]), cx=np.array([0.75, 0.25]), cy=np.array([0.24, 0.6]),
+                   h=np.array([0.08, 0.08]), score=np.array([0.95, 0.95]))   # one face, on dancer 2's head
+    f = FR.face_seen(d, d["pose_t"][:2], d["boxes"][:2], d["kp"][:2])
+    assert not f[0, 0] and f[0, 1]                          # (the other detection is at dancer 1's waist)
+    assert not f[1].any() or f[1, 1]
+    del d["yf"]
+    assert FR.face_seen(d, d["pose_t"][:1], d["boxes"][:1], d["kp"][:1])[0, :2].all()

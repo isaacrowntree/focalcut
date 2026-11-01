@@ -7,6 +7,10 @@ the hair and the face play out, then eases back up (focalcut.fx.speed draws the 
 
   settle()   finds the landing from the subject's own motion: a burst, then a rest
   landing()  puts it on the hardest-hitting beat of the shot that still leaves room for the hold after it
+
+Every other dance shot shows its landing too (landed(), plan.place): a shot that cuts away mid-trick, or the instant
+the dancer comes out of it, is all trick and no finish. When a move comes to rest inside or just after a shot, the shot
+keeps the end of the move (PRE) and about a beat of the dancer at rest (plan "land_hold") before it cuts.
 """
 from __future__ import annotations
 
@@ -18,26 +22,62 @@ from . import frame as FR
 
 RAMP = ("hero", "bullet", "montage")                     # the speed curves that hold on a landing
 HOLDS = dict(hero=1.0, bullet=2.0, montage=0.75)         # their holds, in beats (fx.speed); close-ups hold 0.5 more
+PRE = 0.5                                                # seconds of the move kept before its landing
+
+
+def _motion(project, unit):
+    """(t, subject motion) for a unit, gaps filled and lightly smoothed, or None."""
+    f = project.path("scores", unit["score"] + ".npz")
+    if not os.path.exists(f):
+        return None
+    d = FR.load(f)
+    v = np.maximum(d["subj"], np.roll(d["subj"], 1))     # measured on alternate samples: fill the gaps
+    return d["t"], np.convolve(v, np.ones(3) / 3, mode="same")
+
+
+def _rest(t10, v, lo, hi):
+    """The strongest burst-then-rest point between lo and hi: (time, strength), or (None, 0)."""
+    best, best_sc = None, 0.0
+    for tau in np.arange(lo, hi, 0.1):
+        burst = v[(t10 >= tau - 0.6) & (t10 < tau)]
+        rest = v[(t10 > tau + 0.1) & (t10 <= tau + 0.6)]
+        if not len(burst) or not len(rest):
+            continue
+        b, r = burst.mean(), rest.mean()
+        sc = b - 1.5 * r
+        if b > 1.4 * r and b > 1.5 and sc > best_sc:
+            best, best_sc = round(float(tau), 2), sc
+    return best, best_sc
 
 
 def settle(project, unit, t):
     """Where a move lands: the moment near t (-1.0..+0.8 s) where the subject's motion drops from a burst to a rest.
     Falls back to t."""
-    f = project.path("scores", unit["score"] + ".npz")
-    if not os.path.exists(f):
+    mo = _motion(project, unit)
+    if mo is None:
         return t
-    d = FR.load(f)
-    t10, v = d["t"], d["subj"]
-    v = np.maximum(v, np.roll(v, 1))                     # measured on alternate samples: fill the gaps
-    v = np.convolve(v, np.ones(3) / 3, mode="same")
-    best, best_sc = t, 0.0
-    for tau in np.arange(max(unit["t0"] + 0.7, t - 1.0), min(unit["t1"] - 0.7, t + 0.8), 0.1):
-        burst = v[(t10 >= tau - 0.6) & (t10 < tau)].mean()
-        rest = v[(t10 > tau + 0.1) & (t10 <= tau + 0.6)].mean()
-        sc = burst - 1.5 * rest
-        if burst > 1.4 * rest and burst > 1.5 and sc > best_sc:
-            best, best_sc = round(float(tau), 2), sc
+    best, _ = _rest(*mo, max(unit["t0"] + 0.7, t - 1.0), min(unit["t1"] - 0.7, t + 0.8))
+    return t if best is None else best
+
+
+def landed(project, unit, t, after=1.6):
+    """Where the move around t comes to rest (the dancer lands): a burst of motion then a rest, from just before the
+    peak to after seconds past it. None when nothing lands there (a groove with no finish, or a still)."""
+    mo = _motion(project, unit)
+    if mo is None:
+        return None
+    best, _ = _rest(*mo, max(unit["t0"] + 0.6, t - 0.3), min(unit["t1"] - 0.6, t + after))
     return best
+
+
+def hold_in(s_in, length, land, hold):
+    """The in-point that shows the landing: the end of the move (PRE) and hold seconds of rest after it, moved as
+    little as possible from s_in. Returns (in-point, fits: the shot is long enough for both). A shot too short for
+    both (a one-beat hit) lands 40% in: the end of the move, then the start of the rest."""
+    lo, hi = land + hold - length, land - PRE               # in-points that show the rest / still show the move
+    if lo <= hi:
+        return min(max(s_in, lo), hi), True
+    return land - 0.4 * length, False
 
 
 def landing(beats, ramp, closeup, accents):
