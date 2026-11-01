@@ -4,7 +4,9 @@ as they make them, with no download or copy step.
 
     focalcut reel serve <folder> [--port 8765]   ->  http://localhost:8765/   (the source browser)
 
-GET/PUT /api/picks reads / replaces picks.json (the previous file is kept as picks.json.bak). Only localhost.
+GET/PUT /api/picks reads / replaces picks.json (the previous file is kept as picks.json.bak). GET /api/crop?id=<export
+file>&a=<s>&b=<s>&fmt=portrait gives the crop the planner derives for that stretch, before any focal point the editor
+set (path times are seconds from a). Only localhost.
 """
 from __future__ import annotations
 
@@ -13,12 +15,13 @@ import mimetypes
 import os
 import shutil
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 
 def handler(project):
     root = os.path.realpath(project.folder)
     picks = project.path("picks.json")
+    units = {}
     start = "/" + os.path.relpath(project.path("review", "sources.html"), root).replace(os.sep, "/")
 
     class H(SimpleHTTPRequestHandler):
@@ -29,7 +32,7 @@ def handler(project):
             pass
 
         def end_headers(self):
-            self.send_header("Cache-Control", "no-store" if self.path.endswith((".html", "/api/picks")) else "max-age=3600")
+            self.send_header("Cache-Control", "no-store" if self.path.startswith("/api/") or self.path.endswith(".html") else "max-age=3600")
             super().end_headers()
 
         def do_GET(self):
@@ -42,6 +45,8 @@ def handler(project):
             if path == "/api/picks":
                 body = open(picks, "rb").read() if os.path.exists(picks) else b"{}"
                 return self.reply(200, body)
+            if path == "/api/crop":
+                return self.crop(parse_qs(urlparse(self.path).query))
             f = os.path.realpath(os.path.join(root, unquote(path).lstrip("/")))
             if not f.startswith(root + os.sep) or not os.path.isfile(f):
                 return self.reply(404, b'{"error": "not found"}')
@@ -62,6 +67,20 @@ def handler(project):
                 json.dump(data, fh, indent=1)
             os.replace(tmp, picks)
             self.reply(200, b'{"ok": true}')
+
+        def crop(self, q):
+            from .plan import reframe
+            if not units and os.path.exists(project.path("units.json")):
+                units.update({u["id"]: u for u in project.load("units.json")})
+            try:
+                u = units[q["id"][0]]
+                a, b = float(q["a"][0]), float(q["b"][0])
+                fmt = q.get("fmt", ["portrait"])[0]
+                assert fmt in ("portrait", "landscape") and b > a
+            except (KeyError, ValueError, AssertionError):
+                return self.reply(400, b'{"error": "id, a < b and fmt"}')
+            c = reframe(project, u, u.get("export_t0", 0.0) + a, b - a, fmt, focus=False)
+            self.reply(200, json.dumps(c).encode())
 
         def reply(self, code, body, kind="application/json"):
             self.send_response(code)

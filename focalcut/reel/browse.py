@@ -205,6 +205,13 @@ padding:2px 8px;border-radius:4px;font:600 13px ui-monospace,monospace}
 font-size:11px}.card .bd{padding:6px 8px;display:flex;justify-content:space-between;gap:6px;align-items:center}
 .card .bd div{font-size:12px}.card .bd small{color:var(--mut)}
 .catgrp{grid-column:1/-1;font-weight:600;color:var(--mut);margin-top:6px}
+.fr{position:absolute;inset:0;pointer-events:none;z-index:2}.fr.on{pointer-events:auto;cursor:crosshair}
+.fr i{position:absolute;pointer-events:none}.fbox{border:2px solid var(--io);border-radius:2px}
+.fbox.act{box-shadow:0 0 0 9999px #000a}.fbox.der{border:2px dashed var(--port)}
+.fdot{width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;border:2px solid #000;background:var(--io)}
+.frl{position:absolute;left:8px;bottom:8px;background:#000c;color:#fff;padding:3px 8px;border-radius:4px;
+font:12px ui-monospace,monospace;pointer-events:none}.frl b{color:var(--io)}
+.fk{top:1px;bottom:1px;width:6px;margin-left:-3px;background:var(--io);border-radius:2px;pointer-events:none;z-index:2}
 </style>
 <header><h1>%TITLE%</h1>
 <div id=views><button id=v1 class=on>Sources</button><button id=v2>Picks <b id=nsel>0</b></button></div>
@@ -215,7 +222,7 @@ font-size:11px}.card .bd{padding:6px 8px;display:flex;justify-content:space-betw
 <div id=main>
 <div id=cliphead><h2 id=cname></h2><span id=cmeta style="color:var(--mut)"></span><span class=sp></span>
 <button id=prevc title="previous clip (↑)">↑ Prev clip</button><button id=nextc title="next clip (↓)">Next clip ↓</button></div>
-<div id=vwrap><video id=vid preload=auto playsinline muted></video><div id=still></div><span id=tc></span></div>
+<div id=vwrap><video id=vid preload=auto playsinline muted></video><div id=still></div><span id=tc></span><div id=fr class=fr></div></div>
 <div class=row><button id=play>▶ Play</button><button id=fb title="one frame back (←)">◀ frame</button>
 <button id=ff title="one frame on (→)">frame ▶</button>
 <select id=rate><option value=0.25>¼×</option><option value=0.5>½×</option><option value=1 selected>1×</option>
@@ -227,6 +234,9 @@ font-size:11px}.card .bd{padding:6px 8px;display:flex;justify-content:space-betw
 <span id=io></span><span class=sp></span>
 <button id=zfit title="whole clip (0)">Fit <kbd>0</kbd></button><button id=zin>Zoom +</button><button id=zout>Zoom −</button>
 <button id=banc title="never use this clip">Ban clip</button></div>
+<div class=row><button id=bframe class=frt title="show the portrait reel's crop here; drag on the picture to set a focal point (F)">▯ Portrait frame <kbd>F</kbd></button>
+<button id=fclr title="remove the focal points around the playhead (this selection, reel shot or 3 s)">Clear focus here</button>
+<span style="color:var(--mut);font-size:12px">dashed pink: what the planner works out · yellow: what the portrait reel shows — drag to set a focal point at the playhead; set more at other times and the crop glides between them</span></div>
 <div id=ov class=tl title="the whole clip; the yellow box is what the timeline below shows — click or drag to move"><canvas></canvas></div>
 <div id=tl class=tl>
 <div id=ruler title="click or drag to scrub"></div>
@@ -239,7 +249,7 @@ font-size:11px}.card .bd{padding:6px 8px;display:flex;justify-content:space-betw
 <kbd>←</kbd><kbd>→</kbd> frame (<kbd>Shift</kbd> 1 s) · <kbd>I</kbd> in · <kbd>O</kbd> out · <kbd>Enter</kbd> add
 selection · <kbd>X</kbd> clear in–out · <kbd>Backspace</kbd> delete selection at playhead · <kbd>[</kbd><kbd>]</kbd>
 previous / next mark · <kbd>\</kbd> loop selection · <kbd>↑</kbd><kbd>↓</kbd> previous / next clip ·
-<kbd>=</kbd><kbd>−</kbd> zoom · <kbd>0</kbd> fit · <kbd>B</kbd> ban in–out · <kbd>Tab</kbd> Picks view<br>
+<kbd>=</kbd><kbd>−</kbd> zoom · <kbd>0</kbd> fit · <kbd>B</kbd> ban in–out · <kbd>F</kbd> portrait frame · <kbd>Tab</kbd> Picks view<br>
 Or drag in the <b style="color:var(--sel)">selections</b> lane to mark a range directly; drag a block to move it,
 its edges to trim. <span style="color:var(--land)">■</span> landscape and <span style="color:var(--port)">■</span>
 portrait show what the current reels use; <span style="color:var(--mom)">|</span> moments the planner found.
@@ -248,7 +258,7 @@ Each selection goes in the reel starting at its in-point.</div>
 <section id=selview>
 <div id=selhead><h2 id=seltitle></h2><span id=seltot style="color:var(--mut)"></span><span class=sp></span>
 <button id=playall class=go>▶ Play all</button><button id=stopall>■ Stop</button></div>
-<div id=ped><div id=pvwrap><video id=pv playsinline muted preload=auto></video><div id=pstill></div><span id=pvtc></span></div>
+<div id=ped><div id=pvwrap><video id=pv playsinline muted preload=auto></video><div id=pstill></div><span id=pvtc></span><div id=pfr class=fr></div></div>
 <div class=row style="margin:8px 0"><button id=pprev title="previous pick (←)">◀ Prev</button>
 <button id=pplay class=go title="play this pick (Space)">▶ Play pick</button><button id=ploop title="loop this pick (\)">↻ Loop</button>
 <button id=pnext title="next pick (→)">Next ▶</button><b id=plen style="font:600 14px ui-monospace,monospace;margin:0 8px"></b>
@@ -258,7 +268,8 @@ Each selection goes in the reel starting at its in-point.</div>
 <button data-n="out:0.02">+f</button><button data-n="out:0.5" title="lengthen at the end (Shift: 5 s)">+½s</button><button id=pout title="out at the playhead (O)">O ⇥</button></span>
 <span class=grp>Slip <button data-n="slip:-0.5" title="move the whole pick earlier (,)">◀ ½s</button><button data-n="slip:-0.02">◀ f</button>
 <button data-n="slip:0.02">f ▶</button><button data-n="slip:0.5" title="move the whole pick later (.)">½s ▶</button></span>
-<span class=sp></span><button id=popen title="open in Sources">Open in Sources</button><button id=pdel title="remove (Backspace)">✕ Remove</button></div>
+<button id=pframe class=frt title="portrait crop; drag on the picture to set a focal point (F)">▯ Portrait <kbd>F</kbd></button>
+<button id=pfclr title="remove this pick's focal points">Clear focus</button><span class=sp></span><button id=popen title="open in Sources">Open in Sources</button><button id=pdel title="remove (Backspace)">✕ Remove</button></div>
 <div id=pt class=tl><div id=pruler></div><div id=pstrip title="drag the edges to trim or lengthen, the block to slip it, anywhere else to scrub; scroll to zoom"><canvas></canvas></div></div>
 <p style="color:var(--mut);font-size:12px;margin:6px 0 0">Drag the pick's edges to lengthen or trim, drag the block to slip it, click
 elsewhere to scrub · <kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> previous / next pick · <kbd>I</kbd>/<kbd>O</kbd> in / out
@@ -285,7 +296,7 @@ const ls={get(k){try{return JSON.parse(localStorage.getItem(LS+k))}catch(e){retu
 let P=JSON.parse(JSON.stringify(D.picks)),server=false,timer=null;
 const ent=id=>(P[id]&&typeof P[id]==="object"&&!Array.isArray(P[id]))?P[id]:(P[id]={});
 function tidy(){for(const k in P){const e=P[k];if(k[0]=="_"||!e||typeof e!=="object"||Array.isArray(e))continue;
- for(const f of["ban","prefer","add"])if(e[f]&&!e[f].length)delete e[f];if(e.more===0)delete e.more;
+ for(const f of["ban","prefer","add","portrait"])if(e[f]&&!e[f].length)delete e[f];if(e.more===0)delete e.more;
  if(!Object.keys(e).length)delete P[k]}}
 function status(t,c){const s=$("saved");s.textContent=t;s.className=c||""}
 const hist=[];let lastSnap=JSON.stringify(P);
@@ -368,6 +379,7 @@ function draw(){const c=C();if(!c)return;const W=vb-va,t=now();
  L.insertAdjacentHTML("beforeend",s);
  for(const[id,arr]of[["lland",c.L],["lport",c.P]]){const e=$(id);e.querySelectorAll("i").forEach(x=>x.remove());
   e.insertAdjacentHTML("beforeend",arr.filter(([a,b])=>b>va&&a<vb).map(([a,b,n])=>`<i class=use data-a=${a} data-b=${b} style="${wspan(a,b)}" title="reel shot ${n}: ${short(a)}–${short(b)} — click to pick it">${n}</i>`).join(""))}
+ fkeys(c.id).forEach(([k])=>{if(k>=va&&k<=vb)$("lport").insertAdjacentHTML("beforeend",`<i class=fk style="left:${X(k)}" title="focal point ${fmt(k)}"></i>`)});
  // markers spanning the timeline
  tl.querySelectorAll(":scope>i").forEach(e=>e.remove());let m="";
  if(inPt!==null&&inPt>=va&&inPt<=vb)m+=`<i class=inm style="left:${X(inPt)}"></i>`;
@@ -384,7 +396,8 @@ function draw(){const c=C();if(!c)return;const W=vb-va,t=now();
  $("io").textContent=(inPt===null&&outPt===null)?"":"in "+(inPt===null?"—":fmt(inPt))+"  out "+(outPt===null?"—":fmt(outPt))+
   (io?"  ("+(io[1]-io[0]).toFixed(2)+" s)":"");
  $("play").textContent=vid.paused&&!rew?"▶ Play":"❚❚ Pause";
- $("banc").textContent=banned(c.id).includes("all")?"Unban clip":"Ban clip"}
+ $("banc").textContent=banned(c.id).includes("all")?"Unban clip":"Ban clip";
+ frameDraw($("fr"),$("vwrap"),vid,c,...rangeFor(c,t),t)}
 function pend(){if(inPt===null&&outPt===null)return null;const a=inPt??now(),b=outPt??now();
  return Math.abs(b-a)<0.05?null:[Math.min(a,b),Math.max(a,b)]}
 function mysel(){const c=C(),ss=sels(c.id);
@@ -519,6 +532,7 @@ function pdraw(){const x=PX();if(!x)return;const T=$("pt"),W=pb-pa,t=pnow();
  let h=`<i class=dim style="${wspan(pa,a,pa,pb)}"></i><i class=dim style="${wspan(b,pb,pa,pb)}"></i>`;
  sels(x.c.id).forEach(([u,v],k)=>{if(k!=x.k&&v>pa&&u<pb)h+=`<i class=oth style="${wspan(u,v,pa,pb)}" title="another pick"></i>`});
  h+=`<i class="blk act" data-k=0 style="${wspan(a,b,pa,pb)}"><i class="h l"></i>${(b-a).toFixed(2)} s<i class="h r"></i></i>`;
+ fkeys(x.c.id).forEach(([k])=>{if(k>=pa&&k<=pb)h+=`<i class=fk style="left:${X(k,pa,pb)}" title="focal point ${fmt(k)}"></i>`});
  if(t>=pa&&t<=pb)h+=`<i class=ph style="left:${X(t,pa,pb)}"></i>`;
  $("pstrip").insertAdjacentHTML("beforeend",h);
  const step=[0.1,0.2,0.5,1,2,5,10].find(s=>W/s<=40)||30;let r="";
@@ -529,7 +543,8 @@ function pdraw(){const x=PX();if(!x)return;const T=$("pt"),W=pb-pa,t=pnow();
  $("pplay").textContent=pv.paused?"▶ Play pick":"❚❚ Pause";$("ploop").classList.toggle("on",mode=="loop");
  const st=$("pstill"),no=pv.error||pv.readyState<2||pv.seeking;st.classList.toggle("on",!!no);
  if(no){const R=$("pvwrap").getBoundingClientRect(),hh=Math.min(R.height,R.width*TH/TW);
-  st.setAttribute("style",thumbAt(x.c,t,hh)+`;width:${hh*TW/TH}px;height:${hh}px;left:${(R.width-hh*TW/TH)/2}px;top:${(R.height-hh)/2}px`)}}
+  st.setAttribute("style",thumbAt(x.c,t,hh)+`;width:${hh*TW/TH}px;height:${hh}px;left:${(R.width-hh*TW/TH)/2}px;top:${(R.height-hh)/2}px`)}
+ frameDraw($("pfr"),$("pvwrap"),pv,x.c,x.a,x.b,t)}
 const PT=$("pstrip");
 PT.addEventListener("pointerdown",ev=>{const x=PX();if(!x)return;pv.pause();PT.setPointerCapture(ev.pointerId);
  const t=tAt(PT,ev,pa,pb),blk=ev.target.closest(".blk");
@@ -567,6 +582,54 @@ $("ped").onclick=ev=>{const b=ev.target.closest("button");if(!b)return;const x=P
  else if(b.id=="pdel"){const ss=sels(x.c.id);ss.splice(x.k,1);const j=pj();pk=null;pv.pause();setSels(x.c.id,ss);if(order[j])pick(j,false)}};
 $("playall").onclick=()=>{mode="all";const j=Math.max(0,pj());pick(j,true)};
 $("stopall").onclick=stopAll;
+// --- portrait framing: the crop the planner derives (served by /api/crop) and the editor's focal points, picks
+// "portrait": [["m:ss.ss", x, y], ...] (fractions of the frame); the reel's crop centre follows them, its size as derived
+let frameOn=!!ls.get("frame");const crops=new Map();
+const fkeys=id=>((P[id]||{}).portrait||[]).map(([t,x,y])=>[secs(t),+x,+y]).sort((p,q)=>p[0]-q[0]);
+const putKeys=(id,ks)=>{ent(id).portrait=ks.sort((p,q)=>p[0]-q[0]).map(([t,x,y])=>[fmt(t),+x.toFixed(4),+y.toFixed(4)])};
+const clamp=(v,lo,hi)=>Math.min(Math.max(v,lo),hi);
+const lerp=(ts,vs,t)=>{if(t<=ts[0])return vs[0];for(let i=1;i<ts.length;i++)if(t<=ts[i]){const f=(t-ts[i-1])/(ts[i]-ts[i-1]||1);
+ return vs[i-1]+f*(vs[i]-vs[i-1])}return vs[vs.length-1]};
+function derived(c,a,b){const k=c.id+"|"+a.toFixed(2)+"|"+b.toFixed(2);if(crops.has(k))return crops.get(k);
+ if(!server){crops.set(k,false);return false}crops.set(k,undefined);
+ fetch(`/api/crop?id=${encodeURIComponent(c.id)}&a=${a.toFixed(3)}&b=${b.toFixed(3)}&fmt=portrait`)
+  .then(r=>r.ok?r.json():Promise.reject()).then(j=>crops.set(k,j)).catch(()=>crops.set(k,false)).then(()=>{draw();pdraw()});return undefined}
+// where the frame is worked out from: the selection or portrait reel shot under the playhead, else the 3 s around it
+function rangeFor(c,t){const s=sels(c.id).find(([a,b])=>t>=a-0.02&&t<=b+0.02)||c.P.find(([a,b])=>t>=a&&t<=b);
+ if(s)return[s[0],s[1]];const a=Math.max(0,Math.min(Math.floor(t/3)*3,c.dur-3));return[a,Math.min(a+3,c.dur)]}
+function frameAt(c,a,b,t){const cr=derived(c,a,b);if(cr===undefined)return"wait";if(cr===false)return"off";if(cr===null)return"fills";
+ const ts=cr.path.map(q=>a+q[0]),d={x:lerp(ts,cr.path.map(q=>q[1]),t),y:lerp(ts,cr.path.map(q=>q[2]),t)};
+ const ks=fkeys(c.id).filter(k=>k[0]>=a-0.5&&k[0]<=b+0.5);let o=null;
+ if(ks.length){const kt=ks.map(k=>k[0]);o={x:clamp(lerp(kt,ks.map(k=>k[1]),t),cr.w/2,1-cr.w/2),
+  y:clamp(lerp(kt,ks.map(k=>k[2]),t),cr.h/2,1-cr.h/2)}}
+ return{d,o,w:cr.w,h:cr.h,z:cr.z}}
+function vrect(wrap,v){const R=wrap.getBoundingClientRect(),ar=v.videoWidth&&v.videoHeight?v.videoWidth/v.videoHeight:TW/TH;
+ const w=Math.min(R.width,R.height*ar),h=w/ar;return{l:(R.width-w)/2,t:(R.height-h)/2,w,h}}
+function frameDraw(el,wrap,v,c,a,b,t){el.classList.toggle("on",frameOn);document.querySelectorAll(".frt").forEach(x=>x.classList.toggle("on",frameOn));
+ if(!frameOn){el.innerHTML="";return}const F=frameAt(c,a,b,t);
+ if(typeof F=="string"){el.innerHTML=`<span class=frl>${{fills:"this clip fills the portrait frame as it is — no crop to place",
+  off:"the portrait frame needs the page served by <code>focalcut reel serve</code>",wait:"working out the portrait crop…"}[F]}</span>`;return}
+ const r=vrect(wrap,v),box=(p,cls)=>`<i class="fbox ${cls}" style="left:${r.l+(p.x-F.w/2)*r.w}px;top:${r.t+(p.y-F.h/2)*r.h}px;width:${F.w*r.w}px;height:${F.h*r.h}px"></i>`;
+ const A=F.o||F.d,dx=F.o?F.o.x-F.d.x:0;
+ el.innerHTML=box(A,"act")+(F.o?box(F.d,"der"):"")+`<i class=fdot style="left:${r.l+A.x*r.w}px;top:${r.t+A.y*r.h}px"></i>`+
+  `<span class=frl>planner x ${F.d.x.toFixed(2)} y ${F.d.y.toFixed(2)}${F.z>1.001?" · zoom "+F.z.toFixed(2):""}`+
+  (F.o?` → <b>your focus x ${F.o.x.toFixed(2)} y ${F.o.y.toFixed(2)} (${dx>=0?"+":""}${dx.toFixed(2)})</b>`:" · drag to set a focal point")+`</span>`}
+function toggleFrame(){frameOn=!frameOn;ls.set("frame",frameOn);draw();pdraw()}
+// drag on the picture: a focal point at the playhead (one within ¼ s of it moves instead)
+function frameDrag(el,wrap,v,ctx,redraw,stop){let x=null;
+ const put=ev=>{const r=vrect(wrap,v),R=wrap.getBoundingClientRect();
+  const ks=fkeys(x.c.id).filter(k=>Math.abs(k[0]-x.t)>0.25);
+  ks.push([x.t,clamp((ev.clientX-R.left-r.l)/r.w,0,1),clamp((ev.clientY-R.top-r.t)/r.h,0,1)]);putKeys(x.c.id,ks);redraw()};
+ el.addEventListener("pointerdown",ev=>{if(!frameOn)return;x=ctx();if(!x)return;stop();el.setPointerCapture(ev.pointerId);put(ev)});
+ el.addEventListener("pointermove",ev=>{if(x)put(ev)});
+ el.addEventListener("pointerup",()=>{if(x){x=null;save()}})}
+frameDrag($("fr"),$("vwrap"),vid,()=>({c:C(),t:now()}),draw,pause);
+frameDrag($("pfr"),$("pvwrap"),pv,()=>PX()&&{c:PX().c,t:pnow()},pdraw,()=>pv.pause());
+function clearFocus(c,a,b){const ks=fkeys(c.id),kept=ks.filter(k=>k[0]<a-0.5||k[0]>b+0.5);
+ if(kept.length==ks.length)return status("no focal points here");putKeys(c.id,kept);save()}
+$("bframe").onclick=$("pframe").onclick=toggleFrame;
+$("fclr").onclick=()=>clearFocus(C(),...rangeFor(C(),now()));
+$("pfclr").onclick=()=>{const x=PX();if(x)clearFocus(x.c,x.a,x.b)};
 // views
 function view(n){$("clipsview").style.display=n==1?"grid":"none";$("selview").style.display=n==2?"grid":"none";
  $("v1").classList.toggle("on",n==1);$("v2").classList.toggle("on",n==2);if(n==2){pause();selview()}else{pv.pause();paint()}}
@@ -582,6 +645,7 @@ addEventListener("keydown",ev=>{if((ev.ctrlKey||ev.metaKey)&&ev.key.toLowerCase(
 addEventListener("keydown",ev=>{if(ev.target.tagName=="SELECT"||ev.target.tagName=="INPUT"||ev.ctrlKey||ev.metaKey||ev.altKey)return;
  const k=ev.key,K=k.toLowerCase();let done=true;
  if(k=="Tab")view($("selview").style.display=="grid"?1:2);
+ else if(K=="f")toggleFrame();
  else if($("selview").style.display=="grid"){const x=PX();
   if(k==" ")playPick();else if(k=="Escape")stopAll();
   else if(k=="ArrowRight"||k=="ArrowDown")pick(Math.min(order.length-1,pj()+1),!pv.paused);

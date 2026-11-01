@@ -1034,9 +1034,41 @@ def transitions(seq, music, cfg, direction=None):
                 break
 
 
-def reframe(project, unit, t0, length, fmt):
+def reframe(project, unit, t0, length, fmt, focus=True):
     """A crop that keeps the subject centred: one zoom for the shot, the centre gliding with the dancers. None when
-    the source fills the frame as it is and there is nothing to follow."""
+    the source fills the frame as it is and there is nothing to follow. The editor's focal points for this format
+    (picks "<fmt>", set in the source browser) take over the centre where there are any (focus=False: as derived)."""
+    c = _reframe(project, unit, t0, length, fmt)
+    return focus_override(c, focus_keys(project.picks(), unit, fmt), t0, length) if focus else c
+
+
+def focus_keys(picks, unit, fmt):
+    """The editor's focal points for a unit in one format: [(source time, x, y)], x and y fractions of the frame.
+    picks.json: {"<export file>": {"portrait": [["0:16.10", 0.52, 0.45], ...]}}, times in the export's timeline."""
+    p = picks.get(unit["id"]) or {}
+    x0 = unit.get("export_t0", 0.0)
+    return sorted((x0 + _secs(t), float(x), float(y)) for t, x, y in p.get(fmt) or [])
+
+
+FOCUS_REACH = 0.5          # a focal point steers a shot that plays within this many seconds of it
+
+
+def focus_override(crop, keys, t0, length):
+    """The crop's centre moved onto the editor's focal points over the shot (held before the first and after the
+    last, gliding between them); its size stays as derived. Unchanged when no point is near the shot."""
+    keys = [k for k in keys if t0 - FOCUS_REACH <= k[0] <= t0 + length + FOCUS_REACH]
+    if not crop or not keys:
+        return crop
+    kt, kx, ky = (np.array(v) for v in zip(*keys))
+    w, h = crop["w"], crop["h"]
+    grid = np.arange(0, length + 0.01, 0.2)
+    x = np.clip(np.interp(grid + t0, kt, kx), w / 2, 1 - w / 2)
+    y = np.clip(np.interp(grid + t0, kt, ky), h / 2, 1 - h / 2)
+    return dict(crop, focus=True, path=[[round(float(a), 2), round(float(b), 4), round(float(c), 4)]
+                                        for a, b, c in zip(grid, x, y)])
+
+
+def _reframe(project, unit, t0, length, fmt):
     W, H = SIZE[fmt]
     path = project.path("scores", unit["score"] + ".npz")
     d = FR.load(path) if os.path.exists(path) else None

@@ -508,6 +508,20 @@ def test_picks_add_ranges_are_the_editors_in_out_one_shot_each():
     assert P.in_point(s, 0.5) == 30.0                                # starts at the editor's in-point
 
 
+def test_focal_points_steer_the_crop_centre_and_keep_its_size():
+    unit = dict(id="C200-01_couple", export_t0=10.0)
+    keys = P.focus_keys({"C200-01_couple": {"portrait": [["0:21", 0.2, 0.5], ["0:23", 0.95, 0.4]]}}, unit, "portrait")
+    assert keys == [(31.0, 0.2, 0.5), (33.0, 0.95, 0.4)]                 # export time + 10 s = source time
+    crop = dict(w=0.3, h=1.0, z=1.0, path=[[0, 0.6, 0.5]], face=0.4)
+    c = P.focus_override(crop, keys, 31.0, 2.0)
+    xs = [x for _, x, _ in c["path"]]
+    assert c["focus"] and c["w"] == 0.3 and c["face"] == 0.4
+    assert xs[0] == 0.2 and xs[-1] == 0.85 and xs[5] == pytest.approx(0.575)   # glides; held inside the frame
+    assert {y for *_, y in c["path"]} == {0.5}                           # the crop is the full height: y can't move
+    assert P.focus_override(crop, keys, 40.0, 2.0) is crop                # no point near this shot: as derived
+    assert P.focus_override(None, keys, 31.0, 2.0) is None                # nothing to crop
+
+
 def test_fit_pick_gives_a_selection_its_length_and_keeps_the_grid():
     u = lambda i: dict(id=f"U{i}", clip=f"C{i}", role="dance")      # noqa: E731
     seq = [dict(unit=u(k % 3), act="night", beats=2, fx=[]) for k in range(8)]
@@ -526,7 +540,7 @@ def test_source_browser_page_and_server_save_picks(tmp_path):
     clip = dict(id="C1", cat="night", tag="", clock="21:00", sort="1", dur=10.0, video="v.mp4", strip="sources/C1.jpg",
                 step=1.0, n=10, moments=[[2.0, "spin"]], L=[[1.0, 2.0, 5]], P=[])
     html_ = browse.page([clip], {"C1": {"add": ["0:01-0:02"]}})
-    assert '"id": "C1"' in html_ and "/api/picks" in html_ and "Play all" in html_
+    assert '"id": "C1"' in html_ and "/api/picks" in html_ and "Play all" in html_ and "/api/crop" in html_
     pr, _, _ = fake_reel(tmp_path)
     os.makedirs(pr.path("review"), exist_ok=True)
     with open(pr.path("review", "sources.html"), "w") as f:
@@ -543,6 +557,9 @@ def test_source_browser_page_and_server_save_picks(tmp_path):
         assert json.load(urllib.request.urlopen(base + "/api/picks")) == {"C1": {"add": ["0:03-0:04"]}}
         part = urllib.request.urlopen(urllib.request.Request(base + "/v.bin", headers={"Range": "bytes=10-19"}))
         assert part.status == 206 and part.read() == bytes(range(10, 20))
+        bad = urllib.request.Request(base + "/api/crop?id=nope&a=1&b=2")
+        with pytest.raises(urllib.error.HTTPError):
+            urllib.request.urlopen(bad)
     finally:
         srv.shutdown()
 
