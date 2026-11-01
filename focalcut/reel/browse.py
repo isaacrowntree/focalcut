@@ -237,6 +237,10 @@ padding:2px 8px;border-radius:4px;font:600 13px ui-monospace,monospace}
 #cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .card.act{outline:2px solid var(--io)}
+.card .ck{position:absolute;right:4px;top:4px;width:18px;height:18px;margin:0;cursor:pointer;opacity:0;accent-color:var(--io)}
+.card:hover .ck,.card .ck:focus,.card .ck:checked,#cards.picking .ck{opacity:1}.card.chk{outline:2px solid var(--io);background:var(--sel2,var(--panel))}
+.card.chk .th{opacity:.7}#seq i.chk{opacity:1;background:var(--io)}
+#bulk{display:none;gap:8px;align-items:center;width:100%;padding:6px 8px;border:1px solid var(--io);border-radius:8px}#bulk.on{display:flex}
 .card .th{aspect-ratio:16/9;background-color:#000;background-repeat:no-repeat;cursor:pointer;position:relative}
 .card .th span{position:absolute;left:4px;top:4px;background:#000a;color:#fff;border-radius:4px;padding:0 5px;
 font-size:11px}.card .bd{padding:6px 8px;display:flex;justify-content:space-between;gap:6px;align-items:center}
@@ -295,7 +299,10 @@ Each selection goes in the reel starting at its in-point.</div>
 <section id=selview>
 <div id=selhead><h2 id=seltitle></h2><span id=seltot style="color:var(--mut)"></span><span class=sp></span>
 <span id=pfmts><button data-f=L title="the landscape reel's shots, in order, with your picks">Landscape cut</button><button data-f=P title="the portrait reel's shots, in order, with your picks">Portrait cut</button><button data-f=picks title="only the picks you made">Picks only</button></span>
-<button id=playall class=go>▶ Play all</button><button id=stopall>■ Stop</button></div>
+<button id=playall class=go>▶ Play all</button><button id=stopall>■ Stop</button>
+<div id=bulk><b id=bulkn></b><span class=sp></span><button id=bulkall title="select every shot the planner chose (not your picks) (A)">Select all planner shots</button>
+<button id=bulkdrop class=go title="drop every selected shot: picks are removed, the planner's shots banned (Delete)">Drop selected</button>
+<button id=bulkclr title="clear the selection (Esc)">Clear</button></div></div>
 <div id=ped><div id=pvwrap><video id=pv playsinline muted preload=auto></video><div id=pstill></div><span id=pvtc></span><div id=pfr class=fr></div></div>
 <div class=row style="margin:8px 0"><button id=pprev title="previous pick (←)">◀ Prev</button>
 <button id=pplay class=go title="play this pick (Space)">▶ Play pick</button><button id=ploop title="loop this pick (\)">↻ Loop</button>
@@ -310,7 +317,7 @@ Each selection goes in the reel starting at its in-point.</div>
 <button id=pfclr title="remove this pick's focal points">Clear focus</button><span class=sp></span><button id=popen title="open this clip in Clips">Open in Clips</button><button id=pdel title="remove (Backspace)">✕ Remove</button></div>
 <div id=pt class=tl><div id=pruler></div><div id=pstrip title="drag the edges to trim or lengthen, the block to slip it, anywhere else to scrub; scroll to zoom"><canvas></canvas></div></div>
 <p style="color:var(--mut);font-size:12px;margin:6px 0 0">Drag the pick's edges to lengthen or trim, drag the block to slip it, click
-elsewhere to scrub · <kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> previous / next pick · <kbd>I</kbd>/<kbd>O</kbd> in / out
+elsewhere to scrub · tick cards (<kbd>X</kbd>, shift-click for a range, <kbd>A</kbd> all the planner's) then <kbd>Delete</kbd> drops them all · <kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> previous / next pick · <kbd>I</kbd>/<kbd>O</kbd> in / out
 at the playhead · <kbd>,</kbd><kbd>.</kbd> slip a frame (<kbd>Shift</kbd> ½ s) · <kbd>\</kbd> loop · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Tab</kbd> Clips</p></div>
 <div id=seq title="every selection in order, widths by length — click to play from there"></div>
 <div id=cards></div>
@@ -547,27 +554,53 @@ function allSels(){const out=[];D.clips.forEach((c,i)=>sels(c.id).forEach(([a,b]
     out.push({c,i,k:-1,a,b,shot:{fmt:pfmt,n},cut:true})})})}
  const rank=x=>x.shot?(x.shot.fmt==(pfmt=="P"?"P":"L")?0:1e4)+x.shot.n:1e9+x.i*1e3+x.a;return out.sort((x,y)=>rank(x)-rank(y))}
 $("pfmts").onclick=ev=>{const b=ev.target.closest("button");if(!b)return;pfmt=b.dataset.f;ls.set("pfmt",pfmt);pk=null;pv.pause();selview()};
+// several shots at once: tick a card's box (shift-click for a range), then drop them all in one go (one undo step)
+const chosen=new Set();let lastCk=-1;
+const ckey=x=>pfmt+"|"+x.c.id+"|"+x.a.toFixed(2)+"|"+x.b.toFixed(2);
+function tick(j,range){const x=order[j];if(!x)return;const on=!chosen.has(ckey(x));
+ const[lo,hi]=range&&lastCk>=0?[Math.min(lastCk,j),Math.max(lastCk,j)]:[j,j];
+ for(let k=lo;k<=hi;k++){const y=order[k];if(y)on?chosen.add(ckey(y)):chosen.delete(ckey(y))}lastCk=j;selview()}
+function dropMany(xs){const gone=new Map();
+ xs.forEach(x=>{if(x.k>=0){if(!gone.has(x.c.id))gone.set(x.c.id,[]);gone.get(x.c.id).push([x.a,x.b])}
+  else{const e=ent(x.c.id);e.ban=e.ban||[];e.ban.push(fmt(x.a)+"-"+fmt(x.b))}});
+ gone.forEach((ab,id)=>{const e=ent(id),pts=(e.add||[]).filter(v=>!isRange(v));
+  const keep=sels(id).filter(([a,b])=>!ab.some(([u,v])=>Math.abs(a-u)<0.002&&Math.abs(b-v)<0.002));
+  e.add=[...pts,...keep.map(([a,b])=>fmt(a)+"-"+fmt(b))]});
+ save()}
+$("bulkall").onclick=()=>{order.forEach(x=>{if(x.cut)chosen.add(ckey(x))});selview()};
+$("bulkclr").onclick=()=>{chosen.clear();lastCk=-1;selview()};
+$("bulkdrop").onclick=()=>{const xs=order.filter(x=>chosen.has(ckey(x)));if(!xs.length)return;
+ if(pk&&xs.some(x=>x.c.id==pk.id&&Math.abs(x.a-pk.a)<0.002)){pk=null;pv.pause()}
+ chosen.clear();lastCk=-1;dropMany(xs);status(`dropped ${xs.length} shot${xs.length==1?"":"s"} — Ctrl+Z undoes`,"ok")};
 const pj=()=>pk?order.findIndex(x=>x.c.id==pk.id&&Math.abs(x.a-pk.a)<0.002):-1;
 const PX=()=>order[pj()];
-function selview(){order=allSels();const tot=order.reduce((s,x)=>s+x.b-x.a,0),j=pj(),placed=order.filter(x=>x.shot).length;
+function selview(){order=allSels();
+ const live=new Set(order.map(ckey));[...chosen].forEach(k=>{if(!live.has(k))chosen.delete(k)});
+ $("bulk").classList.toggle("on",chosen.size>0);$("cards").classList.toggle("picking",chosen.size>0);
+ $("bulkn").textContent=chosen.size+" selected";const tot=order.reduce((s,x)=>s+x.b-x.a,0),j=pj(),placed=order.filter(x=>x.shot).length;
  const np=order.filter(x=>!x.cut).length,nc=order.length-np;
  $("pfmts").querySelectorAll("button").forEach(b=>b.classList.toggle("on",b.dataset.f==pfmt));
  $("seltitle").textContent=(pfmt=="picks"?"":`${nc+order.filter(x=>!x.cut&&x.shot&&x.shot.fmt==pfmt).length} shots in the ${pfmt=="P"?"portrait":"landscape"} cut · `)+
   np+" pick"+(np==1?"":"s");
  $("seltot").textContent=short(tot)+" of footage · in cut order"+(order.length>placed?` · ${order.length-placed} not in the cut yet (I place them on the next re-plan)`:"")+
   (nc?" · trim, slip or drag a shot to make it a pick; ✕ bans it":"");
- $("seq").innerHTML=order.map((x,k)=>`<i data-j=${k} class="${k==j?"act":""}${x.shot?"":" new"}${x.cut?" cut"+(pfmt=="P"?" p":""):""}" style="flex:${(x.b-x.a).toFixed(2)}" title="${esc(x.c.id)} ${fmt(x.a)}–${fmt(x.b)}"></i>`).join("");
+ $("seq").innerHTML=order.map((x,k)=>`<i data-j=${k} class="${k==j?"act":""}${chosen.has(ckey(x))?" chk":""}${x.shot?"":" new"}${x.cut?" cut"+(pfmt=="P"?" p":""):""}" style="flex:${(x.b-x.a).toFixed(2)}" title="${esc(x.c.id)} ${fmt(x.a)}–${fmt(x.b)}"></i>`).join("");
  let h="",sep=false;order.forEach((x,k)=>{if(!x.shot&&!sep){sep=true;h+=`<div class=catgrp>Not in the cut yet — placed on the next re-plan</div>`}
-  h+=`<div class="card${k==j?" act":""}${x.cut?" cut":""}" data-j=${k}><div class=th data-j=${k}></div>
+  const ck=chosen.has(ckey(x));
+  h+=`<div class="card${k==j?" act":""}${x.cut?" cut":""}${ck?" chk":""}" data-j=${k}><div class=th data-j=${k}></div>
   <div class=bd><div><b>${x.shot?(x.shot.fmt=="L"?"Shot ":"Portrait shot ")+x.shot.n:"New"}</b> ${x.cut?"":"<span class=tag>pick</span> "}· ${esc(x.c.id)}<br>
   <small>${fmt(x.a)} – ${fmt(x.b)} · <b>${(x.b-x.a).toFixed(2)} s</b> · ${esc(x.c.clock)}</small></div>
   <div><button data-del=${k} title="${x.cut?"take this shot out of the cut (bans its stretch)":"remove this pick"}">✕</button></div></div></div>`});
  $("cards").innerHTML=h||`<p style="color:var(--mut)">No picks yet — choose footage in Sources.</p>`;
  $("cards").querySelectorAll(".th").forEach(el=>{const x=order[+el.dataset.j],w=el.clientWidth||200,hh=w*TH/TW;
-  el.setAttribute("style",thumbAt(x.c,x.a,hh));el.innerHTML=`<span>${k1(el)}</span>`});
+  el.setAttribute("style",thumbAt(x.c,x.a,hh));
+  el.innerHTML=`<span>${k1(el)}</span><input type=checkbox class=ck data-ck=${el.dataset.j} title="select (shift-click: a range)"${chosen.has(ckey(x))?" checked":""}>`});
  function k1(el){const x=order[+el.dataset.j];return (+el.dataset.j+1)+" · "+(x.b-x.a).toFixed(1)+"s"}
  $("ped").style.display=PX()?"block":"none";if(PX())pdraw()}
-$("cards").onclick=ev=>{const b=ev.target.closest("[data-del],.card");if(!b)return;
+$("cards").onclick=ev=>{const c=ev.target.closest("[data-ck]");
+ if(c){ev.stopPropagation();ev.preventDefault();tick(+c.dataset.ck,ev.shiftKey);return}
+ const cd=ev.target.closest(".card");if(cd&&(ev.shiftKey||ev.ctrlKey||ev.metaKey)&&!ev.target.closest("[data-del]")){tick(+cd.dataset.j,ev.shiftKey);return}
+ const b=ev.target.closest("[data-del],.card");if(!b)return;
  const x=order[+b.dataset.j??+b.dataset.del];
  if(b.dataset.del!==undefined){ev.stopPropagation();const y=order[+b.dataset.del];if(pk&&pk.id==y.c.id&&Math.abs(pk.a-y.a)<0.002){pk=null;pv.pause()}
   drop(y)}
@@ -710,7 +743,11 @@ addEventListener("keydown",ev=>{if(ev.target.tagName=="SELECT"||ev.target.tagNam
  if(k=="Tab")view($("selview").style.display=="grid"?1:2);
  else if(K=="f")toggleFrame();
  else if($("selview").style.display=="grid"){const x=PX();
-  if(k==" ")playPick();else if(k=="Escape")stopAll();
+  if(chosen.size&&(k=="Backspace"||k=="Delete"))$("bulkdrop").click();
+  else if(k=="Escape"&&chosen.size)$("bulkclr").click();
+  else if(K=="a"&&!ev.shiftKey)$("bulkall").click();
+  else if(K=="x"&&x)tick(pj(),false);
+  else if(k==" ")playPick();else if(k=="Escape")stopAll();
   else if(k=="ArrowRight"||k=="ArrowDown")pick(Math.min(order.length-1,pj()+1),!pv.paused);
   else if(k=="ArrowLeft"||k=="ArrowUp")pick(Math.max(0,pj()-1),!pv.paused);
   else if(!x)done=false;

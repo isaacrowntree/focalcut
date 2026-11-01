@@ -28,6 +28,9 @@ reel.json keys (all optional except song):
                                          "more": 2}}  the editor's
                                          calls, times in that export file's own timeline; merged over picks.json
                                          in this folder (the review step's page gives a copyable line per shot)
+    close_only         {"match": ["day"], "face": 0.2}  export files whose category or tag contains a match keep only
+                                         close shots (a face at least `face` of the frame height; people step),
+                                         e.g. daytime footage where the venue still looked empty
     hips               "movement": the semantic step scores hips on dancing movement, no from-behind / close-up
                                          prompts (an audience, not performers); false: left out
     logo               image file (PNG with transparency) laid front and centre over the opening shots

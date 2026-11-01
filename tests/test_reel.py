@@ -1141,3 +1141,16 @@ def test_face_seen_trusts_the_face_scan_over_the_pose():
     assert not f[1].any() or f[1, 1]
     del d["yf"]
     assert FR.face_seen(d, d["pose_t"][:1], d["boxes"][:1], d["kp"][:1])[0, :2].all()
+
+
+def test_close_only_keeps_matching_files_close_shots(tmp_path):
+    pr = Project(str(tmp_path))
+    os.makedirs(pr.path("scores"))
+    np.savez(pr.path("scores", "faces_C1_crowd-day.npz"), t=np.array([10.0, 20.0, 30.0]), h=np.array([0.3, 0.05, 0.25]),
+             score=np.array([0.95, 0.95, 0.5]))
+    rec = dict(id="C1_crowd-day", unit=dict(id="C1_crowd-day", category="broll", tag="crowd-day"),
+               moments=[dict(t=10.2), dict(t=20.0), dict(t=30.0), dict(t=40.0, add=True)])
+    night = dict(id="C2", unit=dict(id="C2", category="night", tag="night"), moments=[dict(t=5.0)])
+    P.close_only(pr, [rec, night], {"match": ["day"], "face": 0.2})
+    assert [m["t"] for m in rec["moments"]] == [10.2, 40.0]     # a big confident face, and the editor's add
+    assert len(night["moments"]) == 1                            # other footage untouched

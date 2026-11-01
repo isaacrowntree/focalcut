@@ -686,6 +686,27 @@ def apply_picks(recs, picks):
                     m[k] += 0.15 * r["more"]
 
 
+def close_only(project, recs, cfg):
+    """Footage that only works close up (reel.json "close_only"): {"match": ["day"], "face": 0.2}. Export files whose
+    category or tag contains a match keep just the moments with a face at least `face` of the frame height within
+    0.75 s (the people step's face scan) -- e.g. day footage where the venue still looked empty, so only shots
+    filled by people get in. The editor's own adds always stay. A file with no close moment drops out. Changes recs
+    in place."""
+    if not cfg:
+        return
+    match, need = cfg.get("match") or [], float(cfg.get("face", 0.2))
+    for r in recs:
+        u = r["unit"]
+        if not any(m in (u.get("category") or "") or m in (u.get("tag") or "") for m in match):
+            continue
+        path = project.path("scores", f"faces_{u['id']}.npz")
+        if not os.path.exists(path):
+            raise SystemExit(f"close_only needs the people step's face scan ({path}); run --steps people")
+        f = np.load(path)
+        big = f["t"][(f["h"] >= need) & (f["score"] >= 0.8)]
+        r["moments"] = [m for m in r["moments"] if m.get("add") or (np.abs(big - m["t"]) <= 0.75).any()]
+
+
 def ending_record(recs, cfg):
     """(record, source time) of the configured ending shot (cfg "ending": [export file, from, to]), or None."""
     e = cfg.get("ending")
@@ -1216,6 +1237,7 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     moments = copy.deepcopy(moments)
     if picks:
         apply_picks(moments, picks)
+    close_only(project, moments, project.config.get("close_only"))
     reserve_ending(moments, cfg)
     if assess_shots:
         assess(project, [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")],
