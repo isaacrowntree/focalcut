@@ -5,7 +5,7 @@ and a Premiere timeline for each. It was built on a 2.6-hour salsa convention sh
 clips) and produces two 3:00 reels from it unattended.
 
 ```bash
-pip install "focalcut[reel]"
+pip install "focalcut[reel] @ git+https://github.com/isaacrowntree/focalcut"
 focalcut reel init "/footage/Show 2026" --song track.mp3 \
     --stinger-landscape end_16x9.mov --stinger-portrait end_9x16.mov
 focalcut reel run "/footage/Show 2026"

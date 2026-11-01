@@ -788,6 +788,7 @@ def test_plan_on_joined_songs_cuts_on_their_real_beats(tmp_path):
 
 
 def test_drops_find_the_bass_coming_back_after_a_build():
+    pytest.importorskip("librosa")
     from focalcut.reel.music import drops, song_window
     sr, bar = 22050, 2.0
     t = np.arange(int(48 * bar * sr)) / sr
@@ -801,7 +802,7 @@ def test_drops_find_the_bass_coming_back_after_a_build():
 
 
 def test_mix_crossfades_matching_tempos_and_cuts_the_rest(tmp_path):
-    import soundfile as sf
+    sf = pytest.importorskip("soundfile")
 
     from focalcut.reel.music import mix
     sr = 48000
@@ -832,7 +833,7 @@ def test_late_categories_wait_for_the_climax(tmp_path):
 
 @needs_ffmpeg
 def test_overlay_pulses_on_the_beat_and_flashes_on_drops(tmp_path):
-    import soundfile as sf
+    sf = pytest.importorskip("soundfile")
 
     from focalcut.reel import overlay
     from focalcut.reel.render import ENC, FPS, read_frames
@@ -867,6 +868,7 @@ def test_overlay_pulses_on_the_beat_and_flashes_on_drops(tmp_path):
 
 
 def test_flickers_build_into_drops_hit_the_loudest_beats_and_take_the_editors_times():
+    pytest.importorskip("cv2")
     from focalcut.reel import overlay as O
     beats = np.arange(0, 60, 0.5)
     e = np.ones(len(beats)); e[[40, 44, 90]] = 3.0                    # hard hits at 20 s, 22 s (too close) and 45 s
@@ -918,6 +920,7 @@ def test_everyone_and_every_kiss_gets_a_shot(tmp_path):
 
 
 def test_faces_are_tracked_through_lighting_changes():
+    pytest.importorskip("scipy")
     from focalcut.reel.people import tracks_in
     rng = np.random.default_rng(0)
     a, b = rng.normal(size=128), rng.normal(size=128)
@@ -933,6 +936,7 @@ def test_faces_are_tracked_through_lighting_changes():
 
 
 def test_effects_clear_the_centre_of_the_frame():
+    pytest.importorskip("cv2")
     from focalcut.reel.overlay import edge_mask
     m = edge_mask(320, 180, 0.3)
     assert m[90, 160, 0] == 0 and m[0, 0, 0] == 1 and 0 < m[90, 250, 0] < 1

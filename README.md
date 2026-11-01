@@ -1,8 +1,8 @@
 # focalcut
 
-**Split a video into per-subject segments by following whoever the camera is focused on.**
+**Cut dance and event footage by who the camera is following — per-subject clips, beat-synced recap reels and
+editor timelines.**
 
-[![CI](https://github.com/isaacrowntree/focalcut/actions/workflows/ci.yml/badge.svg)](https://github.com/isaacrowntree/focalcut/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -10,6 +10,11 @@ Point focalcut at dance footage — or any video where the camera moves between 
 and it finds the cuts where focus changes from one person or couple to the next, then
 exports per-subject clips and a timeline you can open in Premiere, DaVinci Resolve,
 Final Cut or Avid.
+
+From a curated folder it also builds **recap reels**: a landscape and a portrait cut on the music's beats, told
+in acts, with velocity edits, transitions, portrait reframing that follows a dancer, shake checks, effects and an
+optional audio-reactive light-show overlay — plus a Premiere XML of each and a browser page for choosing,
+trimming and reframing shots (see [Recap reels](#recap-reels-recipe)).
 
 The recommended pipeline is **GPU-free**: ffmpeg contact sheets read by a vision model.
 
@@ -44,7 +49,7 @@ pinned 26 cuts to 0.5 s.
 Requires Python ≥3.10 and `ffmpeg`/`ffprobe` on `PATH`.
 
 ```bash
-pip install focalcut
+pip install "git+https://github.com/isaacrowntree/focalcut"
 ```
 
 That is the full GPU-free pipeline — numpy, OpenTimelineIO and ffmpeg, nothing else.
@@ -57,7 +62,7 @@ Hugging Face and `hf auth login` first. A CUDA GPU is recommended. This pulls to
 transformers (~2.5 GB), which is why it is opt-in:
 
 ```bash
-pip install "focalcut[sam]"
+pip install "focalcut[sam] @ git+https://github.com/isaacrowntree/focalcut"
 ```
 
 </details>
@@ -125,7 +130,7 @@ cut and a portrait cut, each up to Instagram's 3-minute Reels-tab limit — plus
 you can keep editing from the original camera files.
 
 ```bash
-pip install "focalcut[reel]"
+pip install "focalcut[reel] @ git+https://github.com/isaacrowntree/focalcut"
 focalcut reel init "/footage/Show 2026" --song "track.mp3" \
     --stinger-landscape end_16x9.mov --stinger-portrait end_9x16.mov
 focalcut reel run "/footage/Show 2026"        # units -> score -> shake -> focus -> subject -> … -> xml -> review
