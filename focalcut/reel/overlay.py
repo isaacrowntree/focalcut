@@ -175,7 +175,8 @@ def grid(music: dict, plan: dict, n: int, fps: int) -> dict:
     beats = np.array(music["beats"]) - off
     bar_t = np.array(music["bars"]) - off
     bars = set(np.round(bar_t, 3))
-    acc = np.array(music.get("beat_energy") or np.ones(len(beats)))
+    acc = np.array(music.get("beat_energy") or np.ones(len(beats)), float)
+    acc = np.pad(acc, (0, max(len(beats) - len(acc), 0)), mode="edge")[:len(beats)]   # one song: one per interval
     drop_beats = set()
     for s in (music.get("sections") or [])[1:]:                  # each song join
         drop_beats.add(int(np.argmin(np.abs(beats - (s["at"] - off)))))
