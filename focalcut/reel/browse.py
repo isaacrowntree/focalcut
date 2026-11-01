@@ -89,9 +89,10 @@ def page(clips, picks=None, key="sources", title="Sources", root="", nav=""):
     return PAGE.replace("%DATA%", data).replace("%TITLE%", html.escape(title)).replace("%NAV%", nav).replace("%MENU%", MENU_CSS)
 
 
-MENU_CSS = """.menu{display:inline-flex;gap:2px;flex-wrap:wrap}.menu a{padding:3px 9px;border-radius:6px;color:inherit;
-text-decoration:none;border:1px solid var(--line);font-size:12px}.menu a:hover{border-color:var(--mut)}
-.menu a.cur{background:var(--fg);color:var(--bg)}.menu a[hidden]{display:none}"""
+MENU_CSS = """.menu{display:inline-flex;gap:12px;flex-wrap:wrap;font-size:13px;margin-right:8px}
+.menu a{color:var(--mut);text-decoration:none;padding:2px 0;border-bottom:2px solid transparent}
+.menu a:hover{color:var(--fg)}.menu a.cur{color:var(--fg);font-weight:600;border-bottom-color:currentColor}
+.menu a[hidden]{display:none}"""
 
 
 def menu(project, current: str) -> str:
@@ -105,6 +106,11 @@ def menu(project, current: str) -> str:
     return ('<nav class=menu>' + "".join(f'<a href="{quote(k)}.html"{" class=cur" if k == current else ""}>'
                                          f'{html.escape(label)}</a>' for k, label in links)
             + '<a href="/" id=allp hidden>All projects</a></nav>')
+
+
+def title_of(project) -> str:
+    """The project as people call it: its folder name ("Electric Nation 2026"; reel.json's "name" is for files)."""
+    return os.path.basename(os.path.normpath(project.folder))
 
 
 def api_root(project) -> str:
@@ -121,7 +127,7 @@ def run(project, plans=None) -> str:
     cs = clips(project, page_dir, plans)
     path = os.path.join(page_dir, "sources.html")
     with open(path, "w") as f:
-        f.write(page(cs, project.picks(), key=project.name, title=f"{project.name} — sources", root=api_root(project),
+        f.write(page(cs, project.picks(), key=project.name, title=title_of(project), root=api_root(project),
                      nav=menu(project, "sources")))
     print(f"[reel] sources: {path}  ({len(cs)} clips; `focalcut reel serve {project.folder}` saves picks itself)")
     return path
@@ -145,11 +151,13 @@ kbd{border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;paddi
 font-family:ui-monospace,monospace}
 header{display:flex;gap:10px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line);
 background:var(--panel);flex-wrap:wrap}
-header h1{font-size:15px;margin:0 8px 0 0}%MENU%#saved{color:var(--mut);font-size:12px}#saved.ok{color:var(--sel)}
+header h1{font-size:15px;margin:0 8px 0 0}.pj{display:inline-flex;gap:4px}.pj button{padding:2px 8px;font-size:12px}%MENU%#saved{color:var(--mut);font-size:12px}#saved.ok{color:var(--sel)}
 #saved.err{color:var(--ban)}.sp{flex:1}
 #views{display:flex;gap:4px}#counts{color:var(--mut);font-size:12px}#counts b{color:var(--fg)}
 #counts .y b{color:var(--sel)}#counts .f b{color:var(--io)}#counts .x b{color:var(--ban)}
 #clipsview{display:grid;grid-template-columns:290px 1fr;min-height:0}
+@media (max-width:860px){body{overflow:auto;height:auto}#clipsview{grid-template-columns:1fr}
+#side{max-height:38vh;border-right:0;border-bottom:1px solid var(--line)}#main{overflow:visible}}
 #side{border-right:1px solid var(--line);overflow:auto;background:var(--panel)}
 #filters{position:sticky;top:0;background:var(--panel);padding:8px;display:flex;gap:4px;flex-wrap:wrap;
 border-bottom:1px solid var(--line);z-index:2}#filters button{padding:2px 8px;font-size:12px}
@@ -220,7 +228,7 @@ color:var(--mut);font-size:11px}.grp button{padding:3px 7px;font-size:12px}
 #pstrip .blk .h{width:12px;background:var(--sel);opacity:.0}#pstrip .blk .h:hover{opacity:.6}
 .dim{top:0;bottom:0;background:#000b;pointer-events:none}.oth{top:40%;bottom:40%;background:var(--sel);opacity:.5;pointer-events:none}
 #seq i.new{background:var(--mut)}#seq i.cut{background:var(--land);opacity:.45}#seq i.cut.p{background:var(--port)}
-#pfmts{display:inline-flex;gap:2px}.card.cut{opacity:.8}.card .tag{font-size:10px;border-radius:6px;padding:0 5px;background:var(--sel);color:#000}
+#pfmts{display:inline-flex;gap:2px}.card [data-del]{opacity:0}.card:hover [data-del],.card [data-del]:focus{opacity:1}.card .tag{font-size:10px;border-radius:6px;padding:0 5px;background:var(--sel);color:#000}
 .card.cut .tag{background:var(--line);color:var(--fg)}.card{cursor:pointer}#pvtc{position:absolute;left:8px;top:8px;background:#000a;color:#fff;
 padding:2px 8px;border-radius:4px;font:600 13px ui-monospace,monospace}
 #seq{display:flex;height:26px;border-radius:6px;overflow:hidden;border:1px solid var(--line)}
@@ -243,9 +251,9 @@ font:12px ui-monospace,monospace;pointer-events:none}.frl b{color:var(--io)}
 .fk{top:1px;bottom:1px;width:6px;margin-left:-3px;background:var(--io);border-radius:2px;pointer-events:none;z-index:2}
 </style>
 <header><h1>%TITLE%</h1>%NAV%
-<div id=views><button id=v1 class=on>Sources</button><button id=v2 title="the cut, shot by shot, with your picks in it">Cut &amp; picks</button></div><span id=counts></span>
+<div id=views><button id=v1 class=on title="every clip, one at a time">Clips</button><button id=v2 title="the cut, shot by shot, with your picks in it">Cut &amp; picks</button></div><span id=counts></span>
 <span class=sp></span><span id=saved></span>
-<button id=copy title="copy picks.json to the clipboard">Copy picks</button><button id=dl>Download picks.json</button>
+<span class=pj><button id=copy title="copy picks.json to the clipboard">Copy</button><button id=dl title="download picks.json">Download</button></span>
 </header>
 <section id=clipsview><aside id=side><div id=filters></div><div id=list></div></aside>
 <div id=main>
@@ -265,7 +273,7 @@ font:12px ui-monospace,monospace;pointer-events:none}.frl b{color:var(--io)}
 <button id=banc title="never use this clip">Ban clip</button></div>
 <div class=row><button id=bframe class=frt title="show the portrait reel's crop here; drag on the picture to set a focal point (F)">▯ Portrait frame <kbd>F</kbd></button>
 <button id=fclr title="remove the focal points around the playhead (this selection, reel shot or 3 s)">Clear focus here</button>
-<span style="color:var(--mut);font-size:12px">dashed pink: what the planner works out · yellow: what the portrait reel shows — drag to set a focal point at the playhead; set more at other times and the crop glides between them</span></div>
+<span id=fhelp style="color:var(--mut);font-size:12px" hidden>dashed pink: what the planner works out · yellow: what the portrait reel shows — drag to set a focal point at the playhead; set more at other times and the crop glides between them</span></div>
 <div id=ov class=tl title="the whole clip; the yellow box is what the timeline below shows — click or drag to move"><canvas></canvas></div>
 <div id=tl class=tl>
 <div id=ruler title="click or drag to scrub"></div>
@@ -278,7 +286,7 @@ font:12px ui-monospace,monospace;pointer-events:none}.frl b{color:var(--io)}
 <kbd>←</kbd><kbd>→</kbd> frame (<kbd>Shift</kbd> 1 s) · <kbd>I</kbd> in · <kbd>O</kbd> out · <kbd>Enter</kbd> add
 selection · <kbd>X</kbd> clear in–out · <kbd>Backspace</kbd> delete selection at playhead · <kbd>[</kbd><kbd>]</kbd>
 previous / next mark · <kbd>\</kbd> loop selection · <kbd>↑</kbd><kbd>↓</kbd> previous / next clip ·
-<kbd>=</kbd><kbd>−</kbd> zoom · <kbd>0</kbd> fit · <kbd>B</kbd> ban in–out · <kbd>F</kbd> portrait frame · <kbd>Tab</kbd> Picks view<br>
+<kbd>=</kbd><kbd>−</kbd> zoom · <kbd>0</kbd> fit · <kbd>B</kbd> ban in–out · <kbd>F</kbd> portrait frame · <kbd>Tab</kbd> Cut &amp; picks<br>
 Or drag in the <b style="color:var(--sel)">selections</b> lane to mark a range directly; drag a block to move it,
 its edges to trim. <span style="color:var(--land)">■</span> landscape and <span style="color:var(--port)">■</span>
 portrait show what the current reels use; <span style="color:var(--mom)">|</span> moments the planner found.
@@ -299,11 +307,11 @@ Each selection goes in the reel starting at its in-point.</div>
 <span class=grp>Slip <button data-n="slip:-0.5" title="move the whole pick earlier (,)">◀ ½s</button><button data-n="slip:-0.02">◀ f</button>
 <button data-n="slip:0.02">f ▶</button><button data-n="slip:0.5" title="move the whole pick later (.)">½s ▶</button></span>
 <button id=pframe class=frt title="portrait crop; drag on the picture to set a focal point (F)">▯ Portrait <kbd>F</kbd></button>
-<button id=pfclr title="remove this pick's focal points">Clear focus</button><span class=sp></span><button id=popen title="open in Sources">Open in Sources</button><button id=pdel title="remove (Backspace)">✕ Remove</button></div>
+<button id=pfclr title="remove this pick's focal points">Clear focus</button><span class=sp></span><button id=popen title="open this clip in Clips">Open in Clips</button><button id=pdel title="remove (Backspace)">✕ Remove</button></div>
 <div id=pt class=tl><div id=pruler></div><div id=pstrip title="drag the edges to trim or lengthen, the block to slip it, anywhere else to scrub; scroll to zoom"><canvas></canvas></div></div>
 <p style="color:var(--mut);font-size:12px;margin:6px 0 0">Drag the pick's edges to lengthen or trim, drag the block to slip it, click
 elsewhere to scrub · <kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> previous / next pick · <kbd>I</kbd>/<kbd>O</kbd> in / out
-at the playhead · <kbd>,</kbd><kbd>.</kbd> slip a frame (<kbd>Shift</kbd> ½ s) · <kbd>\</kbd> loop · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Tab</kbd> Sources</p></div>
+at the playhead · <kbd>,</kbd><kbd>.</kbd> slip a frame (<kbd>Shift</kbd> ½ s) · <kbd>\</kbd> loop · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Tab</kbd> Clips</p></div>
 <div id=seq title="every selection in order, widths by length — click to play from there"></div>
 <div id=cards></div>
 </section>
@@ -551,7 +559,7 @@ function selview(){order=allSels();const tot=order.reduce((s,x)=>s+x.b-x.a,0),j=
  $("seq").innerHTML=order.map((x,k)=>`<i data-j=${k} class="${k==j?"act":""}${x.shot?"":" new"}${x.cut?" cut"+(pfmt=="P"?" p":""):""}" style="flex:${(x.b-x.a).toFixed(2)}" title="${esc(x.c.id)} ${fmt(x.a)}–${fmt(x.b)}"></i>`).join("");
  let h="",sep=false;order.forEach((x,k)=>{if(!x.shot&&!sep){sep=true;h+=`<div class=catgrp>Not in the cut yet — placed on the next re-plan</div>`}
   h+=`<div class="card${k==j?" act":""}${x.cut?" cut":""}" data-j=${k}><div class=th data-j=${k}></div>
-  <div class=bd><div><b>${x.shot?(x.shot.fmt=="L"?"Shot ":"Portrait shot ")+x.shot.n:"New"}</b> <span class=tag>${x.cut?"cut":"pick"}</span> · ${esc(x.c.id)}<br>
+  <div class=bd><div><b>${x.shot?(x.shot.fmt=="L"?"Shot ":"Portrait shot ")+x.shot.n:"New"}</b> ${x.cut?"":"<span class=tag>pick</span> "}· ${esc(x.c.id)}<br>
   <small>${fmt(x.a)} – ${fmt(x.b)} · <b>${(x.b-x.a).toFixed(2)} s</b> · ${esc(x.c.clock)}</small></div>
   <div><button data-del=${k} title="${x.cut?"take this shot out of the cut (bans its stretch)":"remove this pick"}">✕</button></div></div></div>`});
  $("cards").innerHTML=h||`<p style="color:var(--mut)">No picks yet — choose footage in Sources.</p>`;
@@ -660,7 +668,7 @@ function frameAt(c,a,b,t){const cr=derived(c,a,b);if(cr===undefined)return"wait"
  return{d,o,w:cr.w,h:cr.h,z:cr.z}}
 function vrect(wrap,v){const R=wrap.getBoundingClientRect(),ar=v.videoWidth&&v.videoHeight?v.videoWidth/v.videoHeight:TW/TH;
  const w=Math.min(R.width,R.height*ar),h=w/ar;return{l:(R.width-w)/2,t:(R.height-h)/2,w,h}}
-function frameDraw(el,wrap,v,c,a,b,t){el.classList.toggle("on",frameOn);document.querySelectorAll(".frt").forEach(x=>x.classList.toggle("on",frameOn));
+function frameDraw(el,wrap,v,c,a,b,t){el.classList.toggle("on",frameOn);$("fhelp").hidden=!frameOn;document.querySelectorAll(".frt").forEach(x=>x.classList.toggle("on",frameOn));
  if(!frameOn){el.innerHTML="";return}const F=frameAt(c,a,b,t);
  if(typeof F=="string"){el.innerHTML=`<span class=frl>${{fills:"this clip fills the portrait frame as it is — no crop to place",
   off:"the portrait frame needs the page served by <code>focalcut reel serve</code>",wait:"working out the portrait crop…"}[F]}</span>`;return}

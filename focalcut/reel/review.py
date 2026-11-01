@@ -32,7 +32,7 @@ def pick_line(s):
     return f'"{u["id"]}": {{"ban": ["{mmss(a)}-{mmss(a + s["length"])}"]}}'
 
 
-def page(plan, fmt, thumbs, sources=None, picks=None, key="review", root="", nav=""):
+def page(plan, fmt, thumbs, sources=None, picks=None, key="review", root="", nav="", project=""):
     """The review page's HTML; thumbs[i] is shot i's image path relative to the page (or None). sources: per unit id,
     {"video": its export file relative to the page, "moments": [[t, kind, rank], ...]} in the export's own timeline;
     picks: the current picks.json, which the page starts from; root: the project folder relative to the page, where
@@ -54,7 +54,7 @@ def page(plan, fmt, thumbs, sources=None, picks=None, key="review", root="", nav
         shots.append(dict(id=u["id"], a=round(a, 2), b=round(a + s["length"], 2), kind=s["kind"]))
     data = json.dumps(dict(shots=shots, sources=sources or {}, picks=picks or {}, key=key, root=root)).replace("</", "<\\/")
     return (TEMPLATE.replace("%W%", str(w)).replace("%FMT%", html.escape(fmt)).replace("%N%", str(len(shots)))
-            .replace("%CARDS%", "".join(cards)).replace("%DATA%", data).replace("%NAV%", nav)
+            .replace("%CARDS%", "".join(cards)).replace("%DATA%", data).replace("%NAV%", nav).replace("%PROJECT%", html.escape(project))
             .replace("%MENU%", browse.MENU_CSS))
 
 
@@ -76,7 +76,7 @@ button{font:inherit;background:var(--line);color:var(--fg);border:0;border-radiu
 margin:4px 4px 0 0} button:hover{outline:1px solid var(--acc)} .bar{display:block}
 #top{position:sticky;top:0;background:var(--bg);padding:8px 0;z-index:5;border-bottom:1px solid var(--line);
 margin-bottom:12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-#count{color:var(--acc);margin-right:8px}%MENU%
+#count{color:var(--acc);margin-right:8px}.how{margin:0 0 12px;color:var(--mut)}.how summary{cursor:pointer}%MENU%
 dialog{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:12px;
 width:min(960px,96vw);max-height:96vh}
 dialog::backdrop{background:#000a}
@@ -105,18 +105,18 @@ border-radius:3px;display:none;z-index:10;font-variant-numeric:tabular-nums}
 kbd{border:1px solid var(--line);border-radius:3px;padding:0 4px;font-size:11px}
 pre{white-space:pre-wrap;font-size:11px;background:var(--card);padding:8px;border-radius:6px;max-height:40vh;overflow:auto}
 </style>
-<div id=top><h1>%FMT% reel — %N% shots</h1>%NAV%<span id=count></span>
-<button id=copy>Copy picks.json</button><button id=dl>Download picks.json</button>
+<div id=top><h1>%PROJECT% · %FMT% · %N% shots</h1>%NAV%<span id=count></span>
+<button id=copy title="copy picks.json to the clipboard">Copy</button><button id=dl title="download picks.json">Download</button>
 <button id=clear>Reset to file</button><span id=saved></span>
 <details><summary>show picks</summary><pre id=json></pre></details></div>
-<p>Times are in each export file's own timeline. <b>Scrub source</b> opens the export the shot comes from: the
+<details class=how><summary>How this page works</summary><p>Times are in each export file's own timeline. <b>Scrub source</b> opens the export the shot comes from: the
 <span style="color:var(--acc)">yellow</span> block is this shot, grey blocks are the reel's other shots from that
 video, <span style="color:var(--mom)">blue</span> ticks are the moments the planner found. Mark extra shots anywhere
 with <kbd>M</kbd> (as many as you like), swap this shot to the playhead or an <kbd>I</kbd>/<kbd>O</kbd> range
 (<kbd>S</kbd>), ban it (<kbd>B</kbd>), or ask for more from the video. Drag either strip to scrub; the lower one is
 zoomed around the playhead for frame-accurate picks (scroll or <kbd>=</kbd>/<kbd>−</kbd> to zoom); J/K/L shuttle. Then save the
 picks as <code style="display:inline">focalcut/reel/picks.json</code> and re-run
-<code style="display:inline">--steps plan,render,xml,review</code>.</p>
+<code style="display:inline">--steps plan,render,xml,review</code>.</p></details>
 <main>%CARDS%</main>
 <dialog id=dlg><div class=row style="justify-content:space-between"><b id=title></b>
 <span><button id=helpb title="keyboard shortcuts (?)">Keys ?</button> <button id=close>Close ✕</button></span></div>
@@ -367,6 +367,6 @@ def run(project, fmt, cut=None) -> str:
     with open(path, "w") as f:
         f.write(page(plan, fmt, thumbs, sources(project, plan, fmt, os.path.dirname(path)), project.picks(),
                      key=f"{project.name}/{cut}", root=browse.api_root(project),
-                     nav=browse.menu(project, cut)))
+                     nav=browse.menu(project, cut), project=browse.title_of(project)))
     print(f"[reel] review: {path}")
     return path
