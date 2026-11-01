@@ -1154,3 +1154,16 @@ def test_close_only_keeps_matching_files_close_shots(tmp_path):
     P.close_only(pr, [rec, night], {"match": ["day"], "face": 0.2})
     assert [m["t"] for m in rec["moments"]] == [10.2, 40.0]     # a big confident face, and the editor's add
     assert len(night["moments"]) == 1                            # other footage untouched
+
+
+def test_bans_keep_shot_windows_out_and_picks_keep_their_length():
+    u = dict(t0=0.0, t1=60.0, bans=[[10.0, 12.0]])
+    assert P.clear_of_bans(9.0, 1.5, u) == 8.5                     # would cover the ban: ends where it starts
+    assert P.clear_of_bans(11.0, 1.5, u) == 12.0                   # nearer its end: starts where it ends
+    assert P.clear_of_bans(8.0, 1.5, u) == 8.0                     # clear already
+    seq = [dict(unit=dict(id=f"U{i % 3}", role="dance"), act="night", beats=b, rank=r, fx=[], t=0.0)
+           for i, (b, r) in enumerate([(2, 0.9), (2, 0.1), (2, 0.5), (2, 0.8), (2, 0.2)])]
+    seq[2].update(span=[0.0, 2.0], add=True, rank=0.5)           # a 2 s pick at 0.5 s a beat wants 4 beats
+    P.fit_pick(seq, 2, 0.5)
+    assert seq[2]["beats"] == 4 and sum(s["beats"] for s in seq) == 10
+    assert [s["beats"] for s in seq if s is not seq[2]] == [2, 1, 2, 1]   # the two weakest gave a beat each

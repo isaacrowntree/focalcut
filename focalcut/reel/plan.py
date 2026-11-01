@@ -421,9 +421,10 @@ def plain(x):
 
 
 def fit_pick(seq, i, beat):
-    """The editor's selection plays as long as they chose: its shot takes beats from (or gives them to) the plain shots
-    nearest it in its act, which keep at least 2 -- or takes a whole short neighbour's place when that neighbour's
-    unit is in the reel elsewhere -- so the act's grid stays exact."""
+    """The editor's selection plays as long as they chose (to the nearest beat): its shot gives spare beats to the
+    plain shot nearest it, and takes the beats it needs from the weakest plain shots in its act -- condensing them to
+    2 beats, then to 1, then dropping the weakest whose unit is in the reel elsewhere; the act's best shots (top
+    quarter by rank) are never dropped. The act's grid stays exact."""
     s = seq[i]
     if not s.get("span") or not beat:
         return
@@ -442,13 +443,16 @@ def fit_pick(seq, i, beat):
         if d < 0:
             seq[near[0]]["beats"] -= d; s["beats"] += d
             return
-        j = next((j for j in near if seq[j]["beats"] > 2), None)
+        weak = sorted(near, key=lambda j: seq[j].get("rank", 0))
+        j = next((j for j in weak if seq[j]["beats"] > 2), None) or next((j for j in weak if seq[j]["beats"] == 2), None)
         if j is not None:
-            g = min(seq[j]["beats"] - 2, d)
+            g = min(seq[j]["beats"] - (2 if seq[j]["beats"] > 2 else 1), d)
             seq[j]["beats"] -= g; s["beats"] += g
             continue
         units = Counter(x["unit"]["id"] for x in seq)
-        j = next((j for j in near if units[seq[j]["unit"]["id"]] > 1 and 0 < j < len(seq) - 1), None)
+        top = np.quantile([seq[j].get("rank", 0) for j in near], 0.75)
+        j = next((j for j in weak if units[seq[j]["unit"]["id"]] > 1 and 0 < j < len(seq) - 1 and seq[j].get("rank", 0) <= top),
+                 None)
         if j is None:
             return
         s["beats"] += seq.pop(j)["beats"]
@@ -655,6 +659,7 @@ def apply_picks(recs, picks):
             return tuple(x0 + _secs(v) for v in txt)
         for a, b in map(span, p.get("ban", [])):
             r["moments"] = [m for m in r["moments"] if not a <= m["t"] <= b]
+            u["bans"] = [*u.get("bans", []), [a, b]]           # in_point keeps shots out of them too
         for a, b in map(span, p.get("prefer", [])):
             inside = [m for m in r["moments"] if a <= m["t"] <= b]
             if not inside and r["moments"]:
@@ -991,6 +996,8 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None):
         a, b = seq[k - 1], seq[k]
         if a["act"] != b["act"] and a["fx"] and b["fx"] and b["effect"] in ("hero", "spotlight", "neon"):
             b["fx"], b["effect"] = [], None
+    for s in [s for s in seq if s.get("span")]:            # later passes may have moved beats: the editor's picks last
+        fit_pick(seq, seq.index(s), music["beat"])
     # whatever the acts could not fill (or overfilled) comes off / goes on the plain shots, so the grid stays exact
     over = sum(s["beats"] for s in seq) - video_beats
     plain = sorted([s for s in seq if not s["fx"] and not s.get("span")], key=lambda s: s["rank"]) or seq
@@ -1223,7 +1230,20 @@ def in_point(s, beat):
         lead = (s["beats"] // 2) * beat
     else:
         lead = round(0.4 * s["beats"]) * beat
-    return min(max(s["t"] - lead, u["t0"]), max(u["t1"] - L, u["t0"]))
+    t = min(max(s["t"] - lead, u["t0"]), max(u["t1"] - L, u["t0"]))
+    return clear_of_bans(t, L, u)
+
+
+def clear_of_bans(t, L, u):
+    """A shot's in-point moved, as little as it can, so its window [t, t + L] stays out of the editor's banned
+    stretches (picks "ban": a moment just outside a ban would otherwise bring the banned shot back). Unchanged when
+    nothing fits."""
+    bans = u.get("bans") or []
+    hit = lambda x: any(min(x + L, b) - max(x, a) > 0.1 for a, b in bans)
+    if not hit(t):
+        return t
+    cands = [x for a, b in bans for x in (b, a - L) if u["t0"] <= x <= u["t1"] - L and not hit(x)]
+    return min(cands, key=lambda x: abs(x - t)) if cands else t
 
 
 def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=None, assess_shots=True):
@@ -1270,7 +1290,7 @@ def lands(project, seq, beat, hold):
     spare one (an act's edge shots keep 2 for their transition; a neighbour with its own landing keeps what it needs)."""
     need = math.ceil((V.PRE + hold) / beat - 1e-6)
     for i, s in enumerate(seq):
-        if (s["unit"]["role"] == "transition" or any(s.get(f) for f in ("ending", "logo", "reaction"))
+        if (s["unit"]["role"] == "transition" or any(s.get(f) for f in ("ending", "logo", "reaction", "span"))
                 or any(f in SPEED for f in s["fx"])):
             continue
         s["land"] = V.landed(project, s["unit"], s["t"])
@@ -1330,7 +1350,7 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
         src_in = in_point(s, s["beat"])
         if s.get("land") is not None:                        # the move's finish and the rest after it
             src_in, s["land_fits"] = V.hold_in(src_in, L, s["land"], hold)
-            src_in = min(max(src_in, u["t0"]), max(u["t1"] - L, u["t0"]))
+            src_in = clear_of_bans(min(max(src_in, u["t0"]), max(u["t1"] - L, u["t0"])), L, u)
         if s.get("span"):                                    # the editor's selection starts at their in-point
             src_in = in_point(s, s["beat"])
         if s.get("ending"):                                  # the configured ending runs out at its "to" time
