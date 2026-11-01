@@ -192,7 +192,9 @@ color:var(--mut);font-size:11px}.grp button{padding:3px 7px;font-size:12px}
 #pstrip .blk{top:2px;bottom:2px;background:transparent;border-width:3px;color:#fff;text-shadow:0 0 3px #000;cursor:grab}
 #pstrip .blk .h{width:12px;background:var(--sel);opacity:.0}#pstrip .blk .h:hover{opacity:.6}
 .dim{top:0;bottom:0;background:#000b;pointer-events:none}.oth{top:40%;bottom:40%;background:var(--sel);opacity:.5;pointer-events:none}
-#seq i.new{background:var(--mut)}.card{cursor:pointer}#pvtc{position:absolute;left:8px;top:8px;background:#000a;color:#fff;
+#seq i.new{background:var(--mut)}#seq i.cut{background:var(--land);opacity:.45}#seq i.cut.p{background:var(--port)}
+#pfmts{display:inline-flex;gap:2px}.card.cut{opacity:.8}.card .tag{font-size:10px;border-radius:6px;padding:0 5px;background:var(--sel);color:#000}
+.card.cut .tag{background:var(--line);color:var(--fg)}.card{cursor:pointer}#pvtc{position:absolute;left:8px;top:8px;background:#000a;color:#fff;
 padding:2px 8px;border-radius:4px;font:600 13px ui-monospace,monospace}
 #seq{display:flex;height:26px;border-radius:6px;overflow:hidden;border:1px solid var(--line)}
 #seq i{display:block;height:100%;border-right:1px solid var(--bg);background:var(--sel);opacity:.75;cursor:pointer}
@@ -257,6 +259,7 @@ Each selection goes in the reel starting at its in-point.</div>
 </div></section>
 <section id=selview>
 <div id=selhead><h2 id=seltitle></h2><span id=seltot style="color:var(--mut)"></span><span class=sp></span>
+<span id=pfmts><button data-f=L title="the landscape reel's shots, in order, with your picks">Landscape cut</button><button data-f=P title="the portrait reel's shots, in order, with your picks">Portrait cut</button><button data-f=picks title="only the picks you made">Picks only</button></span>
 <button id=playall class=go>▶ Play all</button><button id=stopall>■ Stop</button></div>
 <div id=ped><div id=pvwrap><video id=pv playsinline muted preload=auto></video><div id=pstill></div><span id=pvtc></span><div id=pfr class=fr></div></div>
 <div class=row style="margin:8px 0"><button id=pprev title="previous pick (←)">◀ Prev</button>
@@ -485,23 +488,34 @@ function jump(d){const t=now(),p=marks();const x=d>0?p.find(v=>v>t+0.03):p.rever
 // after, in the order they were filmed. Tweaks keep a pick's place until the next re-plan.
 const pv=$("pv");let order=[],pk=null,mode=null,pa=0,pb=1,pimg=new Image(),pdrag=null;const place=new Map();
 const pkey=(id,a)=>id+"|"+a.toFixed(2);
-function shotOf(c,a,b){for(const[fmt,arr]of[["L",c.L],["P",c.P]]){let best=null,ov=0;
+let pfmt=ls.get("pfmt")||"L";
+function shotOf(c,a,b){for(const[fmt,arr]of(pfmt=="P"?[["P",c.P],["L",c.L]]:[["L",c.L],["P",c.P]])){let best=null,ov=0;
   arr.forEach(([x,y,n])=>{const o=Math.min(b,y)-Math.max(a,x);if(o>ov+1e-6){ov=o;best=n}});
   if(best!==null&&ov>=Math.min(0.3,(b-a)/2))return{fmt,n:best}}return null}
-function allSels(){const out=[];D.clips.forEach((c,i)=>sels(c.id).forEach(([a,b],k)=>{const key=pkey(c.id,a);
+// the chosen cut's shots come in too (k -1: not a pick yet): editing one makes it a pick, removing one bans its stretch
+function allSels(){const out=[];D.clips.forEach((c,i)=>sels(c.id).forEach(([a,b],k)=>{const key=pfmt+"|"+pkey(c.id,a);
   if(!place.has(key))place.set(key,shotOf(c,a,b));out.push({c,i,k,a,b,shot:place.get(key)})}));
- const rank=x=>x.shot?(x.shot.fmt=="L"?0:1e4)+x.shot.n:1e9+x.i*1e3+x.a;return out.sort((x,y)=>rank(x)-rank(y))}
+ if(pfmt!="picks"){const have=new Set(out.filter(x=>x.shot&&x.shot.fmt==pfmt).map(x=>x.shot.n));
+  D.clips.forEach((c,i)=>{const bans=banned(c.id).map(v=>v=="all"?[-1,1e9]:span(v));
+   c[pfmt].forEach(([a,b,n])=>{if(!have.has(n)&&!bans.some(([u,v])=>(a+b)/2>=u&&(a+b)/2<=v))
+    out.push({c,i,k:-1,a,b,shot:{fmt:pfmt,n},cut:true})})})}
+ const rank=x=>x.shot?(x.shot.fmt==(pfmt=="P"?"P":"L")?0:1e4)+x.shot.n:1e9+x.i*1e3+x.a;return out.sort((x,y)=>rank(x)-rank(y))}
+$("pfmts").onclick=ev=>{const b=ev.target.closest("button");if(!b)return;pfmt=b.dataset.f;ls.set("pfmt",pfmt);pk=null;pv.pause();selview()};
 const pj=()=>pk?order.findIndex(x=>x.c.id==pk.id&&Math.abs(x.a-pk.a)<0.002):-1;
 const PX=()=>order[pj()];
 function selview(){order=allSels();const tot=order.reduce((s,x)=>s+x.b-x.a,0),j=pj(),placed=order.filter(x=>x.shot).length;
- $("seltitle").textContent=order.length+" pick"+(order.length==1?"":"s")+" from "+(n=>n+" clip"+(n==1?"":"s"))(new Set(order.map(x=>x.c.id)).size);
- $("seltot").textContent=short(tot)+" of footage · in cut order"+(order.length>placed?` · ${order.length-placed} not in the cut yet (I place them on the next re-plan)`:"");
- $("seq").innerHTML=order.map((x,k)=>`<i data-j=${k} class="${k==j?"act":""}${x.shot?"":" new"}" style="flex:${(x.b-x.a).toFixed(2)}" title="${esc(x.c.id)} ${fmt(x.a)}–${fmt(x.b)}"></i>`).join("");
+ const np=order.filter(x=>!x.cut).length,nc=order.length-np;
+ $("pfmts").querySelectorAll("button").forEach(b=>b.classList.toggle("on",b.dataset.f==pfmt));
+ $("seltitle").textContent=(pfmt=="picks"?"":`${nc+order.filter(x=>!x.cut&&x.shot&&x.shot.fmt==pfmt).length} shots in the ${pfmt=="P"?"portrait":"landscape"} cut · `)+
+  np+" pick"+(np==1?"":"s");
+ $("seltot").textContent=short(tot)+" of footage · in cut order"+(order.length>placed?` · ${order.length-placed} not in the cut yet (I place them on the next re-plan)`:"")+
+  (nc?" · trim, slip or drag a shot to make it a pick; ✕ bans it":"");
+ $("seq").innerHTML=order.map((x,k)=>`<i data-j=${k} class="${k==j?"act":""}${x.shot?"":" new"}${x.cut?" cut"+(pfmt=="P"?" p":""):""}" style="flex:${(x.b-x.a).toFixed(2)}" title="${esc(x.c.id)} ${fmt(x.a)}–${fmt(x.b)}"></i>`).join("");
  let h="",sep=false;order.forEach((x,k)=>{if(!x.shot&&!sep){sep=true;h+=`<div class=catgrp>Not in the cut yet — placed on the next re-plan</div>`}
-  h+=`<div class="card${k==j?" act":""}" data-j=${k}><div class=th data-j=${k}></div>
-  <div class=bd><div><b>${x.shot?(x.shot.fmt=="L"?"Shot ":"Portrait shot ")+x.shot.n:"New"}</b> · ${esc(x.c.id)}<br>
+  h+=`<div class="card${k==j?" act":""}${x.cut?" cut":""}" data-j=${k}><div class=th data-j=${k}></div>
+  <div class=bd><div><b>${x.shot?(x.shot.fmt=="L"?"Shot ":"Portrait shot ")+x.shot.n:"New"}</b> <span class=tag>${x.cut?"cut":"pick"}</span> · ${esc(x.c.id)}<br>
   <small>${fmt(x.a)} – ${fmt(x.b)} · <b>${(x.b-x.a).toFixed(2)} s</b> · ${esc(x.c.clock)}</small></div>
-  <div><button data-del=${k} title="remove this pick">✕</button></div></div></div>`});
+  <div><button data-del=${k} title="${x.cut?"take this shot out of the cut (bans its stretch)":"remove this pick"}">✕</button></div></div></div>`});
  $("cards").innerHTML=h||`<p style="color:var(--mut)">No picks yet — choose footage in Sources.</p>`;
  $("cards").querySelectorAll(".th").forEach(el=>{const x=order[+el.dataset.j],w=el.clientWidth||200,hh=w*TH/TW;
   el.setAttribute("style",thumbAt(x.c,x.a,hh));el.innerHTML=`<span>${k1(el)}</span>`});
@@ -510,7 +524,7 @@ function selview(){order=allSels();const tot=order.reduce((s,x)=>s+x.b-x.a,0),j=
 $("cards").onclick=ev=>{const b=ev.target.closest("[data-del],.card");if(!b)return;
  const x=order[+b.dataset.j??+b.dataset.del];
  if(b.dataset.del!==undefined){ev.stopPropagation();const y=order[+b.dataset.del];if(pk&&pk.id==y.c.id&&Math.abs(pk.a-y.a)<0.002){pk=null;pv.pause()}
-  const ss=sels(y.c.id);ss.splice(y.k,1);setSels(y.c.id,ss)}
+  drop(y)}
  else pick(+b.dataset.j,false)};
 $("seq").onclick=ev=>{const i=ev.target.closest("i");if(i)pick(+i.dataset.j,true)};
 function pick(j,play){const x=order[j];if(!x)return stopAll();pk={id:x.c.id,a:x.a};
@@ -522,7 +536,7 @@ function pick(j,play){const x=order[j];if(!x)return stopAll();pk={id:x.c.id,a:x.
 // change the current pick's in / out (lengthen, trim, slip); it keeps its place in the cut
 function edit(a,b){const x=PX();if(!x)return;const L=x.c.dur;if(b-a<0.1)return;
  if(a<0){b-=a;a=0}if(b>L){a-=b-L;b=L}a=Math.max(0,a);
- const ss=sels(x.c.id);ss[x.k]=[a,b];place.set(pkey(x.c.id,a),x.shot);pk={id:x.c.id,a};
+ const ss=sels(x.c.id);if(x.k>=0)ss[x.k]=[a,b];else ss.push([a,b]);place.set(pfmt+"|"+pkey(x.c.id,a),x.shot);pk={id:x.c.id,a};
  if(a<pa||b>pb){const ctx=Math.max(2,(b-a)*0.75);pa=Math.max(0,a-ctx);pb=Math.min(L,b+ctx)}
  setSels(x.c.id,ss)}
 const pnow=()=>pv.currentTime||0;
@@ -579,7 +593,10 @@ $("ped").onclick=ev=>{const b=ev.target.closest("button");if(!b)return;const x=P
  else if(b.id=="pprev")pick(Math.max(0,pj()-1),!pv.paused);else if(b.id=="pnext")pick(Math.min(order.length-1,pj()+1),!pv.paused)
  else if(b.id=="pin")edit(Math.min(pnow(),x.b-0.1),x.b);else if(b.id=="pout")edit(x.a,Math.max(pnow(),x.a+0.1))
  else if(b.id=="popen"){view(1);go(x.i);act=x.k;vid.addEventListener("loadedmetadata",()=>seek(x.a),{once:true})}
- else if(b.id=="pdel"){const ss=sels(x.c.id);ss.splice(x.k,1);const j=pj();pk=null;pv.pause();setSels(x.c.id,ss);if(order[j])pick(j,false)}};
+ else if(b.id=="pdel"){const j=pj();pk=null;pv.pause();drop(x);if(order[j])pick(j,false)}};
+// a pick goes; a shot of the cut is banned, so the next re-plan puts something else there
+function drop(x){if(x.k>=0){const ss=sels(x.c.id);ss.splice(x.k,1);setSels(x.c.id,ss)}
+ else{const e=ent(x.c.id);e.ban=e.ban||[];e.ban.push(fmt(x.a)+"-"+fmt(x.b));save()}}
 $("playall").onclick=()=>{mode="all";const j=Math.max(0,pj());pick(j,true)};
 $("stopall").onclick=stopAll;
 // --- portrait framing: the crop the planner derives (served by /api/crop) and the editor's focal points, picks
