@@ -61,7 +61,7 @@ PHRASES = {
 LONG = ("pattern", "travel", "spin", "trick", "dip", "style")    # moves that need time to play out
 SIZE = {"landscape": (1920, 1080), "portrait": (1080, 1920)}
 MOVES = ("spin", "dip", "trick", "pattern", "shake")
-SPEED = ("hero", "bullet", "montage", "flashin", "flashout", "jumpcut")
+SPEED = ("hero", "bullet", "montage", "flashin", "flashout", "jumpcut", "fit")
 ACT_NAMES = ("teaser", "arrival", "shows", "night", "climax", "finale")
 SIGNATURE = G.SIGNATURE                           # the change of act gets its own transition (grammar.py)
 _COMMON = dict(
@@ -410,8 +410,9 @@ def cover_all(P, seq, recs, home):
         seq.insert(i + 1, P.take(*x, beats=give, act=old["act"]))
 
 
-PICK_MAX = 4.0           # an editor's selection longer than this becomes several shots (seconds each, at most)
-PICK_BEATS = 8           # and no one shot of it runs longer than this many beats
+PICK_BEATS = 32          # an editor's selection is one shot, however long (this only guards against a runaway)
+PICK_CURVE = 4.0         # a selection longer than this (seconds) plays whole on a speed curve (fx "fit"), averaging
+PICK_PACE = {"dance": 1.05, "transition": 1.8}   # this fast: dancing peaks near 1.5x at its ends, B-roll quicker
 
 
 def plain(x):
@@ -426,7 +427,11 @@ def fit_pick(seq, i, beat):
     s = seq[i]
     if not s.get("span") or not beat:
         return
-    want = max(1, min(PICK_BEATS, round((s["span"][1] - s["span"][0]) / beat)))
+    n = s["span"][1] - s["span"][0]
+    if n > PICK_CURVE:                                       # a long one: all of it, on a speed curve
+        n /= PICK_PACE.get(s["unit"]["role"], PICK_PACE["dance"])
+        s["fx"], s["effect"] = ["fit"], "fit"
+    want = max(1, min(PICK_BEATS, round(n / beat)))
     while s["beats"] != want:
         i = next(k for k, x in enumerate(seq) if x is s)
         near = sorted((j for j in range(len(seq)) if j != i and seq[j]["act"] == s["act"] and plain(seq[j])),
@@ -631,7 +636,7 @@ def apply_picks(recs, picks):
     Banned stretches lose their moments ("all": the whole clip); preferred ones jump the queue (+1.0) -- and if no
     detected moment falls inside, one is made at the middle of the range (kind and framing from the nearest), so a
     suggestion always lands. "add": extra shots the reel must include, each at that time (include_adds); a range
-    ("1:12.4-1:15.1", from the source browser) is the editor's in-out, and the shot starts at its in-point. "more":
+    ("1:12.4-1:15.1", from the source browser) is the editor's in-out: one shot, from its in-point, its length. "more":
     ask for more shots from this clip -- its fair-share discount is divided by 1 + more and its moments rank up.
     Keys starting with "_" are notes. Changes recs in place."""
     picks = {k: v for k, v in (picks or {}).items() if not k.startswith("_")}
@@ -660,12 +665,8 @@ def apply_picks(recs, picks):
                 for k in [k for k in ("score_l", "score_p") if k in m] or ["score"]:
                     m[k] += 1.0
                 m["pick"] = True
-        adds = []
         for v in p.get("add", []):
             a, b = span(v)
-            n = max(1, math.ceil((b - a) / PICK_MAX - 1e-6))     # a long selection: several shots, all of it used
-            adds += [(a + (b - a) * k / n, a + (b - a) * (k + 1) / n) for k in range(n)]
-        for a, b in adds:
             t = (a + b) / 2
             if not r["moments"]:
                 continue

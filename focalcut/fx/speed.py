@@ -1,5 +1,5 @@
 """Speed curves, after CapCut's Speed > Curve presets: montage, hero, bullet (ramp - hold - ramp), jumpcut, flashin,
-flashout.
+flashout; and fit, which plays an editor's whole in-out in the slot it was given.
 
 Each preset is a speed multiplier over output time, centred on the move's peak. Slow stretches get optical-flow
 in-between frames (smooth slow-mo); fast stretches average the frames they skip (motion blur). The source window is
@@ -124,3 +124,22 @@ class FlashOut(Speed):
 
     def speed(self, t, out_len, ctx):                         # normal, then rushes out
         return np.minimum(1 + 2.5 * np.exp(-(out_len - t) / (0.6 * ctx.beat)), ctx.params.get("cap", 3.5))
+
+
+@register
+class Fit(Speed):
+    """The editor's whole selection in its slot: quicker at the ends, easing to its slowest over the middle (a bell
+    across the shot), scaled so the selection's every frame plays -- params "src_len": the selection's length."""
+    name = "fit"
+    dip, width = 0.5, 0.35                                    # how much slower the middle is; the bell's width (of L)
+
+    def shape(self, t, out_len):
+        return 1 - self.dip * np.exp(-((t - out_len / 2) / (self.width * out_len)) ** 2)
+
+    def speed(self, t, out_len, ctx):
+        dense = np.linspace(0, out_len, 2001)
+        area = np.trapezoid(self.shape(dense, out_len), dense)
+        return self.shape(t, out_len) * ctx.params.get("src_len", out_len) / max(area, 1e-6)
+
+    def source_length(self, out_len, ctx):
+        return ctx.params.get("src_len", out_len) + 2 / ctx.fps

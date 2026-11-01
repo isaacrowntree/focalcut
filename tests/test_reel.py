@@ -498,11 +498,11 @@ def test_picks_reach_the_plan(tmp_path):
     assert moments[0]["moments"]                                 # the caller's moments are left alone
 
 
-def test_picks_add_ranges_are_the_editors_in_out_and_long_ones_split():
+def test_picks_add_ranges_are_the_editors_in_out_one_shot_each():
     r = picks_rec()
     P.apply_picks([r], {"C200-01_couple": {"add": ["0:20-0:22.5", "0:40-0:46", "0:05"]}})
     spans = sorted(m["span"] for m in r["moments"] if m.get("span"))
-    assert spans == [[30.0, 32.5], [50.0, 53.0], [53.0, 56.0]]   # 6 s -> two 3 s shots; export + 10 s = source
+    assert spans == [[30.0, 32.5], [50.0, 56.0]]                 # a long pick stays one shot; export + 10 s = source
     assert any(m.get("add") and not m.get("span") and m["t"] == 15.0 for m in r["moments"])   # a point stays a point
     s = dict(unit=r["unit"], t=31.0, beats=4, fx=[], span=[30.0, 32.5])
     assert P.in_point(s, 0.5) == 30.0                                # starts at the editor's in-point
@@ -511,10 +511,10 @@ def test_picks_add_ranges_are_the_editors_in_out_and_long_ones_split():
 def test_fit_pick_gives_a_selection_its_length_and_keeps_the_grid():
     u = lambda i: dict(id=f"U{i}", clip=f"C{i}", role="dance")      # noqa: E731
     seq = [dict(unit=u(k % 3), act="night", beats=2, fx=[]) for k in range(8)]
-    seq[3].update(span=[0.0, 3.0], add=True)                         # 3 s at 0.5 s a beat: 6 beats
+    seq[3].update(span=[0.0, 4.5], add=True)                         # 4.5 s at 0.5 s a beat: 9 beats, one shot
     total = sum(x["beats"] for x in seq)
     P.fit_pick(seq, 3, 0.5)
-    assert next(x for x in seq if x.get("span"))["beats"] == 6 and sum(x["beats"] for x in seq) == total
+    assert next(x for x in seq if x.get("span"))["beats"] == 9 and sum(x["beats"] for x in seq) == total
 
 
 def test_source_browser_page_and_server_save_picks(tmp_path):

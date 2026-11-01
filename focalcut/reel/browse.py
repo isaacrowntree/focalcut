@@ -5,8 +5,8 @@ every selection that plays them back to back.
 
     review/sources.html  (+ review/sources/<unit>.jpg: a filmstrip per clip, one frame a second)
 
-Selections are picks "add" ranges ("1:12.40-1:15.10", export time): the planner puts each in the reel, starting at its
-in-point. Served by `focalcut reel serve`, the page saves picks.json itself on every change; opened as a file, it
+Selections are picks "add" ranges ("1:12.40-1:15.10", export time): the planner puts each in the reel as one shot, from its
+in-point, for its length. Served by `focalcut reel serve`, the page saves picks.json itself on every change; opened as a file, it
 keeps changes in the browser and offers a download.
 """
 from __future__ import annotations

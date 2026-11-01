@@ -72,8 +72,8 @@ def key(s, beat=None):
     """Cache name for a shot: changes whenever anything that shapes its pixels does."""
     u = s["unit"]
     k = json.dumps([u["id"], u["source"], u.get("rotate"), u["role"], s["src_in"], s["frames"], s.get("fx"),
-                    s.get("crop"), s["peak"], s.get("logo"), s.get("stab"), s["kind"] == "closeup", beat, 3],
-                   sort_keys=True)
+                    s.get("crop"), s["peak"], s.get("logo"), s.get("stab"), s["kind"] == "closeup", beat, 3]
+                   + ([s["span"]] if s.get("span") else []), sort_keys=True)
     return hashlib.md5(k.encode()).hexdigest()[:10]
 
 
@@ -103,6 +103,8 @@ def fx_shot(project, s, fmt, beat, out):
     u, L = s["unit"], s["length"]
     ctx = fx.Context(fps=FPS, beat=beat, peak=s["peak"], seed=int(key(s)[:4], 16), params={"group": s.get("group"), "closeup": s["kind"] == "closeup",
                                      "cap": 3.5 if u["role"] == "transition" else 1.5})   # dancing never past 1.5x
+    if s.get("span"):                              # an editor's selection: all of it, from their in-point
+        ctx.params["src_len"] = s["span"][1] - s["span"][0]
     src_len, src_peak = L, s["peak"]
     for n in s["fx"]:
         e = fx.EFFECTS[n]()
@@ -110,7 +112,9 @@ def fx_shot(project, s, fmt, beat, out):
             sp = e
             src_len, src_peak = e.source_length(L, ctx), e.source_peak(s["peak"], ctx, L)
     src_in = min(max(s["t"] - src_peak, u["t0"]), max(u["t1"] - src_len, u["t0"]))
-    if src_len != L and abs(src_in - (s["t"] - src_peak)) > 1e-3:   # clamped at the unit's edge: slow down where
+    if "fit" in s["fx"]:
+        src_in = min(max(s["span"][0], u["t0"]), max(u["t1"] - src_len, u["t0"]))
+    elif src_len != L and abs(src_in - (s["t"] - src_peak)) > 1e-3:   # clamped at the unit's edge: slow down where
         ctx.peak = sp.out_time(s["t"] - src_in, L, ctx)               # the move now plays, not where it would have
     shot = dict(s, src_in=src_in, length=src_len)
     if s.get("crop"):                              # the source read changed: follow the subject over it instead

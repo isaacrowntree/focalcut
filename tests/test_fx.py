@@ -93,3 +93,12 @@ def test_swipe_follows_the_motion():
     f = frames(6)                                     # content rolls right by a pixel a frame (at full size)
     dx, _ = motion_dir([np.repeat(np.repeat(x, 4, 0), 4, 1) for x in f])
     assert dx > 0.3
+
+
+def test_fit_curve_plays_the_whole_selection_slow_in_the_middle():
+    from focalcut.fx import Context
+    from focalcut.fx.speed import Fit
+    ctx = Context(fps=50, beat=0.5, params={"src_len": 6.0})
+    _, src, s = Fit()._map(4.0, ctx)
+    assert src[-1] == pytest.approx(6.0, abs=0.02)              # every frame of the 6 s pick in a 4 s slot
+    assert s[len(s) // 2] < s[0] and s[0] > 1.5
