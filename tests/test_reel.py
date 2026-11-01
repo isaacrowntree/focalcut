@@ -866,6 +866,24 @@ def test_overlay_pulses_on_the_beat_and_flashes_on_drops(tmp_path):
                 assert getattr(show, e)(c).shape[:2] == (90, 160), e
 
 
+def test_flickers_build_into_drops_hit_the_loudest_beats_and_take_the_editors_times():
+    from focalcut.reel import overlay as O
+    beats = np.arange(0, 60, 0.5)
+    e = np.ones(len(beats)); e[[40, 44, 90]] = 3.0                    # hard hits at 20 s, 22 s (too close) and 45 s
+    G = dict(beats=beats, energy=e, drops=[20, 22, 70])               # drops at 10 s, 11 s (straight after) and 35 s
+    S = np.full(60 * 25, 1.0, np.float32)
+    f = O.flickers(G, S, O.options({"flicker": {"at": [["0:50.1", "dark", 2]]}}), 25)
+    W, D = O.WHITE, O.DARK
+    assert [f.get(i) for i in range(16, 20)] == [W, W, W, D] and 21 not in f   # one build, dark just before the drop
+    assert f[66] == W and f[69] == D
+    assert f[40] == W and 44 not in f and f[90] == D                  # hits alternate, 4 bars apart at least
+    assert f[100] == f[101] == D and 102 not in f                     # the editor's: nearest beat, 2 in a row
+    assert O.flickers(G, S, O.options({"flicker": False}), 25) == {}
+    x = np.full((4, 4, 3), 100.0)
+    assert O.flicker(x, W, 0.0, 0.5, 25).min() > 240 and O.flicker(x, D, 0.0, 0.5, 25).max() < 10
+    assert np.allclose(O.flicker(x, W, 0.25, 0.5, 25), x, atol=1)      # gone within half a beat
+
+
 def test_clarity_favours_defined_subjects_over_murky_ones():
     from focalcut.reel.moments import clarity
     c = lambda luma, contrast, ring: float(clarity(np.array(luma), np.array(contrast), np.array(ring)))  # noqa: E731

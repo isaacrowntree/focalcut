@@ -26,10 +26,15 @@ the logo ease it back so the logo reads. Every effect fades out towards the cent
 is, so the subject is always seen clean (reel.json "clear": the clear radius, 0.8 of the half-frame). With MilkDrop
 the footage fades steadily darker towards the edges ("vignette": how dark at the corners) as MilkDrop comes in, rendered at full size; pattern
 presets are zoomed in 2x ("milkdrop_zoom"). Light goes mostly into the dark parts of the frame, so faces stay clean.
+Flickers: whole-frame white flashes or dark drop-outs, each one sharp on a beat and gone within half a beat.
+By default they come up the last bar into every drop (white, white, white, then dark on the beat before it hits) and
+on the hardest single hits of the night (alternately white and dark, at most one every 4 bars); reel.json
+"flicker": {"auto": true, "at": [["1:23.4", "white"], ["2:05", "dark", 4]]} adds them at reel times (snapped to the
+nearest beat; the number is how many beats in a row), and "flicker": false turns them off.
 Full-frame flashes never come faster than one per beat (photosensitivity: about 2 a second at 125 BPM).
 
 reel.json: "overlay": true, or {"strength": {act: 0..1}, "opacity": 0..1, "presets": [[effects], palette], ...],
-"beat": [names from kick/split/drops]}.
+"beat": [names from kick/split/drops], "flicker": {...}}.
 """
 from __future__ import annotations
 
@@ -91,7 +96,8 @@ def options(cfg) -> dict | None:
                 presets=[(list(e), p) for e, p in cfg.get("presets", PRESETS)],
                 beat=tuple(cfg.get("beat", ("kick", "split", "drops"))), engine=cfg.get("engine", "builtin"),
                 milkdrop=list(cfg.get("milkdrop", MILKDROP)), milkdrop_calm=list(cfg.get("milkdrop_calm", MILKDROP_CALM)),
-                milkdrop_zoom={**MILKDROP_ZOOM, **cfg.get("milkdrop_zoom", {})}, vignette=float(cfg.get("vignette", 0.85)))
+                milkdrop_zoom={**MILKDROP_ZOOM, **cfg.get("milkdrop_zoom", {})}, vignette=float(cfg.get("vignette", 0.85)),
+                flicker=dict(auto=True, at=[]) if cfg.get("flicker", True) is True else dict(cfg.get("flicker") or {}))
 
 
 class Palette:
@@ -190,7 +196,56 @@ def grid(music: dict, plan: dict, n: int, fps: int) -> dict:
             m = k == d + b
             drop[m & (drop < 0)] = b
     bar = np.clip(np.searchsorted(bar_t, t + 1e-3, side="right") - 1, 0, None)
-    return dict(since=since, down=down, drop=drop, bar=bar)
+    return dict(since=since, down=down, drop=drop, bar=bar, k=k, beats=beats, energy=e, drops=sorted(drop_beats))
+
+
+WHITE, DARK = 1, 2
+FLICKER_HIT = 98           # a beat louder than this percentile of the song's beats is a hard hit
+FLICKER_GAP = 16           # beats between automatic hits
+
+
+def flickers(G: dict, S: np.ndarray, opts: dict, fps: int) -> dict:
+    """{beat index: WHITE or DARK}: the build into each drop, the hardest hits of the night acts and the editor's own
+    (opts["flicker"]["at"]: [reel time, "white" | "dark"(, beats in a row)]). One per beat at most."""
+    from .plan import _secs
+    cfg = opts.get("flicker") or {}
+    beats, e, out = G["beats"], G["energy"], {}
+    if not len(beats) or cfg == {}:
+        return out
+    at_beat = lambda i: float(S[min(int(beats[i] * fps), len(S) - 1)])   # the act's strength there
+    if cfg.get("auto", True):
+        for n, d in enumerate(G["drops"]):
+            if n and d - G["drops"][n - 1] < 8:                  # a second drop straight after one: no build
+                continue
+            for j, kind in zip(range(d - 4, d), (WHITE, WHITE, WHITE, DARK)):
+                if j >= 0 and beats[j] >= 0:
+                    out[j] = kind
+        near = {j for d in G["drops"] for j in range(d - 8, d + 8)}
+        hit = max(np.percentile(e, FLICKER_HIT), 1.5)
+        cand = sorted((i for i in range(len(beats)) if e[i] >= hit and i not in near and beats[i] >= 0
+                       and at_beat(i) >= 0.8), key=lambda i: -e[i])
+        taken = []
+        for i in cand:
+            if all(abs(i - j) >= FLICKER_GAP for j in taken):
+                taken.append(i)
+        for n, i in enumerate(sorted(taken)):
+            out.setdefault(i, (WHITE, DARK)[n % 2])
+    for v in cfg.get("at", []):
+        t, kind, count = (list(v) + [1])[:3]
+        i = int(np.argmin(np.abs(beats - _secs(t))))
+        for j in range(i, min(i + int(count), len(beats))):
+            out[j] = DARK if str(kind).lower().startswith("d") else WHITE
+    return out
+
+
+def flicker(x, kind, since, beat, fps):
+    """The frame on a flicker beat: white floods it (or it drops to near black) for the beat's first two frames, then
+    lets go quickly -- one change of brightness, never a strobe."""
+    hold = 2 / fps
+    a = 0.92 * (1.0 if since < hold else float(np.exp(-(since - hold) / (0.07 * beat))))
+    if a < 0.01:
+        return x
+    return x + (255 - x) * a if kind == WHITE else x * (1 - a)
 
 
 def acts(plan: dict, n: int) -> list:
@@ -240,6 +295,7 @@ class Show:
         self.qy, self.qx = q[0], q[1]
         self.weight = {}
         self.edge = None                                         # full-size centre mask (set by apply)
+        self.flick = {}                                          # flicker beats (set by apply)
         self.zoom = None                                         # MilkDrop zoom per frame (set by apply)
         self.pal, self.ramp = Palette("neon"), Palette("neon").ramp()
         self.fire = np.zeros((h, w), np.float32)
@@ -580,6 +636,9 @@ def frame(f, k, show, F, G, S, preset, opts, md=None):
         blink = max(blink, (0.6 if drop == 0 else 0.25) * float(np.exp(-since / (0.12 * beat))))
     if blink:
         x = x + (255 - x) * blink
+    fl = show.flick.get(int(G["k"][k])) if show.flick else None
+    if fl:
+        x = flicker(x, fl, since, beat, fps)
     return np.clip(x, 0, 255).astype(np.uint8)
 
 
@@ -636,6 +695,9 @@ def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, en
     A = acts(plan, n)
     show = Show(W, H, fps, plan["beat"], np.random.default_rng(7))
     show.edge = edge_mask(W, H, opts["clear"])
+    show.flick = flickers(G, S, opts, fps)
+    print(f"[reel] overlay: {sum(v == WHITE for v in show.flick.values())} white and "
+          f"{sum(v == DARK for v in show.flick.values())} dark flickers")
     layer = None
     if opts["engine"] == "milkdrop":                             # drop bursts only; the visuals are MilkDrop's
         pals = list(HEX) + ["rainbow"]
