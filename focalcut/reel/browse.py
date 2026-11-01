@@ -188,7 +188,7 @@ border:1px solid var(--line)}
 .lane{position:relative;border-top:1px solid var(--line)}.lane .lab{position:absolute;left:4px;top:50%;
 transform:translateY(-50%);font-size:10px;color:var(--mut);pointer-events:none;z-index:1;text-transform:uppercase;
 letter-spacing:.05em}
-#lsel{height:34px;cursor:copy}#lland,#lport{height:14px}
+#lsel{height:34px;cursor:copy}#lland,#lport{height:18px;cursor:cell}
 .tl i{position:absolute;display:block;font-style:normal}
 .tk{top:12px;bottom:0;width:1px;background:var(--line)}.tk.big{top:6px;background:var(--mut)}
 .lb{top:1px;font-size:10px;color:var(--mut);transform:translateX(3px);white-space:nowrap}
@@ -204,6 +204,10 @@ border-radius:4px;pointer-events:none}
 transparent 6px 12px);pointer-events:none}
 .use{top:2px;bottom:2px;border-radius:3px;opacity:.9;font-size:9px;color:#000;overflow:hidden;padding-left:2px}
 #lland .use{background:var(--land)}#lport .use{background:var(--port)}.use{cursor:copy}.use:hover{outline:2px solid var(--fg)}
+.use.out{opacity:.25;text-decoration:line-through}.use.out .ux{display:none!important}
+.use .ux{position:absolute;right:0;top:0;bottom:0;width:13px;line-height:14px;text-align:center;font-size:10px;font-weight:700;
+background:#0006;color:#fff;cursor:pointer;display:none}.use:hover .ux{display:block}.use .ux:hover{background:var(--ban,#c0392b)}
+.rub{top:0;bottom:0;background:color-mix(in srgb,#c0392b 30%,transparent);border:1px solid #c0392b;pointer-events:none;z-index:2}
 .empty{left:90px;top:50%;transform:translateY(-50%);color:var(--mut);font-size:11px;pointer-events:none}
 .ph{top:0;bottom:0;width:2px;background:var(--ph);pointer-events:none;z-index:3;margin-left:-1px}
 .inm,.outm{top:0;bottom:0;width:2px;background:var(--io);pointer-events:none;z-index:2}
@@ -363,7 +367,7 @@ function setSels(id,list){const e=ent(id);const pts=(e.add||[]).filter(v=>!isRan
  e.add=[...pts,...list.map(([a,b])=>fmt(a)+"-"+fmt(b))];save()}
 function banned(id){return((P[id]||{}).ban||[])}
 // --- clip list ---
-let cur=0,cat="all",onlySel=false;const seen=new Set(ls.get("seen")||[]);
+let cur=0,cat="all",onlySel=false,rub=null;const seen=new Set(ls.get("seen")||[]);
 const C=()=>D.clips[cur];
 const cats=["all",...new Set(D.clips.map(c=>c.cat))];
 $("filters").innerHTML=cats.map(c=>`<button data-c="${esc(c)}" class="${c=="all"?"on":""}">${esc(c)}</button>`).join("")+
@@ -423,7 +427,10 @@ function draw(){const c=C();if(!c)return;const W=vb-va,t=now();
  if(!sels(c.id).length&&!io)s+=`<i class=empty>drag here to pick a range · or I / O then Enter · or click a reel shot below to take it</i>`;
  L.insertAdjacentHTML("beforeend",s);
  for(const[id,arr]of[["lland",c.L],["lport",c.P]]){const e=$(id);e.querySelectorAll("i").forEach(x=>x.remove());
-  e.insertAdjacentHTML("beforeend",arr.filter(([a,b])=>b>va&&a<vb).map(([a,b,n])=>`<i class=use data-a=${a} data-b=${b} style="${wspan(a,b)}" title="reel shot ${n}: ${short(a)}–${short(b)} — click to pick it">${n}</i>`).join(""))}
+  const bans=banned(c.id).map(v=>v=="all"?[-1,1e9]:span(v)),out=(a,b)=>bans.some(([u,v])=>(a+b)/2>=u&&(a+b)/2<=v);
+  e.insertAdjacentHTML("beforeend",arr.filter(([a,b])=>b>va&&a<vb).map(([a,b,n])=>`<i class="use${out(a,b)?" out":""}" data-a=${a} data-b=${b} style="${wspan(a,b)}" title="reel shot ${n}: ${short(a)}–${short(b)} — click to pick it, ✕ to take it out; drag along the lanes to take out every shot in a range">${n}<b class=ux title="take this shot out of the cut (bans its stretch)">✕</b></i>`).join(""))}
+ if(rub&&rub.moved){const[a,b]=[Math.min(rub.t0,rub.t1),Math.max(rub.t0,rub.t1)];
+  for(const id of["lland","lport"])$(id).insertAdjacentHTML("beforeend",`<i class=rub style="${wspan(a,b)}"></i>`)}
  fkeys(c.id).forEach(([k])=>{if(k>=va&&k<=vb)$("lport").insertAdjacentHTML("beforeend",`<i class=fk style="left:${X(k)}" title="focal point ${fmt(k)}"></i>`)});
  // markers spanning the timeline
  tl.querySelectorAll(":scope>i").forEach(e=>e.remove());let m="";
@@ -478,16 +485,20 @@ for(const el of[$("ruler"),$("strip")]){
 ov.addEventListener("pointerdown",ev=>{ov.setPointerCapture(ev.pointerId);drag={k:"ov",el:ov};movewin(tAt(ov,ev,0,dur()))});
 ov.addEventListener("pointermove",ev=>{const t=tAt(ov,ev,0,dur());showHover(ev,t,ov);if(drag&&drag.k=="ov")movewin(t)});
 function movewin(t){const w=vb-va;va=Math.max(0,Math.min(t-w/2,dur()-w));vb=va+w;if(now()<va||now()>vb)seek(t);paint()}
+// drags in the lanes snap to the playhead (where it was when the drag began) within 10 px
+const near=(el,t,p)=>p!=null&&Math.abs(t-p)*el.getBoundingClientRect().width/(vb-va)<10;
+const snapT=(el,ev,p=now())=>{const t=tAt(el,ev);return near(el,t,p)?p:t};
 const L=$("lsel");
-L.addEventListener("pointerdown",ev=>{pause();L.setPointerCapture(ev.pointerId);const t=tAt(L,ev),b=ev.target.closest(".blk");
+L.addEventListener("pointerdown",ev=>{pause();L.setPointerCapture(ev.pointerId);const ph=now(),t=snapT(L,ev,ph),b=ev.target.closest(".blk");
  if(b){const k=+b.dataset.k,ss=sels(C().id);act=k;
-  drag={k:ev.target.classList.contains("l")?"trimL":ev.target.classList.contains("r")?"trimR":"move",i:k,t0:t,
-   orig:ss[k].slice(),ss,moved:false}}
- else drag={k:"new",a:t,b:t};draw()});
-L.addEventListener("pointermove",ev=>{const t=tAt(L,ev);showHover(ev,t,tl);if(!drag||drag.el)return;
+  drag={k:ev.target.classList.contains("l")?"trimL":ev.target.classList.contains("r")?"trimR":"move",i:k,t0:tAt(L,ev),
+   orig:ss[k].slice(),ss,moved:false,ph}}
+ else drag={k:"new",a:t,b:t,ph};draw()});
+L.addEventListener("pointermove",ev=>{showHover(ev,tAt(L,ev),tl);if(!drag||drag.el)return;const t=snapT(L,ev,drag.ph);
  if(drag.k=="new"){drag.b=t;inPt=Math.min(drag.a,t);outPt=Math.max(drag.a,t);seek(t)}
  else{const o=drag.orig,d=t-drag.t0;if(Math.abs(d)>0.03)drag.moved=true;let[a,b]=o;
-  if(drag.k=="move"){const w=b-a;a=Math.max(0,Math.min(a+d,dur()-w));b=a+w}
+  if(drag.k=="move"){const w=b-a;a=Math.max(0,Math.min(o[0]+tAt(L,ev)-drag.t0,dur()-w));
+   if(near(L,a,drag.ph))a=drag.ph;else if(near(L,a+w,drag.ph))a=drag.ph-w;b=a+w}
   else if(drag.k=="trimL"){a=Math.min(t,b-0.1);seek(a)}else{b=Math.max(t,a+0.1);seek(b)}
   drag.ss[drag.i]=[a,b];const blk=L.querySelector(`.blk[data-k="${drag.i}"]`);if(blk)blk.setAttribute("style",wspan(a,b))}});
 L.addEventListener("pointerup",ev=>{if(!drag||drag.el)return;const c=C();
@@ -496,7 +507,23 @@ L.addEventListener("pointerup",ev=>{if(!drag||drag.el)return;const c=C();
   else{inPt=outPt=null;drag=null;seek(tAt(L,ev))}return}
  const d=drag;drag=null;if(d.moved)setSels(c.id,d.ss);else seek(d.orig[0]);mysel()});
 addEventListener("pointerup",()=>{if(drag&&drag.el){drag=null;draw()}});
-for(const id of["lland","lport"])$(id).addEventListener("click",ev=>{const u=ev.target.closest(".use");if(!u)return;
+// the reel lanes: ✕ on a shot takes it out of the cut; drag along either lane to take out every landscape and portrait
+// shot in the range (bans their stretches; one undo step; the ends snap to the playhead); a plain click makes it a pick
+function banShots(c,list){const e=ent(c.id);e.ban=e.ban||[];let n=0;
+ list.forEach(([a,b])=>{const v=fmt(a)+"-"+fmt(b);if(!e.ban.includes(v)){e.ban.push(v);n++}});if(n)save();return n}
+for(const id of["lland","lport"]){const el=$(id);
+ el.addEventListener("pointerdown",ev=>{if(ev.button||ev.target.closest(".ux"))return;el.setPointerCapture(ev.pointerId);
+  rub={t0:snapT(el,ev),t1:snapT(el,ev),x:ev.clientX,moved:false}});
+ el.addEventListener("pointermove",ev=>{showHover(ev,tAt(el,ev),tl);if(!rub)return;rub.t1=snapT(el,ev);
+  if(Math.abs(ev.clientX-rub.x)>4)rub.moved=true;if(rub.moved)draw()});
+ el.addEventListener("pointerup",()=>{const r=rub;if(!r)return;if(!r.moved){rub=null;return}
+  rub={moved:false,done:true};const c=C(),[a,b]=[Math.min(r.t0,r.t1),Math.max(r.t0,r.t1)];
+  const hit=[...c.L,...c.P].filter(([x,y])=>(x+y)/2>=a&&(x+y)/2<=b);
+  const n=banShots(c,hit);status(n?`took ${n} shot${n==1?"":"s"} out of the cut — Ctrl+Z undoes`:"no reel shots in that range",n?"ok":"");draw()})}
+for(const id of["lland","lport"])$(id).addEventListener("click",ev=>{if(rub&&rub.done){rub=null;return}
+ const x=ev.target.closest(".ux");if(x){const u=x.closest(".use"),n=banShots(C(),[[+u.dataset.a,+u.dataset.b]]);
+  status(n?"took the shot out of the cut — Ctrl+Z undoes":"already out","ok");return}
+ const u=ev.target.closest(".use");if(!u)return;
  const a=+u.dataset.a,b=+u.dataset.b,c=C(),ss=sels(c.id);if(!ss.some(([x,y])=>Math.abs(x-a)<0.05&&Math.abs(y-b)<0.05))ss.push([a,b]);
  setSels(c.id,ss);act=sels(c.id).findIndex(([x])=>Math.abs(x-a)<0.01);seek(a);renderAll()});
 vid.addEventListener("error",draw);vid.addEventListener("loadeddata",draw);vid.addEventListener("seeking",draw);
