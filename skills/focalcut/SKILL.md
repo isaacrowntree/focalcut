@@ -86,6 +86,8 @@ Read `references/concepts.md` for the rule, the reason, the numbers and the code
 The planner prints a summary per act: shots, transitions, effects. Look at `plan_<cut>.json`, or render with
 `--draft` and open the review page, and check:
 
+- The summary's **picks** line says "all in once, at full length, bans held". Anything it lists (a pick missing,
+  repeated, short, sped up or overlapped; a ban not held) gets fixed before rendering (`plan.pick_report`).
 - Every export file is present in each format it belongs to (the summary's `units` reads n/n); no clip cuts to
   itself; no B-roll sits next to B-roll.
 - Dance shots with a landing show the rest after it (`land`, `land_fits` in the plan).
