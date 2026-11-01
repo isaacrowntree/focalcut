@@ -16,7 +16,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   minutes down to about 4.5.
 - **Picks keep their length and bans hold:** a pick takes the beats it needs from the weakest plain shots in its
   act; a ban keeps any shot window out of the banned stretch, not just moments peaking inside it. Picks take
-  precedence: each plays once, at real speed (no speed effects, no speed curve for long ones), and no other shot
+  precedence: each plays once, never sped up (slow motion stays; no speed curve for long ones), and no other shot
   reuses its footage.
 - **Bulk drop in the source browser:** tick shots in Cut & picks (or drag along the reel lanes in Clips, ✕ on one
   shot) and drop them all at once; drags snap to the playhead.

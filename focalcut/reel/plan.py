@@ -62,6 +62,7 @@ LONG = ("pattern", "travel", "spin", "trick", "dip", "style")    # moves that ne
 SIZE = {"landscape": (1920, 1080), "portrait": (1080, 1920)}
 MOVES = ("spin", "dip", "trick", "pattern", "shake")
 SPEED = ("hero", "bullet", "montage", "flashin", "flashout", "jumpcut", "fit")
+FAST = ("flashin", "flashout", "jumpcut", "fit")       # the ones that speed footage up (an editor's pick never is)
 ACT_NAMES = ("teaser", "arrival", "shows", "night", "climax", "finale")
 SIGNATURE = G.SIGNATURE                           # the change of act gets its own transition (grammar.py)
 _COMMON = dict(
@@ -422,14 +423,14 @@ def plain(x):
 
 def picks_once(seq):
     """The editor's picks take precedence: each plays once (a repeat's beats go to the shot before it, or after it at
-    an act's start), at real speed (no speed effect on it). Changes seq in place."""
+    an act's start), never sped up (slow motion is fine: FAST effects come off). Changes seq in place."""
     seen = set()
     i = 0
     while i < len(seq):
         s = seq[i]
         if s.get("span"):
-            if s["fx"] and any(f in SPEED for f in s["fx"]):
-                s["fx"] = [f for f in s["fx"] if f not in SPEED]
+            if any(f in FAST for f in s["fx"]):
+                s["fx"] = [f for f in s["fx"] if f not in FAST]
                 s["effect"] = s["fx"][0] if s["fx"] else None
             k = (s["unit"]["id"], tuple(s["span"]))
             if k in seen and len(seq) > 1:
