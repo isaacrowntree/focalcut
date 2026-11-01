@@ -154,7 +154,7 @@ act has a short vocabulary of transitions, and one goes in only where the cut ha
 turns, a swipe when the same travel carries across, a push in to a face, a flash on a big hit). Camera shake is
 measured, so shaky stretches give way to steadier ones and mildly shaky shots are stabilised. In portrait the strip
 follows one dancer of a couple dancing apart and favours faces over backs. Band players cut in on the musical hits,
-and the reel can end on a shot you choose. See [docs/recipes/recap-reel.md](docs/recipes/recap-reel.md).
+and the reel can end on a shot you choose. See [docs/recipes/recap-reel.md](docs/recipes/recap-reel.md), and [docs/hardware.md](docs/hardware.md) for what runs on which chip.
 
 Every one of these is a reusable piece. `plan.place()` turns any hand-built sequence of shots into a plan that
 renders and exports like a reel, so a teaser, a highlight or a promo uses the same rules (see

@@ -253,8 +253,12 @@ edge shimmering.
 
 ## Hardware notes
 
-- **Decoding is the bottleneck.** Sony 4K 10-bit 4:2:2 HEVC decodes on the CPU (consumer NVDEC can't do 4:2:2).
-  Scoring skips non-reference frames and deblocking, which is about 20% faster and fine for analysis.
+Full notes and measurements: [docs/hardware.md](../hardware.md).
+
+- **Decoding is the bottleneck.** NVDEC before Blackwell can't decode Sony 4K 10-bit 4:2:2 HEVC. On WSL with an
+  Intel iGPU, the render decodes it with Quick Sync through a Windows ffmpeg build (about 6x less CPU) and encodes
+  with NVENC, several shots at once (`FOCALCUT_DECODERS`); otherwise it decodes on the CPU. Scoring skips
+  non-reference frames and deblocking, which is about 20% faster and fine for analysis.
 - **Two scoring workers on a 12 GB GPU.** More overflows VRAM; on WSL that pages to system RAM and everything
   slows to a crawl. Each worker also caps its own threads so they don't starve the decoders.
 - **Cap SAM 3 in crowds.** Tracking every person in a packed room floods the GPU; the masks module tracks at most

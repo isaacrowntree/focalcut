@@ -113,8 +113,11 @@ Plus `proxies` for the DNxHD stabilised masters.
 
 - **Python environment:** ML runs from the repo's `.venv` with the `reel` extra. Set `FOCALCUT_DISABLE_CUDNN=1` if
   cuDNN engines are broken.
-- **Decoding:** Sony 10-bit 4:2:2 HEVC can't use NVDEC, so it decodes on the CPU. The shake pass decodes the H.264
-  exports on the GPU instead.
+- **Decoding and encoding (docs/hardware.md):** Sony 10-bit 4:2:2 HEVC can't use NVDEC before Blackwell, and
+  Mesa's WSL VA-API bridge has no 4:2:2 decode. On WSL the render decodes it on the Intel iGPU with Quick Sync via a
+  Windows ffmpeg (`C:\tools\ffmpeg-*\bin\ffmpeg.exe` or `FOCALCUT_WIN_FFMPEG`; needs `-async_depth 1` or cuts land
+  3 frames early), encodes with NVENC, and runs shots in parallel (`FOCALCUT_DECODERS="qsv=5,cpu=2"`). Analysis
+  still decodes on the CPU; the shake pass decodes the H.264 exports on the GPU.
 - **GPU workers:** for example, two scoring workers suit a 12 GB GPU; more can overflow VRAM (on WSL it pages to RAM).
 - **Long jobs:** run them in the background. Kill workers by PID, or with an anchored `pgrep -af '^/full/path'`;
   never an unanchored `pkill -f`, which matches the calling shell.

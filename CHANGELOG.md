@@ -9,6 +9,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Hardware rendering** (`focalcut/reel/hw.py`, [docs/hardware.md](docs/hardware.md)): on WSL, camera files only
+  the CPU could decode (Sony 10-bit 4:2:2 HEVC) decode on the Intel iGPU with Quick Sync through a Windows ffmpeg
+  build, frame-exact (`-async_depth 1`) and about 6x less CPU; shots encode with NVENC and render several at once
+  (`FOCALCUT_DECODERS`, `FOCALCUT_WIN_FFMPEG`, `FOCALCUT_ENCODER`). A 140-shot reel's plain shots: about 30
+  minutes down to about 4.5.
+- **Picks keep their length and bans hold:** a pick takes the beats it needs from the weakest plain shots in its
+  act; a ban keeps any shot window out of the banned stretch, not just moments peaking inside it.
+- **Bulk drop in the source browser:** tick shots in Cut & picks (or drag along the reel lanes in Clips, ✕ on one
+  shot) and drop them all at once; drags snap to the playhead.
+- **close_only** (reel.json): footage that only works close up keeps just the moments with a big face.
 - **DJ-style song hand-overs** (`songs`): the outgoing song rides its tempo to the next one's over 8 bars
   (Rubber Band through ffmpeg, pitch kept), the two play beat on beat for 4 bars with the highs crossfaded and the
   bass swapped on the downbeat, and the songs are level-matched. Replaces the one-bar crossfade and the hard cut

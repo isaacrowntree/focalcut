@@ -19,7 +19,9 @@ from . import hw
 
 SIZE = {"landscape": (1920, 1080), "portrait": (1080, 1920)}
 FPS = 50
-DECODERS = {"qsv": 3, "cpu": 3}  # shots rendered at once: on the Intel iGPU (hw.ffmpeg) and on the CPU
+# shots rendered at once, by decoder: the Intel iGPU (hw.ffmpeg) leaves the CPU free for the filters, so it takes
+# the most (measured on a 24-thread CPU: 3 + 3 kept the CPU at 85% and the iGPU's decoder at 40%)
+DECODERS = {"qsv": 5, "cpu": 2}
 
 
 def __getattr__(name):                                      # render.ENC: the encoder arguments (found on first use)
@@ -168,7 +170,7 @@ def render_shots(project, plan, fmt, work, draft=False):
     from concurrent.futures import ThreadPoolExecutor
     n, done, lock = len(plan["shots"]), [0], threading.Lock()
     slots = queue.Queue()
-    for kind, k in DECODERS.items():
+    for kind, k in hw.decoders(DECODERS).items():
         for _ in range(k if kind == "cpu" or hw.win_ffmpeg() else 0):
             slots.put(kind)
 

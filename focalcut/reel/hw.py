@@ -9,6 +9,9 @@ HEVC: NVDEC before Blackwell has no 4:2:2, and Mesa's D3D12 VA-API bridge in WSL
 go through a Windows ffmpeg build on WSL, which decodes them on the Intel iGPU with Quick Sync at a fraction of the
 CPU time. Set FOCALCUT_WIN_FFMPEG to its ffmpeg.exe, or put a build under C:/tools/ffmpeg*/bin/; FOCALCUT_WIN_FFMPEG=
 "" turns it off. Only files on a Windows drive (/mnt/<letter>/) go that way.
+
+Parallel shots: render.DECODERS (FOCALCUT_DECODERS="qsv=5,cpu=2"). See docs/hardware.md for the measurements and
+the WSL setup.
 """
 from __future__ import annotations
 
@@ -61,6 +64,14 @@ def win_ffmpeg() -> str | None:
         return path
     except (subprocess.SubprocessError, OSError):
         return None
+
+
+def decoders(default: dict) -> dict:
+    """Shots rendered at once per decoder: FOCALCUT_DECODERS="qsv=5,cpu=2" overrides the default."""
+    env = os.environ.get("FOCALCUT_DECODERS")
+    if not env:
+        return dict(default)
+    return {k.strip(): int(v) for k, v in (kv.split("=") for kv in env.split(",") if "=" in kv)}
 
 
 def winpath(p: str) -> str:
