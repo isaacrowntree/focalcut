@@ -263,7 +263,9 @@ def cmd_reel_init(a: argparse.Namespace) -> int:
 def cmd_reel_serve(a: argparse.Namespace) -> int:
     from .reel import serve
     from .reel.project import Project
-    serve.run(Project(a.folder), port=a.port)
+    if not a.folder and not a.root:
+        raise SystemExit("give one or more project folders, or --root")
+    serve.run([Project(f) for f in a.folder], port=a.port, root=a.root)
     return 0
 
 
@@ -306,8 +308,10 @@ def main(argv=None) -> int:
     rr.add_argument("--workers", type=int, default=2, help="scoring processes (2 suits a 12 GB GPU)")
     rr.add_argument("--draft", action="store_true", help="render without effects or transitions (fast check)")
     rr.set_defaults(func=cmd_reel_run)
-    rv = rsub.add_parser("serve", help="serve the review pages; they save picks.json as you make picks")
-    rv.add_argument("folder")
+    rv = rsub.add_parser("serve", help="serve the review pages of one or more projects; they save picks.json as you "
+                                       "make picks")
+    rv.add_argument("folder", nargs="*", help="project folders; each is served under /p/<slug>/")
+    rv.add_argument("--root", help="also serve every <root>/*/focalcut/reel/reel.json, including ones added later")
     rv.add_argument("--port", type=int, default=8765)
     rv.set_defaults(func=cmd_reel_serve)
 

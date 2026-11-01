@@ -540,7 +540,8 @@ def test_source_browser_page_and_server_save_picks(tmp_path):
     clip = dict(id="C1", cat="night", tag="", clock="21:00", sort="1", dur=10.0, video="v.mp4", strip="sources/C1.jpg",
                 step=1.0, n=10, moments=[[2.0, "spin"]], L=[[1.0, 2.0, 5]], P=[])
     html_ = browse.page([clip], {"C1": {"add": ["0:01-0:02"]}})
-    assert '"id": "C1"' in html_ and "/api/picks" in html_ and "Play all" in html_ and "/api/crop" in html_
+    assert '"id": "C1"' in html_ and "Play all" in html_ and 'D.root+"api/picks"' in html_ and "api/crop" in html_
+    assert '"/api/' not in html_ and "`/api/" not in html_                   # relative: works under any prefix
     pr, _, _ = fake_reel(tmp_path)
     os.makedirs(pr.path("review"), exist_ok=True)
     with open(pr.path("review", "sources.html"), "w") as f:
@@ -562,6 +563,118 @@ def test_source_browser_page_and_server_save_picks(tmp_path):
             urllib.request.urlopen(bad)
     finally:
         srv.shutdown()
+
+
+def reel_folder(path, clips=("C1",)):
+    """A project folder as the server sees it: reel.json, a sources page and an export per clip."""
+    os.makedirs(os.path.join(path, "focalcut", "reel", "review"), exist_ok=True)
+    with open(os.path.join(path, "focalcut", "reel", "reel.json"), "w") as f:
+        f.write("{}")
+    with open(os.path.join(path, "focalcut", "reel", "review", "sources.html"), "w") as f:
+        f.write("<p>sources of " + os.path.basename(path))
+    with open(os.path.join(path, "focalcut", "reel", "review", "landscape.html"), "w") as f:
+        f.write("<p>landscape")
+    for c in clips:
+        with open(os.path.join(path, c + ".bin"), "wb") as f:
+            f.write(bytes(range(256)))
+    return Project(str(path))
+
+
+def served(site):
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from focalcut.reel import serve
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), serve.handler(site))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+
+
+def http(url, data=None, method=None, headers=None):
+    """(status, body) of a request, errors included."""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def test_one_server_holds_several_projects_each_with_its_own_picks(tmp_path):
+    from focalcut.reel import browse, serve
+    a, b = reel_folder(tmp_path / "SSMC 2026"), reel_folder(tmp_path / "Electric Nation 2026", clips=("C2",))
+    site = serve.Site([a, b])
+    assert set(site.projects) == {"ssmc-2026", "electric-nation-2026"} and site.single is None
+    srv, base = served(site)
+    try:
+        for s, picks in (("ssmc-2026", b'{"C1": {"ban": ["all"]}}'), ("electric-nation-2026", b'{"C2": {"more": 2}}')):
+            assert http(f"{base}/p/{s}/api/picks", picks, "PUT")[0] == 200
+        assert json.load(open(a.path("picks.json"))) == {"C1": {"ban": ["all"]}}       # each its own file
+        assert json.load(open(b.path("picks.json"))) == {"C2": {"more": 2}}
+        assert json.loads(http(f"{base}/p/electric-nation-2026/api/picks")[1]) == {"C2": {"more": 2}}
+        http(f"{base}/p/ssmc-2026/api/picks", b'{"C1": {}}', "PUT")
+        assert json.load(open(a.path("picks.json") + ".bak")) == {"C1": {"ban": ["all"]}}   # .bak on every write
+        st, body = http(f"{base}/p/ssmc-2026/C1.bin", headers={"Range": "bytes=10-19"})
+        assert st == 206 and body == bytes(range(10, 20))
+        st, body = http(f"{base}/p/ssmc-2026/focalcut/reel/review/sources.html")
+        assert st == 200 and b"SSMC 2026" in body
+        idx = http(base + "/")[1].decode()                                    # the index lists both, with pages
+        assert "/p/ssmc-2026/focalcut/reel/review/sources.html" in idx and "Electric Nation 2026" in idx
+        assert "/p/electric-nation-2026/focalcut/reel/review/landscape.html" in idx
+        assert http(base + "/api/picks")[0] == 404                            # no top level with several
+        assert http(base + "/p/nope/api/picks")[0] == 404
+        assert http(f"{base}/p/ssmc-2026/api/picks", b'{"x": 1}', "PUT", {"Host": "evil.example"})[0] == 403
+    finally:
+        srv.shutdown()
+    assert browse.api_root(a) == "../../../"                                  # the pages' API base
+
+
+def test_server_refuses_paths_out_of_a_project_even_into_another(tmp_path):
+    from focalcut.reel import serve
+    reel_folder(tmp_path / "A", clips=("secret",))
+    a, b = Project(str(tmp_path / "A")), reel_folder(tmp_path / "B")
+    with open(tmp_path / "outside.txt", "w") as f:
+        f.write("no")
+    srv, base = served(serve.Site([a, b]))
+    try:
+        assert http(f"{base}/p/a/secret.bin")[0] == 200
+        for bad in ("/p/b/../a/secret.bin", "/p/b/%2e%2e/a/secret.bin", "/p/b/..%2fA%2fsecret.bin",
+                    "/p/b/%2e%2e%2f%2e%2e%2foutside.txt", "/p/a/../../outside.txt"):
+            assert http(base + bad)[0] == 404, bad
+    finally:
+        srv.shutdown()
+
+
+def test_a_running_server_takes_new_projects_and_one_folder_works_as_before(tmp_path):
+    from focalcut.reel import serve
+    one = reel_folder(tmp_path / "One")
+    srv, base = served(serve.Site([one]))
+    try:                                                                     # a single project: the top level too
+        assert http(base + "/api/picks", b'{"C1": {"more": 1}}', "PUT")[0] == 200
+        assert json.load(open(one.path("picks.json"))) == {"C1": {"more": 1}}
+        assert json.loads(http(base + "/p/one/api/picks")[1]) == {"C1": {"more": 1}}
+        assert http(base + "/C1.bin")[0] == 200
+    finally:
+        srv.shutdown()
+    site = serve.Site([one])
+    srv, base = served(site)
+    try:
+        two = reel_folder(tmp_path / "Two")
+        assert http(base + "/api/projects", json.dumps({"folder": two.folder}).encode(), "POST")[0] == 415
+        st, body = http(base + "/api/projects", json.dumps({"folder": two.folder}).encode(), "POST",
+                        {"Content-Type": "application/json"})
+        assert st == 200 and json.loads(body)["slug"] == "two" and http(base + "/p/two/C1.bin")[0] == 200
+        assert http(base + "/api/projects", b'{"folder": "/nonexistent"}', "POST",
+                    {"Content-Type": "application/json"})[0] == 400
+    finally:
+        srv.shutdown()
+    reel_folder(tmp_path / "Three")                                          # --root: found as it appears
+    site = serve.Site(root=str(tmp_path))
+    assert {"one", "two", "three"} <= set(site.projects) and site.single is None
+    reel_folder(tmp_path / "Four")
+    assert site.get("four") is not None
 
 
 def test_activity_gate_marks_down_someone_standing_still():

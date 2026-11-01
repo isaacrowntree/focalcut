@@ -22,9 +22,12 @@ cd <repo> && python -m venv .venv && .venv/bin/pip install -e ".[reel]"   # once
 - **Review page:** `review/<cut>.html` shows one frame per shot with a copyable picks line. Open it in a
   browser (on WSL, for example: `explorer.exe "$(wslpath -w review/<cut>.html)"`).
 - **Editor's picks:** the review page's **Scrub source** opens each shot's export video. The editor marks extra
-  shots (`A`), swaps a shot to the playhead (`S`), bans it, or asks for more from that video. The page writes
-  `focalcut/reel/picks.json`, which takes `ban`, `prefer`, `add` and `more`, with times in each export file's own
-  timeline. Re-run `--steps plan,render,xml,review` after any change.
+  shots (`A`), swaps a shot to the playhead (`S`), bans it, or asks for more from that video. The source browser
+  (`review/sources.html`) shows every export and the whole cut, takes in-out picks and sets portrait focal points.
+  `focalcut reel serve <folder> [<folder> ...]` serves them all from one port (each project at `/p/<slug>/`,
+  an index at `/`) and the pages write `focalcut/reel/picks.json` directly; it takes `ban`, `prefer`, `add`,
+  `more` and `portrait`, with times in each export file's own timeline. Re-run `--steps plan,render,xml,review`
+  after any change.
 
 ## Three ways to make a clip
 

@@ -148,6 +148,25 @@ Everything the recipe writes goes to `focalcut/reel/`: `reel.json` (settings), `
    - **prefer:** gives moments in that range +1.0. If nothing was detected there, one is made at the middle of the
      range, with its kind and framing taken from the nearest detected moment.
 
+## Serving the review pages
+
+```bash
+focalcut reel serve "/footage/Show 2026"                          # one project: http://localhost:8765/
+focalcut reel serve "/footage/Show 2026" "/footage/Fest 2026"     # several on one port
+focalcut reel serve --root /footage                               # every /footage/*/focalcut/reel/reel.json
+```
+
+The server makes the pages save `focalcut/reel/picks.json` as the editor works (the previous file is kept as
+`picks.json.bak`) and answers the source browser's portrait-crop questions. Each project is served under
+`/p/<slug>/`, the slug from its folder name (`"SSMC 2026"` → `/p/ssmc-2026/`), and `/` lists every project's
+sources and review pages. Add a project to a running server with
+`curl -X POST -H 'Content-Type: application/json' -d '{"folder": "/footage/New 2026"}' localhost:8765/api/projects`,
+or let `--root` find it. With a single folder and no `--root`, the project is also served at the top level as
+before (`/` opens its sources page).
+
+It only answers requests addressed to localhost, and only serves files inside each project's own folder. A page
+opened as a plain file still works: changes stay in the browser, with Copy and Download for `picks.json`.
+
    Times are in the export file's own timeline. Units record where each export starts in its source
    (`export_t0`), so the picks land in the right place.
 

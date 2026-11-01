@@ -17,6 +17,8 @@ import os
 import subprocess
 from urllib.parse import quote
 
+from . import browse
+
 
 def mmss(x):
     return f"{int(x // 60)}:{x % 60:04.1f}"
@@ -30,10 +32,11 @@ def pick_line(s):
     return f'"{u["id"]}": {{"ban": ["{mmss(a)}-{mmss(a + s["length"])}"]}}'
 
 
-def page(plan, fmt, thumbs, sources=None, picks=None, key="review"):
+def page(plan, fmt, thumbs, sources=None, picks=None, key="review", root=""):
     """The review page's HTML; thumbs[i] is shot i's image path relative to the page (or None). sources: per unit id,
     {"video": its export file relative to the page, "moments": [[t, kind, rank], ...]} in the export's own timeline;
-    picks: the current picks.json, which the page starts from."""
+    picks: the current picks.json, which the page starts from; root: the project folder relative to the page, where
+    `focalcut reel serve` answers api/picks (served, the page saves picks.json itself)."""
     w = 320 if fmt == "landscape" else 180
     cards, shots = [], []
     for i, s in enumerate(plan["shots"]):
@@ -49,7 +52,7 @@ def page(plan, fmt, thumbs, sources=None, picks=None, key="review"):
                      f'<button data-act=ban>Ban</button><button data-act=more>More +</button></span>'
                      f'<span class=st></span></figcaption></figure>')
         shots.append(dict(id=u["id"], a=round(a, 2), b=round(a + s["length"], 2), kind=s["kind"]))
-    data = json.dumps(dict(shots=shots, sources=sources or {}, picks=picks or {}, key=key)).replace("</", "<\\/")
+    data = json.dumps(dict(shots=shots, sources=sources or {}, picks=picks or {}, key=key, root=root)).replace("</", "<\\/")
     return (TEMPLATE.replace("%W%", str(w)).replace("%FMT%", html.escape(fmt)).replace("%N%", str(len(shots)))
             .replace("%CARDS%", "".join(cards)).replace("%DATA%", data))
 
@@ -103,7 +106,7 @@ pre{white-space:pre-wrap;font-size:11px;background:var(--card);padding:8px;borde
 </style>
 <div id=top><h1>%FMT% reel — %N% shots</h1><span id=count></span>
 <button id=copy>Copy picks.json</button><button id=dl>Download picks.json</button>
-<button id=clear>Reset to file</button>
+<button id=clear>Reset to file</button><span id=saved></span>
 <details><summary>show picks</summary><pre id=json></pre></details></div>
 <p>Times are in each export file's own timeline. <b>Scrub source</b> opens the export the shot comes from: the
 <span style="color:var(--acc)">yellow</span> block is this shot, grey blocks are the reel's other shots from that
@@ -152,7 +155,13 @@ const esc=x=>String(x).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"
 function tidy(){for(const k in P){const e=P[k];if(k[0]=="_"||!e||typeof e!=="object"||Array.isArray(e))continue;
  for(const f of ["ban","prefer","add"])if(e[f]&&!e[f].length)delete e[f];if(e.more===0)delete e.more;
  if(!Object.keys(e).length)delete P[k]}}
-function save(){tidy();store.set(P);render()}
+// served by `focalcut reel serve`: picks.json is read and written directly; opened as a file: kept in this browser
+let server=false,timer=null;const saved=t=>{const e=document.getElementById("saved");if(e)e.textContent=t};
+function save(){tidy();if(server){clearTimeout(timer);timer=setTimeout(push,250);saved("saving…")}else store.set(P);render()}
+function push(){fetch(D.root+"api/picks",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(P,null,1)})
+ .then(r=>saved(r.ok?"saved to picks.json ✓":"could not save ("+r.status+")")).catch(e=>saved("could not save: "+e.message))}
+fetch(D.root+"api/picks",{cache:"no-store"}).then(r=>r.ok?r.json():Promise.reject()).then(j=>{
+ if(!j||typeof j!=="object"||Array.isArray(j))return;P=j;server=true;saved("picks.json — saves as you go");render()}).catch(()=>{});
 function range(a,b){return mmss(a)+"-"+mmss(b)}
 const secs=v=>{if(typeof v==="number")return v;const p=String(v).split(":");return p.length>1?(+p[0])*60+(+p[1]):+p[0]};
 const span=v=>{if(Array.isArray(v))return v.map(secs);const s=String(v);const i=s.indexOf("-");
@@ -356,6 +365,6 @@ def run(project, fmt, cut=None) -> str:
     path = project.path("review", f"{cut}.html")
     with open(path, "w") as f:
         f.write(page(plan, fmt, thumbs, sources(project, plan, fmt, os.path.dirname(path)), project.picks(),
-                     key=f"{project.name}/{cut}"))
+                     key=f"{project.name}/{cut}", root=browse.api_root(project)))
     print(f"[reel] review: {path}")
     return path

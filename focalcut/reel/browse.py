@@ -82,9 +82,15 @@ def clips(project, page_dir, plans):
     return out
 
 
-def page(clips, picks=None, key="sources", title="Sources"):
-    data = json.dumps(dict(clips=clips, picks=picks or {}, key=key, tile=TILE)).replace("</", "<\\/")
+def page(clips, picks=None, key="sources", title="Sources", root=""):
+    """root: the project folder relative to the page ("../../../"), so its API calls work under any server prefix."""
+    data = json.dumps(dict(clips=clips, picks=picks or {}, key=key, tile=TILE, root=root)).replace("</", "<\\/")
     return PAGE.replace("%DATA%", data).replace("%TITLE%", title)
+
+
+def api_root(project) -> str:
+    """The project folder relative to its review pages, where `focalcut reel serve` answers api/... for it."""
+    return os.path.relpath(project.folder, project.path("review")).replace(os.sep, "/") + "/"
 
 
 def run(project, plans=None) -> str:
@@ -96,7 +102,7 @@ def run(project, plans=None) -> str:
     cs = clips(project, page_dir, plans)
     path = os.path.join(page_dir, "sources.html")
     with open(path, "w") as f:
-        f.write(page(cs, project.picks(), key=project.name, title=f"{project.name} — sources"))
+        f.write(page(cs, project.picks(), key=project.name, title=f"{project.name} — sources", root=api_root(project)))
     print(f"[reel] sources: {path}  ({len(cs)} clips; `focalcut reel serve {project.folder}` saves picks itself)")
     return path
 
@@ -307,10 +313,10 @@ const hist=[];let lastSnap=JSON.stringify(P);
 function save(){tidy();{const now_=JSON.stringify(P);if(now_!==lastSnap){hist.push(lastSnap);if(hist.length>200)hist.shift();lastSnap=now_}}if(server){status("saving…");clearTimeout(timer);timer=setTimeout(push,250)}
  else{ls.set("picks",P);status("kept in this browser — run `focalcut reel serve` to save to picks.json","err")}
  renderAll()}
-async function push(){try{const r=await fetch("/api/picks",{method:"PUT",headers:{"Content-Type":"application/json"},
+async function push(){try{const r=await fetch(D.root+"api/picks",{method:"PUT",headers:{"Content-Type":"application/json"},
  body:JSON.stringify(P,null,1)});if(!r.ok)throw new Error(r.status);status("saved to picks.json ✓","ok")}
  catch(e){status("could not save: "+e.message,"err")}}
-async function boot(){try{const r=await fetch("/api/picks",{cache:"no-store"});if(!r.ok)throw 0;P=await r.json();
+async function boot(){try{const r=await fetch(D.root+"api/picks",{cache:"no-store"});if(!r.ok)throw 0;P=await r.json();
  server=true;lastSnap=JSON.stringify(P);status("picks.json — saves as you go","ok")}catch(e){const l=ls.get("picks");if(l)P=l;
  status("opened as a file: changes stay in this browser","err")}
  const last=ls.get("clip");go(Math.max(0,D.clips.findIndex(c=>c.id==last)),true)}
@@ -621,7 +627,7 @@ const lerp=(ts,vs,t)=>{if(t<=ts[0])return vs[0];for(let i=1;i<ts.length;i++)if(t
  return vs[i-1]+f*(vs[i]-vs[i-1])}return vs[vs.length-1]};
 function derived(c,a,b){const k=c.id+"|"+a.toFixed(2)+"|"+b.toFixed(2);if(crops.has(k))return crops.get(k);
  if(!server){crops.set(k,false);return false}crops.set(k,undefined);
- fetch(`/api/crop?id=${encodeURIComponent(c.id)}&a=${a.toFixed(3)}&b=${b.toFixed(3)}&fmt=portrait`)
+ fetch(`${D.root}api/crop?id=${encodeURIComponent(c.id)}&a=${a.toFixed(3)}&b=${b.toFixed(3)}&fmt=portrait`)
   .then(r=>r.ok?r.json():Promise.reject()).then(j=>crops.set(k,j)).catch(()=>crops.set(k,false)).then(()=>{draw();pdraw()});return undefined}
 // where the frame is worked out from: the selection or portrait reel shot under the playhead, else the 3 s around it
 function rangeFor(c,t){const s=sels(c.id).find(([a,b])=>t>=a-0.02&&t<=b+0.02)||c.P.find(([a,b])=>t>=a&&t<=b);

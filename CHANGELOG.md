@@ -9,6 +9,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **One review server for many projects**: `focalcut reel serve <folder> [<folder> ...] [--root <dir>]` serves
+  each project under `/p/<slug>/` with its own `api/picks` and `api/crop`, an index of every project's pages at
+  `/`, and `POST /api/projects` (or `--root` scanning) to add projects without a restart. One folder still works
+  as before. The pages call the API relative to their project, and the review pages now save `picks.json` too.
+- **Source browser** (`review/sources.html`, served by `focalcut reel serve`): every export on a zoomable
+  timeline; in-out picks, bans and the current cut shot by shot, saved straight to `picks.json`; portrait focal
+  points (picks `"portrait"`) that move the derived crop, shown beside it.
+- **Overlay flickers**: whole-frame white or dark flickers into each drop and on the hardest hits, or at reel
+  times from reel.json overlay `"flicker"`.
+
 - **Show the landing**: every plain dance shot keeps the end of its move and about a beat of the dancer at rest
   after it lands (`velocity.landed`, `plan.lands`; `land_hold`), borrowing a beat from a neighbour when it must.
 - **Every export file in the reel**: coverage is per unit (export file), not per camera clip, so all of a clip's
