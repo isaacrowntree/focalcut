@@ -32,7 +32,7 @@ def pick_line(s):
     return f'"{u["id"]}": {{"ban": ["{mmss(a)}-{mmss(a + s["length"])}"]}}'
 
 
-def page(plan, fmt, thumbs, sources=None, picks=None, key="review", root=""):
+def page(plan, fmt, thumbs, sources=None, picks=None, key="review", root="", nav=""):
     """The review page's HTML; thumbs[i] is shot i's image path relative to the page (or None). sources: per unit id,
     {"video": its export file relative to the page, "moments": [[t, kind, rank], ...]} in the export's own timeline;
     picks: the current picks.json, which the page starts from; root: the project folder relative to the page, where
@@ -54,7 +54,8 @@ def page(plan, fmt, thumbs, sources=None, picks=None, key="review", root=""):
         shots.append(dict(id=u["id"], a=round(a, 2), b=round(a + s["length"], 2), kind=s["kind"]))
     data = json.dumps(dict(shots=shots, sources=sources or {}, picks=picks or {}, key=key, root=root)).replace("</", "<\\/")
     return (TEMPLATE.replace("%W%", str(w)).replace("%FMT%", html.escape(fmt)).replace("%N%", str(len(shots)))
-            .replace("%CARDS%", "".join(cards)).replace("%DATA%", data))
+            .replace("%CARDS%", "".join(cards)).replace("%DATA%", data).replace("%NAV%", nav)
+            .replace("%MENU%", browse.MENU_CSS))
 
 
 TEMPLATE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
@@ -75,7 +76,7 @@ button{font:inherit;background:var(--line);color:var(--fg);border:0;border-radiu
 margin:4px 4px 0 0} button:hover{outline:1px solid var(--acc)} .bar{display:block}
 #top{position:sticky;top:0;background:var(--bg);padding:8px 0;z-index:5;border-bottom:1px solid var(--line);
 margin-bottom:12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-#count{color:var(--acc);margin-right:8px}
+#count{color:var(--acc);margin-right:8px}%MENU%
 dialog{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:12px;
 width:min(960px,96vw);max-height:96vh}
 dialog::backdrop{background:#000a}
@@ -104,7 +105,7 @@ border-radius:3px;display:none;z-index:10;font-variant-numeric:tabular-nums}
 kbd{border:1px solid var(--line);border-radius:3px;padding:0 4px;font-size:11px}
 pre{white-space:pre-wrap;font-size:11px;background:var(--card);padding:8px;border-radius:6px;max-height:40vh;overflow:auto}
 </style>
-<div id=top><h1>%FMT% reel — %N% shots</h1><span id=count></span>
+<div id=top><h1>%FMT% reel — %N% shots</h1>%NAV%<span id=count></span>
 <button id=copy>Copy picks.json</button><button id=dl>Download picks.json</button>
 <button id=clear>Reset to file</button><span id=saved></span>
 <details><summary>show picks</summary><pre id=json></pre></details></div>
@@ -161,7 +162,7 @@ function save(){tidy();if(server){clearTimeout(timer);timer=setTimeout(push,250)
 function push(){fetch(D.root+"api/picks",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(P,null,1)})
  .then(r=>saved(r.ok?"saved to picks.json ✓":"could not save ("+r.status+")")).catch(e=>saved("could not save: "+e.message))}
 fetch(D.root+"api/picks",{cache:"no-store"}).then(r=>r.ok?r.json():Promise.reject()).then(j=>{
- if(!j||typeof j!=="object"||Array.isArray(j))return;P=j;server=true;saved("picks.json — saves as you go");render()}).catch(()=>{});
+ if(!j||typeof j!=="object"||Array.isArray(j))return;P=j;server=true;(document.getElementById("allp")||{}).hidden=false;saved("picks.json — saves as you go");render()}).catch(()=>{});
 function range(a,b){return mmss(a)+"-"+mmss(b)}
 const secs=v=>{if(typeof v==="number")return v;const p=String(v).split(":");return p.length>1?(+p[0])*60+(+p[1]):+p[0]};
 const span=v=>{if(Array.isArray(v))return v.map(secs);const s=String(v);const i=s.indexOf("-");
@@ -365,6 +366,7 @@ def run(project, fmt, cut=None) -> str:
     path = project.path("review", f"{cut}.html")
     with open(path, "w") as f:
         f.write(page(plan, fmt, thumbs, sources(project, plan, fmt, os.path.dirname(path)), project.picks(),
-                     key=f"{project.name}/{cut}", root=browse.api_root(project)))
+                     key=f"{project.name}/{cut}", root=browse.api_root(project),
+                     nav=browse.menu(project, cut)))
     print(f"[reel] review: {path}")
     return path

@@ -162,7 +162,7 @@ The server makes the pages save `focalcut/reel/picks.json` as the editor works (
 sources and review pages. Add a project to a running server with
 `curl -X POST -H 'Content-Type: application/json' -d '{"folder": "/footage/New 2026"}' localhost:8765/api/projects`,
 or let `--root` find it. With a single folder and no `--root`, the project is also served at the top level as
-before (`/` opens its sources page).
+before. Every page has a menu: the project's sources and reel pages, and All projects (the index at `/`).
 
 It only answers requests addressed to localhost, and only serves files inside each project's own folder. A page
 opened as a plain file still works: changes stay in the browser, with Copy and Download for `picks.json`.

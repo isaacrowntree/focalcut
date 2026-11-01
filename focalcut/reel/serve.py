@@ -9,10 +9,10 @@ against its own folder, and under that prefix:
     GET/PUT api/picks    reads / replaces picks.json (the previous file is kept as picks.json.bak)
     GET     api/crop     ?id=<export file>&a=<s>&b=<s>&fmt=portrait: the crop the planner derives for that stretch,
                          before any focal point the editor set (path times are seconds from a)
-/ is an index of the projects and their pages. GET /api/projects lists them; POST /api/projects {"folder": ...}
+/ is always the index of the projects and their pages. GET /api/projects lists them; POST /api/projects {"folder": ...}
 adds one to the running server; --root <dir> also picks up any <dir>/*/focalcut/reel/reel.json as it appears.
-With a single folder (and no --root) the project is also served at the top level, as before: / opens its sources
-page and /api/picks is its picks. Localhost only.
+With a single folder (and no --root) the project is also served at the top level, as before (/api/picks is its
+picks, its files at their own paths). Localhost only.
 """
 from __future__ import annotations
 
@@ -141,13 +141,14 @@ def handler(site):
             return False
 
         def route(self):
-            """(project, its slug, the path within it) for this request, or (None, None, path) for the server's own."""
+            """(project, its slug, the path within it) for this request, or (None, None, path) for the server's own:
+            / (the index of every project) and /api/projects."""
             path = unquote(urlparse(self.path).path)
             m = re.match(r"^/p/([^/]+)(/.*)?$", path)
             if m:
                 p = site.get(m.group(1))
                 return (p, m.group(1), m.group(2) or "") if p else (None, None, None)   # (no such project)
-            if site.single and path != "/api/projects":
+            if site.single and path not in ("/", "/api/projects"):
                 return site.single, None, path
             return None, None, path
 

@@ -629,6 +629,11 @@ def test_one_server_holds_several_projects_each_with_its_own_picks(tmp_path):
     finally:
         srv.shutdown()
     assert browse.api_root(a) == "../../../"                                  # the pages' API base
+    os.makedirs(a.path(), exist_ok=True)
+    with open(a.path("plan_landscape.json"), "w") as f:
+        f.write("{}")
+    nav = browse.menu(a, "landscape")                                        # every page's menu: relative links
+    assert 'href="sources.html"' in nav and 'href="landscape.html" class=cur' in nav and 'href="/" id=allp hidden' in nav
 
 
 def test_server_refuses_paths_out_of_a_project_even_into_another(tmp_path):
@@ -656,6 +661,7 @@ def test_a_running_server_takes_new_projects_and_one_folder_works_as_before(tmp_
         assert json.load(open(one.path("picks.json"))) == {"C1": {"more": 1}}
         assert json.loads(http(base + "/p/one/api/picks")[1]) == {"C1": {"more": 1}}
         assert http(base + "/C1.bin")[0] == 200
+        assert b"/p/one/focalcut/reel/review/sources.html" in http(base + "/")[1]   # / is still the index
     finally:
         srv.shutdown()
     site = serve.Site([one])

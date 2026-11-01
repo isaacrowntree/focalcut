@@ -12,6 +12,7 @@ keeps changes in the browser and offers a download.
 from __future__ import annotations
 
 import datetime as dt
+import html
 import json
 import math
 import os
@@ -82,10 +83,28 @@ def clips(project, page_dir, plans):
     return out
 
 
-def page(clips, picks=None, key="sources", title="Sources", root=""):
+def page(clips, picks=None, key="sources", title="Sources", root="", nav=""):
     """root: the project folder relative to the page ("../../../"), so its API calls work under any server prefix."""
     data = json.dumps(dict(clips=clips, picks=picks or {}, key=key, tile=TILE, root=root)).replace("</", "<\\/")
-    return PAGE.replace("%DATA%", data).replace("%TITLE%", title)
+    return PAGE.replace("%DATA%", data).replace("%TITLE%", html.escape(title)).replace("%NAV%", nav).replace("%MENU%", MENU_CSS)
+
+
+MENU_CSS = """.menu{display:inline-flex;gap:2px;flex-wrap:wrap}.menu a{padding:3px 9px;border-radius:6px;color:inherit;
+text-decoration:none;border:1px solid var(--line);font-size:12px}.menu a:hover{border-color:var(--mut)}
+.menu a.cur{background:var(--fg);color:var(--bg)}.menu a[hidden]{display:none}"""
+
+
+def menu(project, current: str) -> str:
+    """The pages' shared menu: this project's sources page and reel reviews (relative links, so it works opened as
+    files too) and, when served, every project's index ("All projects", shown by the page once the server answers)."""
+    rev = project.path("review")
+    cuts = [c for c in ("landscape", "portrait") if os.path.exists(project.path(f"plan_{c}.json"))]
+    cuts += sorted(f[:-5] for f in (os.listdir(rev) if os.path.isdir(rev) else [])
+                   if f.endswith(".html") and f[:-5] not in cuts and f != "sources.html")
+    links = [("sources", "Sources")] + [(c, c.capitalize()) for c in cuts]
+    return ('<nav class=menu>' + "".join(f'<a href="{quote(k)}.html"{" class=cur" if k == current else ""}>'
+                                         f'{html.escape(label)}</a>' for k, label in links)
+            + '<a href="/" id=allp hidden>All projects</a></nav>')
 
 
 def api_root(project) -> str:
@@ -102,7 +121,8 @@ def run(project, plans=None) -> str:
     cs = clips(project, page_dir, plans)
     path = os.path.join(page_dir, "sources.html")
     with open(path, "w") as f:
-        f.write(page(cs, project.picks(), key=project.name, title=f"{project.name} — sources", root=api_root(project)))
+        f.write(page(cs, project.picks(), key=project.name, title=f"{project.name} — sources", root=api_root(project),
+                     nav=menu(project, "sources")))
     print(f"[reel] sources: {path}  ({len(cs)} clips; `focalcut reel serve {project.folder}` saves picks itself)")
     return path
 
@@ -125,7 +145,7 @@ kbd{border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;paddi
 font-family:ui-monospace,monospace}
 header{display:flex;gap:10px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line);
 background:var(--panel);flex-wrap:wrap}
-header h1{font-size:15px;margin:0 8px 0 0}#saved{color:var(--mut);font-size:12px}#saved.ok{color:var(--sel)}
+header h1{font-size:15px;margin:0 8px 0 0}%MENU%#saved{color:var(--mut);font-size:12px}#saved.ok{color:var(--sel)}
 #saved.err{color:var(--ban)}.sp{flex:1}
 #views{display:flex;gap:4px}#counts{color:var(--mut);font-size:12px}#counts b{color:var(--fg)}
 #counts .y b{color:var(--sel)}#counts .f b{color:var(--io)}#counts .x b{color:var(--ban)}
@@ -222,7 +242,7 @@ font-size:11px}.card .bd{padding:6px 8px;display:flex;justify-content:space-betw
 font:12px ui-monospace,monospace;pointer-events:none}.frl b{color:var(--io)}
 .fk{top:1px;bottom:1px;width:6px;margin-left:-3px;background:var(--io);border-radius:2px;pointer-events:none;z-index:2}
 </style>
-<header><h1>%TITLE%</h1>
+<header><h1>%TITLE%</h1>%NAV%
 <div id=views><button id=v1 class=on>Sources</button><button id=v2 title="the cut, shot by shot, with your picks in it">Cut &amp; picks</button></div><span id=counts></span>
 <span class=sp></span><span id=saved></span>
 <button id=copy title="copy picks.json to the clipboard">Copy picks</button><button id=dl>Download picks.json</button>
@@ -317,7 +337,7 @@ async function push(){try{const r=await fetch(D.root+"api/picks",{method:"PUT",h
  body:JSON.stringify(P,null,1)});if(!r.ok)throw new Error(r.status);status("saved to picks.json ✓","ok")}
  catch(e){status("could not save: "+e.message,"err")}}
 async function boot(){try{const r=await fetch(D.root+"api/picks",{cache:"no-store"});if(!r.ok)throw 0;P=await r.json();
- server=true;lastSnap=JSON.stringify(P);status("picks.json — saves as you go","ok")}catch(e){const l=ls.get("picks");if(l)P=l;
+ server=true;lastSnap=JSON.stringify(P);($("allp")||{}).hidden=false;status("picks.json — saves as you go","ok")}catch(e){const l=ls.get("picks");if(l)P=l;
  status("opened as a file: changes stay in this browser","err")}
  const last=ls.get("clip");go(Math.max(0,D.clips.findIndex(c=>c.id==last)),true)}
 // selections of a clip: [[a,b],...] sorted; written back as "m:ss.ss-m:ss.ss" (single times stay as they were)
