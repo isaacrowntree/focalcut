@@ -18,6 +18,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   act; a ban keeps any shot window out of the banned stretch, not just moments peaking inside it. Picks take
   precedence: each plays once, never sped up (slow motion stays; no speed curve for long ones), and no other shot
   reuses its footage.
+- **Pick check after every plan** (`plan.pick_report`): the plan step lists any pick that is missing, repeated,
+  shorter than marked, sped up or overlapped by another shot, and any ban that did not hold (or that one of the
+  editor's own picks overrides). Whole-plan regression tests cover the cases that broke on a real reel.
 - **Bulk drop in the source browser:** tick shots in Cut & picks (or drag along the reel lanes in Clips, ✕ on one
   shot) and drop them all at once; drags snap to the playhead.
 - **close_only** (reel.json): footage that only works close up keeps just the moments with a big face.

@@ -737,6 +737,51 @@ def close_only(project, recs, cfg):
         r["moments"] = [m for m in r["moments"] if m.get("add") or (np.abs(big - m["t"]) <= 0.75).any()]
 
 
+def pick_report(shots, picks):
+    """What went wrong with the editor's picks in a plan, one line each (empty: all well). An in-out pick ("add"
+    range) must be in it exactly once, at least as long as marked (slow motion may show less footage; that is
+    fine), never sped up, with no other shot over its footage; a ban must keep every shot out (a pick over a ban
+    wins, and is reported as the conflict it is)."""
+    out = []
+    for uid, e in (picks or {}).items():
+        if uid.startswith("_"):
+            continue
+        mine = [s for s in shots if s["unit"]["id"] == uid]
+        x0 = mine[0]["unit"].get("export_t0", 0.0) if mine else 0.0
+        spans = []
+        for v in e.get("add", []):
+            if not isinstance(v, str) or "-" not in v.strip()[1:]:
+                continue                                     # a single time: a moment, placed or not by the planner
+            a, b = (x0 + _secs(t) for t in v.split("-", 1))
+            spans.append((a, b))
+            hit = [s for s in mine if s.get("span") and abs(s["span"][0] - a) < 0.01]
+            over = [s for s in mine if not s.get("span") and min(s["src_in"] + s["length"], b) - max(s["src_in"], a) > 0.1]
+            if not hit:
+                out.append(f"{uid} {v}: missing")
+                continue
+            if len(hit) > 1:
+                out.append(f"{uid} {v}: in the reel {len(hit)} times")
+            s = hit[0]
+            if any(f in FAST for f in s["fx"]):
+                out.append(f"{uid} {v}: sped up ({', '.join(s['fx'])})")
+            elif not any(f in SPEED for f in s["fx"]) and s["length"] < (b - a) - 0.3:
+                out.append(f"{uid} {v}: plays {s['length']:.2f} s of {b - a:.2f}")
+            if over:
+                out.append(f"{uid} {v}: {len(over)} other shot(s) over its footage")
+        for v in e.get("ban", []):
+            if v == "all":
+                if mine:
+                    out.append(f"{uid} banned, but in the reel {len(mine)} times")
+                continue
+            a, b = (x0 + _secs(t) for t in (v.split("-", 1) if "-" in v.strip()[1:] else [v, v]))
+            bad = [s for s in mine if not s.get("span") and min(s["src_in"] + s["length"], b) - max(s["src_in"], a) > 0.1]
+            if bad:
+                out.append(f"{uid} ban {v}: still used ({len(bad)} shot(s))")
+            elif any(min(sb, b) - max(sa, a) > 0.25 for sa, sb in spans):   # (touching at an edge is not a clash)
+                out.append(f"{uid} ban {v}: one of your picks overlaps it (the pick wins)")
+    return out
+
+
 def ending_record(recs, cfg):
     """(record, source time) of the configured ending shot (cfg "ending": [export file, from, to]), or None."""
     e = cfg.get("ending")
@@ -1422,5 +1467,13 @@ def run(project, fmt, stinger_len=0.0) -> dict:
         print(f"[reel]   {name:8s} {len(ss):3d} shots, {sum(bool(s.get('transition')) for s in ss)} transitions, "
               f"fx {[f for s in ss for f in s['fx']]}")
     print("[reel]   transitions:", {t: trs.count(t) for t in sorted(set(trs))})
+    picks = {k: v for k, v in project.picks().items() if not k.startswith("_")}
+    if picks:                                                # the editor's picks, checked against what was planned
+        bad = pick_report(seq, picks)
+        n = sum(1 for e in picks.values() for v in e.get("add", []))
+        print(f"[reel]   picks: {n} added, {sum(len(e.get('ban', [])) for e in picks.values())} bans"
+              + (f"; {len(bad)} to look at:" if bad else "; all in once, at full length, bans held"))
+        for line in bad:
+            print(f"[reel]     {line}")
     print("[reel]   effects:", {f: fxs.count(f) for f in sorted(set(fxs))})
     return plan

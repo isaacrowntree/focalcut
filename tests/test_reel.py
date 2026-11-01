@@ -1175,3 +1175,30 @@ def test_a_pick_plays_once_never_sped_up():
            dict(pick, fx=[], beats=2)]
     P.picks_once(seq)
     assert [s["beats"] for s in seq] == [2, 3, 4] and seq[1]["fx"] == ["bullet"]          # slow motion stays
+
+
+def test_picks_survive_a_whole_plan(tmp_path):
+    # the cases that broke on a real reel: a pick on a moment the planner wants anyway, a pick next to a ban, a long
+    # pick, two picks in one unit, and a ban on a stretch whose moment peaks just outside it
+    pr, music, moments = fake_reel(tmp_path)
+    picks = {"U02": {"add": ["0:04.5-0:06.0", "0:40-0:42.4"]},          # 5.0 is U02's best moment
+             "U06": {"add": ["0:11-0:17"]},                             # 6 s: plays whole, never sped up
+             "U01": {"add": ["0:28.5-0:30"], "ban": ["0:22.6-0:24.2"]},  # a ban whose moment peaks at 23.0... and 17
+             "U05": {"ban": ["0:16.2-0:18"]}}
+    for fmt in ("landscape", "portrait"):
+        plan = P.build(pr, fmt, music, moments, stinger_len=0.0, picks=picks, assess_shots=False)
+        assert P.pick_report(plan["shots"], picks) == []
+
+
+def test_pick_report_names_each_problem():
+    u = dict(id="U1", export_t0=0.0)
+    pick = dict(unit=u, span=[10.0, 12.0], src_in=10.0, length=2.0, fx=[])
+    shots = [pick, dict(pick), dict(unit=u, src_in=11.0, length=1.0, fx=[]),
+             dict(unit=u, span=[20.0, 23.0], src_in=20.0, length=1.4, fx=[]),
+             dict(unit=u, span=[30.0, 31.0], src_in=30.0, length=1.0, fx=["flashin"]),
+             dict(unit=u, src_in=40.0, length=1.0, fx=[])]
+    rep = P.pick_report(shots, {"U1": {"add": ["0:10-0:12", "0:20-0:23", "0:30-0:31", "0:50-0:51"],
+                                       "ban": ["0:39.5-0:41"]}})
+    assert any("2 times" in r for r in rep) and any("other shot" in r for r in rep)
+    assert any("plays 1.40 s of 3.00" in r for r in rep) and any("sped up" in r for r in rep)
+    assert any("0:50-0:51: missing" in r for r in rep) and any("still used" in r for r in rep)
