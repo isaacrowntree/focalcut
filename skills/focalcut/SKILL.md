@@ -75,7 +75,7 @@ Read `references/concepts.md` for the rule, the reason, the numbers and the code
 | Band members | individual players cut in on the hardest musical hits | `plan.band_in` | `members`, `member_clips`, `band_in` |
 | Ending | a chosen last shot that runs out exactly at its end time; its stretch reserved | `plan.ending_record/reserve_ending` | `ending` |
 | Song start | start on the bar nearest where the song proper begins | `music.analyse` | top-level `start_hint` |
-| Several songs | one song per act (a festival's sets), each around its drop, crossfaded beat on beat or cut on the downbeat; never remixed | `music.join/mix`, `plan.clock` | top-level `songs` |
+| Several songs | one song per act (a festival's sets), each around its drop, mixed like a DJ: tempo ramp, 4 bars beat on beat, bass swap on the downbeat | `music.join/mix`, `plan.clock` | top-level `songs`, `mix` |
 | Headliner last | the last set's footage kept for the climax and finale | `plan.story` | `late` |
 | EDM light show | MilkDrop-style presets (tunnels, mandala, kaleidoscope, lasers, particles, plasma, flame) in changing palettes every 8 bars, beat blinks, drop bursts; ≤1 full flash per beat | `overlay.py` | top-level `overlay` |
 | Everyone in it | every person found by face (YuNet + SFace, grouped across clips) and every kiss (SigLIP 2) gets a shot; the moment showing the most missing people goes in first, splitting long shots when needed | `people.py`, `plan.cover_people` | — (the `people` step) |

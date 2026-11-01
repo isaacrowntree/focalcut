@@ -920,23 +920,49 @@ def test_drops_find_the_bass_coming_back_after_a_build():
     assert e - s == 24 and s <= int(np.argmax(d)) < e
 
 
-def test_mix_crossfades_matching_tempos_and_cuts_the_rest(tmp_path):
+def test_mix_hands_over_the_dj_way(tmp_path):
     sf = pytest.importorskip("soundfile")
+    pytest.importorskip("scipy")
 
     from focalcut.reel.music import mix
     sr = 48000
     for name, f in (("a", 220), ("b", 330)):
         sf.write(tmp_path / f"{name}.wav", 0.5 * np.sin(2 * np.pi * f * np.arange(20 * sr) / sr), sr)
-    secs = [dict(song=str(tmp_path / "a.wav"), src_start=2.0, src_end=10.0, at=0.5, out="xfade", bar=2.0),
-            dict(song=str(tmp_path / "b.wav"), src_start=4.0, src_end=12.0, at=8.5, out="end", bar=2.0)]
-    y, _ = sf.read(mix(secs, str(tmp_path / "m.wav"), tail=1.0))
+
+    def beats(src, out, n):
+        return [[src + 0.5 * i, out + 0.5 * i] for i in range(n + 1)]
+    secs = [dict(song=str(tmp_path / "a.wav"), src_start=2.0, src_end=10.0, at=0.5, out="mix", bar=2.0,
+                 map=[[1.5, 0.0], *beats(2.0, 0.5, 20)], fade_out=[6.5, 8.5, 10.5]),
+            dict(song=str(tmp_path / "b.wav"), src_start=4.0, src_end=12.0, at=8.5, out="end", bar=2.0,
+                 map=[*beats(2.0, 6.5, 20), [13.0, 17.5]], fade_in=[6.5, 8.5, 10.5])]
+    y, _ = sf.read(mix(secs, str(tmp_path / "m.wav")))
 
     def rms(a, b):
         return float(np.sqrt((y[int(a * sr):int(b * sr), 0] ** 2).mean()))
-    assert rms(0.6, 7.0) == pytest.approx(0.5 / np.sqrt(2), rel=0.05)          # a alone
-    assert rms(10.0, 16.0) == pytest.approx(0.5 / np.sqrt(2), rel=0.05)        # b alone
-    assert rms(8.3, 8.7) > 0.2                                                 # no dip through the crossfade
-    assert len(y) == pytest.approx((8.5 + 8.0 + 1.0) * sr, abs=sr * 0.01)
+    assert rms(0.6, 6.0) == pytest.approx(0.5 / np.sqrt(2), rel=0.05)          # a alone
+    assert rms(11.0, 16.0) == pytest.approx(0.5 / np.sqrt(2), rel=0.05)        # b alone
+    assert min(rms(t, t + 0.25) for t in np.arange(6.5, 10.5, 0.25)) > 0.3     # no dip through the overlap
+    assert len(y) == pytest.approx(17.5 * sr, abs=sr * 0.01)
+
+
+@needs_ffmpeg
+def test_warp_lays_beats_on_their_output_times():
+    pytest.importorskip("librosa")
+    from focalcut.reel.music import ramp, warp
+    sr = 48000
+    y = np.zeros((10 * sr, 2), np.float32)
+    for t in np.arange(0.5, 9.5, 0.5):
+        y[int(t * sr):int(t * sr) + 100] = 0.8
+    src = np.arange(0.5, 9.01, 0.5)
+    dur = np.full(len(src) - 1, 0.5)
+    dur[-8:] = ramp(dur[-8:], 0.45, 8)                                         # speeds up into the next song
+    bmap = np.column_stack([src, 0.5 + np.concatenate([[0], np.cumsum(dur)])])
+    out = warp(y[int(0.5 * sr):], sr, bmap)
+    assert len(out) == pytest.approx((bmap[-1, 1] - 0.5) * sr, abs=2)
+    for o in bmap[1:-1, 1]:                                                    # each click lands on its new time
+        k = int((o - 0.5) * sr)
+        hit = np.argmax(np.abs(out[k - 480:k + 480, 0]) > 0.3)
+        assert abs(hit - 480) < 0.004 * sr
 
 
 def test_late_categories_wait_for_the_climax(tmp_path):

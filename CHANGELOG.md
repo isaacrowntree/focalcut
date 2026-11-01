@@ -9,6 +9,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **DJ-style song hand-overs** (`songs`): the outgoing song rides its tempo to the next one's over 8 bars
+  (Rubber Band through ffmpeg, pitch kept), the two play beat on beat for 4 bars with the highs crossfaded and the
+  bass swapped on the downbeat, and the songs are level-matched. Replaces the one-bar crossfade and the hard cut
+  between songs of different tempos (only gaps over 15% still cut). reel.json `mix` tunes it.
 - **One review server for many projects**: `focalcut reel serve <folder> [<folder> ...] [--root <dir>]` serves
   each project under `/p/<slug>/` with its own `api/picks` and `api/crop`, an index of every project's pages at
   `/`, and `POST /api/projects` (or `--root` scanning) to add projects without a restart. One folder still works

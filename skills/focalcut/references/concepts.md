@@ -290,16 +290,20 @@ on a phrase boundary inside `max_len` (reel.json `length`).
 ### 16b. Several songs, one per act (a festival's run of sets)
 
 **Rule:** at a festival with a lineup, each act can play a song by the DJ whose set its footage comes from, in set
-order. The songs are used as they are, never remixed or time-stretched; only the hand-over is edited. Each song gives
-its window around its strongest drop (a few bars of build, then the drop). Two songs within 3% of each other's tempo
-crossfade over one bar centred on the cut, beat on beat, the way a DJ mixes; further apart, a clean cut on the
-downbeat, which an act change's own transition covers.
-**Code:** `music.join(songs, max_len)` (window per song by `drops`, the low end coming back after a build, and
-`song_window`); `music.mix` renders `music_mix.wav`. The joined grid keeps each song's real beat times, so
+order, mixed into each other the way a DJ would, so the music never stops or lurches. Each song gives its window
+around its strongest drop (a few bars of build, then the drop). Into each hand-over the outgoing song rides its
+tempo to the next song's over 8 bars (time-stretched, pitch kept; Americano at 123 into Shooting Stars at 125 is
+inaudible, 112 into 123 sounds like a build), then both play beat on beat for 4 bars centred on the hand-over: the
+highs crossfade across it and the bass swaps in the half beat before its downbeat, so two kicks never stack. The
+songs are level-matched. Only songs more than 15% apart in tempo still cut on the downbeat.
+**Code:** `music.join(songs, max_len, mix=…)` (window per song by `drops`, the low end coming back after a build,
+and `song_window`; each section's source->output beat map, `ramp`); `music.mix` renders `music_mix.wav` (`warp`
+lays each song on its beat map with Rubber Band through ffmpeg). The joined grid keeps each song's real beat times, so
 `plan.clock` places cuts on them across a tempo change, and each shot carries its own `beat`.
 **Knob:** top-level `songs`: `[{"song": path, "bars": 16, "pre": 8, "acts": {"teaser": 2, "arrival": null}}, …]`; the
 last song's `bars` may be `null` (whatever fills `length`). `acts` names the acts each song carries, in bars (`null`:
-the rest of that song).
+the rest of that song). Top-level `mix`: `{"bars": 4, "ramp": 8, "max_ramp": 0.15, "split": 150}` (overlap bars,
+ramp bars, the largest tempo gap to ramp across, bass split in Hz); `false` cuts between songs.
 
 ### 16c. The headliner's set saved for the end
 

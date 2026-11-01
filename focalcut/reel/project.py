@@ -10,6 +10,8 @@ reel.json keys (all optional except song):
     song               path to the track
     songs              several tracks instead of song, one per act group: [{"song": path, "bars": n | null,
                                          "pre": 8, "acts": {"<act>": bars | null}}, ...] (music.join)
+    mix                how songs hand over: {"bars": 4, "ramp": 8, "max_ramp": 0.15, "split": 150} (overlap bars,
+                                         tempo-ramp bars, largest tempo gap to ramp, bass split Hz); false: cut
     start              "auto" (first bar after the intro) or seconds
     start_hint         seconds: pick the bar nearest this instead of detecting the intro
     length             total reel length in seconds, stinger included (default 180: Instagram's Reels-tab limit)

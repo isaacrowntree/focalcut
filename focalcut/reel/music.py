@@ -115,49 +115,98 @@ def song_window(m: dict, drop: np.ndarray, n: int | None, pre: int = 8, tail: in
     return s, (s + n if n is not None else last)
 
 
-def join(songs: list[dict], max_len: float, preroll: float = 0.5, xfade_tol: float = 0.03) -> tuple[dict, list]:
-    """One reel's music from several songs, each used as it is, in order (no time-stretching, no remixing).
+MIX = dict(bars=4, ramp=8, max_ramp=0.15, split=150.0)   # reel.json "mix" overrides; "mix": false cuts between songs
+
+
+def ramp(native: np.ndarray, target: float, n: int) -> np.ndarray:
+    """Beat lengths for the last n beats before a mix: from the song's own beat to the next song's (target), a
+    little each beat, the way a DJ rides the pitch fader into the next record."""
+    f = (np.arange(n) + 0.5) / n
+    return native * (1 - f) + target * f
+
+
+def join(songs: list[dict], max_len: float, preroll: float = 0.5, mix: dict | bool | None = None) -> tuple[dict, list]:
+    """One reel's music from several songs, in order, mixed into each other the way a DJ would.
 
     songs: [{"song": path, "bars": n | None, "pre": 8, "acts": {"<act>": bars | None, ...}}, ...]; the last song's
     bars may be None: whatever fits max_len, in whole 2-bar phrases. Each song's window is chosen around its
-    strongest drop (song_window). Two songs within xfade_tol of each other's tempo crossfade over one bar centred on
-    the cut, beat on beat (the way a DJ mixes); further apart, a clean cut on the downbeat. The result is music.json
-    with the beat grid of the joined windows (beats are real times, so the tempo may change at a song boundary) plus
-    "sections" (where each song sits) and "acts" (bars of the joined grid), and the mix to render."""
+    strongest drop (song_window). Where the next song's tempo is within mix["max_ramp"] of this one's, the outgoing
+    song speeds up or slows down over its last mix["ramp"] bars to the next song's tempo (time-stretched, pitch
+    kept), then the two play beat on beat for mix["bars"] bars centred on the handover; mix() crossfades them there
+    and swaps the bass on the handover's downbeat. Further apart (or mix false), a clean cut on the downbeat.
+    The result is music.json with the beat grid of the joined windows (real output times, so the tempo changes
+    where it should) plus "sections" (where each song sits, with its source->output beat map) and "acts" (bars of
+    the joined grid), and the mix to render."""
     import librosa
-    parts, used = [], 0.0
+    cfg = dict(MIX, **(mix or {})) if mix is not False else dict(MIX, bars=0)
+    h = int(cfg["bars"]) // 2                              # overlap bars either side of the handover
+    ms = []
     for spec in songs:
         m = analyse(spec["song"], start=0.0, max_len=1e9)
         y, sr = librosa.load(spec["song"], sr=22050, mono=True)
+        ms.append((m, drops(y, sr, np.array(m["bars"]))))
+    modes = []
+    for k in range(len(ms) - 1):
+        ta, tb = ms[k][0]["tempo"], ms[k + 1][0]["tempo"]
+        modes.append("mix" if h and abs(tb / ta - 1) <= cfg["max_ramp"] else "cut")
+    modes.append("end")
+    parts, used = [], 0.0
+    for k, (spec, (m, drop)) in enumerate(zip(songs, ms)):
         bars = np.array(m["bars"])
         n = spec.get("bars")
         if n is None:                                      # the last song fills the reel
-            per_bar = 4 * m["beat"]
-            n = int((max_len - used) // per_bar)
+            n = int((max_len - used) // (4 * m["beat"]))
             n -= n % 2                                     # whole 2-bar phrases; the stinger covers the end
-        s, e = song_window(m, drops(y, sr, bars), n, spec.get("pre", 8))
-        used += bars[e] - bars[s]
-        parts.append(dict(spec=spec, m=m, s=s, e=e))
+        s, e = song_window(m, drop, n, spec.get("pre", 8), tail=max(h, 1) if modes[k] == "mix" else 1)
+        parts.append(dict(spec=spec, m=m, s=s, e=e, out=modes[k]))
+        used += bars[e] - bars[s]                          # (a ramp changes this a little; the last song absorbs it)
+    for k, p in enumerate(parts):                          # overlap per handover: as much as both songs have room for
+        p["h_out"] = 0
+        if p["out"] == "mix":
+            q = parts[k + 1]
+            p["h_out"] = min(h, q["s"], (p["e"] - p["s"]) // 2)
+            if not p["h_out"]:
+                p["out"] = "cut"
     beats, energy, accent, sections, acts, t = [], [], [], [], [], preroll
     for k, p in enumerate(parts):
         m, s, e = p["m"], p["s"], p["e"]
         bt, ph = np.array(m["beats"]), m["bar_phase"]
         b0, b1 = ph + 4 * s, ph + 4 * e                    # beat indices of the window's first and end bars
-        off = t - bt[b0]
-        beats += list(bt[b0:b1] + off)
+        h_in = parts[k - 1]["h_out"] if k else 0
+        lo, hi = b0 - 4 * h_in, b1 + 4 * p["h_out"]        # the beats this song is heard for
+        dur = np.diff(bt[lo:hi + 1])                       # output length of each beat: its own, unless mixing out
+        if p["out"] == "mix":
+            q = parts[k + 1]
+            qb, qph = np.array(q["m"]["beats"]), q["m"]["bar_phase"]
+            c = qph + 4 * q["s"]
+            ov = 8 * p["h_out"]                            # beats heard together: on the next song's own beats
+            dur[-ov:] = np.diff(qb[c - ov // 2:c + ov // 2 + 1])
+            nr = min(4 * int(cfg["ramp"]), len(dur) - ov - 4 * h_in)
+            if nr > 0:
+                dur[-ov - nr:-ov] = ramp(dur[-ov - nr:-ov], q["m"]["beat"], nr)
+        out_t = t - dur[:4 * h_in].sum() + np.concatenate([[0.0], np.cumsum(dur)])
+        bmap = np.column_stack([bt[lo:hi + 1], out_t])
+        win = slice(4 * h_in, 4 * h_in + (b1 - b0) + 1)
+        wt = out_t[win]
+        beats += list(wt[:-1])
         energy += list(np.array(m["beat_energy"] + [m["beat_energy"][-1]])[b0:b1])
         accent += list(np.array(m["beat_accent"])[b0:b1])
-        nxt = parts[k + 1]["m"] if k + 1 < len(parts) else None
-        mode = ("xfade" if nxt and abs(nxt["tempo"] / m["tempo"] - 1) <= xfade_tol else "cut") if nxt else "end"
+        if k == 0:                                         # cuts land ahead of the beat: the first song starts early
+            bmap = np.vstack([[bt[lo] - preroll, out_t[0] - preroll], bmap])
+        if p["out"] == "end":
+            bmap = np.vstack([bmap, [bt[hi] + 6.0, out_t[-1] + 6.0]])   # runs on under the stinger
         sections.append(dict(song=m["song"], tempo=round(m["tempo"], 2), src_start=float(bt[b0]), src_end=float(bt[b1]),
-                             at=float(t), bars=e - s, out=mode, bar=float(4 * m["beat"])))
+                             at=float(t), bars=e - s, out=p["out"], bar=float(4 * m["beat"]),
+                             map=bmap.round(5).tolist(),
+                             fade_in=[float(out_t[0]), float(t), float(out_t[8 * h_in])] if h_in else None,
+                             fade_out=[float(out_t[-1 - 8 * p["h_out"]]), float(wt[-1]), float(out_t[-1])]
+                             if p["h_out"] else None))
         bar0 = sum(q["e"] - q["s"] for q in parts[:k])
-        spec_acts = p["spec"].get("acts") or {}
         a = bar0
-        for name, nbars in spec_acts.items():
+        for name, nbars in (p["spec"].get("acts") or {}).items():
             b = bar0 + (e - s) if nbars is None else a + nbars
             acts.append([name, a, b]); a = b
-        t += bt[b1] - bt[b0]
+        t = float(wt[-1])
     beats = np.array(beats)
     return dict(song=None, tempo=float(60 / np.median(np.diff(beats))), beat=float(np.median(np.diff(beats))),
                 beats=beats.tolist(), bars=beats[::4].tolist(), beat_energy=energy, beat_accent=accent,
@@ -165,36 +214,99 @@ def join(songs: list[dict], max_len: float, preroll: float = 0.5, xfade_tol: flo
                 acts=acts), parts
 
 
-def mix(sections: list[dict], out: str, preroll: float = 0.5, tail: float = 6.0, sr: int = 48000) -> str:
-    """Render the joined songs to one WAV: each song's window at its place, crossfaded (equal power, one bar centred
-    on the cut) into the next where the tempos match, cut on the downbeat (with a 10 ms fade) where they don't. The
-    first song starts `preroll` early (cuts land ahead of the beat), the last runs `tail` past its window for the
-    stinger to fade it under."""
+def stretch(y: np.ndarray, sr: int, rate: float) -> np.ndarray:
+    """Time-stretch (pitch kept) with ffmpeg's Rubber Band filter, tuned for drums: rate > 1 plays faster."""
+    import subprocess
+    p = subprocess.run(["ffmpeg", "-v", "error", "-f", "f32le", "-ar", str(sr), "-ac", "2", "-i", "-", "-af",
+                        f"rubberband=tempo={rate:.6f}:transients=crisp:detector=percussive:window=short",
+                        "-f", "f32le", "-"], input=np.ascontiguousarray(y, np.float32).tobytes(),
+                       capture_output=True, check=True)
+    return np.frombuffer(p.stdout, np.float32).reshape(-1, 2)
+
+
+def warp(y: np.ndarray, sr: int, bmap: np.ndarray, x: float = 0.01) -> np.ndarray:
+    """Audio y (starting at source time bmap[0][0]) laid out on the output times of bmap (source beat -> output
+    time pairs): runs of beats at one rate are stretched together, with x-second crossfades where the rate changes."""
+    src, dst = bmap[:, 0] - bmap[0, 0], bmap[:, 1] - bmap[0, 1]
+    rate = np.diff(src) / np.diff(dst)
+    out = np.zeros((int(round(dst[-1] * sr)) + 1, 2), np.float32)
+    i = 0
+    while i < len(rate):
+        j = i + 1
+        while j < len(rate) and abs(rate[j] - rate[i]) < 1e-4:
+            j += 1
+        r, edge_a, edge_b = rate[i], i > 0, j < len(rate)
+        pad = 0.5 if abs(r - 1) > 1e-4 else 0.0
+        a0 = max(src[i] - (x if edge_a else 0) * r - pad, 0.0)
+        a1 = src[j] + (x if edge_b else 0) * r + pad
+        seg = y[int(a0 * sr):int(a1 * sr)]
+        if pad:
+            seg = stretch(seg, sr, r)
+        k0 = int(round((src[i] - a0) / r * sr - (x * sr if edge_a else 0)))
+        o0 = int(round(dst[i] * sr - (x * sr if edge_a else 0)))
+        o1 = min(int(round(dst[j] * sr + (x * sr if edge_b else 0))), len(out))
+        seg = seg[k0:k0 + o1 - o0]
+        g = np.ones(len(seg), np.float32)
+        nx = int(2 * x * sr)
+        if edge_a:
+            g[:nx] = np.linspace(0, 1, nx)[:len(g)]
+        if edge_b and len(g) >= nx:
+            g[-nx:] *= np.linspace(1, 0, nx)
+        out[o0:o0 + len(seg)] += seg * g[:, None]
+        i = j
+    return out
+
+
+def mix(sections: list[dict], out: str, sr: int = 48000, split: float = MIX["split"]) -> str:
+    """Render the joined songs to one WAV from join()'s sections: each song laid on its beat map (time-stretched
+    where it ramps into the next), level-matched, and handed over the DJ way where join() overlaps them -- highs
+    crossfaded (equal power) across the overlap, the bass (below `split` Hz) swapped in the half beat before the
+    handover's downbeat so two kicks never stack. Where they don't overlap, a cut on the downbeat (10 ms fades)."""
     import librosa
     import soundfile as sf
-    total = sections[-1]["at"] + (sections[-1]["src_end"] - sections[-1]["src_start"]) + tail
+    from scipy.signal import butter, sosfiltfilt
+    sos = butter(4, split, "lowpass", fs=sr, output="sos")
+    total = sections[-1]["map"][-1][1]
     buf = np.zeros((int(total * sr) + sr, 2), dtype=np.float32)
-    for k, sec in enumerate(sections):
-        prev = sections[k - 1] if k else None
-        half_in = sec["bar"] / 2 if prev and prev["out"] == "xfade" else 0.0
-        half_out = sec["bar"] / 2 if sec["out"] == "xfade" else 0.0
-        lead = preroll if k == 0 else half_in
-        trail = tail if sec["out"] == "end" else half_out
-        a = max(sec["src_start"] - lead, 0.0)
-        y, _ = librosa.load(sec["song"], sr=sr, mono=False, offset=a, duration=sec["src_end"] + trail - a)
+    levels, pieces = [], []
+    for sec in sections:
+        bmap = np.array(sec["map"])
+        a = max(bmap[0, 0], 0.0)
+        y, _ = librosa.load(sec["song"], sr=sr, mono=False, offset=a, duration=bmap[-1, 0] - a + 0.6)
         y = np.atleast_2d(y)
         y = (np.vstack([y, y]) if y.shape[0] == 1 else y[:2]).T.astype(np.float32)
-        n = len(y)
-        g = np.ones(n, dtype=np.float32)
-        fade = lambda d: max(int(d * sr), int(0.01 * sr))
-        fi = fade(2 * half_in) if half_in else (fade(0.01) if k else 0)
-        fo = fade(2 * half_out) if half_out else (fade(0.01) if sec["out"] == "cut" else 0)
-        if fi:
-            g[:fi] = np.sin(np.linspace(0, np.pi / 2, fi)) if half_in else np.linspace(0, 1, fi)
-        if fo and sec["out"] != "end":
-            g[n - fo:] *= np.cos(np.linspace(0, np.pi / 2, fo)) if half_out else np.linspace(1, 0, fo)
-        at = int((sec["at"] - (sec["src_start"] - a)) * sr)
-        buf[at:at + n] += y * g[:, None]
+        w0, w1 = int((sec["src_start"] - a) * sr), int((sec["src_end"] - a) * sr)
+        levels.append(float(np.sqrt((y[w0:w1] ** 2).mean())) + 1e-9)
+        if bmap[0, 0] < 0:                                 # starts before the file does: silence first
+            y = np.vstack([np.zeros((int(-bmap[0, 0] * sr), 2), np.float32), y])
+        pieces.append(warp(y, sr, bmap))
+    ref = float(np.exp(np.mean(np.log(levels))))
+    for k, (sec, y) in enumerate(zip(sections, pieces)):
+        y = y * float(np.clip(ref / levels[k], 0.5, 2.0))
+        t0 = sec["map"][0][1]
+        t = t0 + np.arange(len(y)) / sr
+        hi_g, lo_g = np.ones(len(y), np.float32), np.ones(len(y), np.float32)
+        beat = sec["bar"] / 4
+        if sec.get("fade_in"):
+            f0, sw, f1 = sec["fade_in"]                    # overlap start, handover downbeat, overlap end
+            hi_g *= np.sin(np.pi / 2 * np.clip((t - f0) / (f1 - f0), 0, 1))
+            lo_g *= np.sin(np.pi / 2 * np.clip((t - sw + beat / 2) / (beat / 2), 0, 1))
+        elif k:
+            hi_g *= np.clip((t - t0) / 0.01, 0, 1); lo_g *= np.clip((t - t0) / 0.01, 0, 1)
+        if sec.get("fade_out"):
+            f0, sw, f1 = sec["fade_out"]                   # overlap start, handover downbeat, overlap end
+            hi_g *= np.cos(np.pi / 2 * np.clip((t - f0) / (f1 - f0), 0, 1))
+            lo_g *= np.cos(np.pi / 2 * np.clip((t - sw + beat / 2) / (beat / 2), 0, 1))
+        elif sec["out"] == "cut":
+            te = t0 + len(y) / sr
+            hi_g *= np.clip((te - t) / 0.01, 0, 1); lo_g *= np.clip((te - t) / 0.01, 0, 1)
+        if sec.get("fade_in") or sec.get("fade_out"):
+            low = sosfiltfilt(sos, y, axis=0).astype(np.float32)
+            y = (y - low) * hi_g[:, None] + low * lo_g[:, None]
+        else:
+            y = y * hi_g[:, None]
+        at = int(round(t0 * sr))
+        buf[at:at + len(y)] += y[: len(buf) - at]
     peak = float(np.abs(buf).max()) or 1.0
     sf.write(out, buf[: int(total * sr)] / max(peak, 1.0), sr, subtype="PCM_24")
     return out
@@ -205,12 +317,14 @@ def run(project, stinger_len: float = 0.0, overlap: float = 1.2) -> dict:
     if cfg.get("songs"):                                   # several songs, one after another (join)
         length = float(cfg.get("length", 180))
         max_music = length - (stinger_len - overlap if stinger_len else 0.0)
-        m, _ = join(cfg["songs"], max_music)
-        m["song"] = mix(m["sections"], project.path("music_mix.wav"))
+        m, _ = join(cfg["songs"], max_music, mix=cfg.get("mix"))
+        m["song"] = mix(m["sections"], project.path("music_mix.wav"),
+                        split=float((cfg.get("mix") or {}).get("split", MIX["split"])))
         project.dump("music.json", m)
         for sec in m["sections"]:
             print(f"[reel] {os.path.basename(sec['song'])}: {sec['tempo']:.1f} BPM, {sec['bars']} bars from "
-                  f"{sec['src_start']:.2f}s at {sec['at']:.2f}s, then {sec['out']}")
+                  f"{sec['src_start']:.2f}s at {sec['at']:.2f}s, then {sec['out']}"
+                  + (f" ({(sec['map'][-1][1] - sec['map'][0][1]):.1f}s heard)" if sec.get("map") else ""))
         print(f"[reel] music {m['length']:.1f}s, acts {m['acts']}")
         return m
     if not cfg.get("song"):
