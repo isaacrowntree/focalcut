@@ -247,6 +247,28 @@ def activity(pt_, t10, subj, present):
     return np.clip((sw.mean(1) - 0.6) / 1.6, 0, 1) * np.clip(there.mean(1) / 0.8, 0, 1)
 
 
+def curve(u, S):
+    """How good a shot is at each pose frame of a unit's clip (S: clip_series), per format: {"landscape", "portrait"}
+    arrays over S["t"], and the larger of the two -- the moment score before the peaks are picked."""
+    t = S["t"]
+    # the openings of routines (walking on, finding the frame) rarely hold the best of it: the middle does
+    pos = (t - u["t0"]) / max(u["t1"] - u["t0"], 1e-6)
+    prior = np.clip(0.3 + pos / 0.25 * 0.7, 0.3, 1) * np.clip((1 - pos) / 0.06, 0.5, 1)
+    if u["role"] == "transition":
+        # B-roll with nobody in it (a lit canopy, the stage, the sky) has no person to measure quality on: rank it on
+        # steadiness alone, below a well-shot frame with people, rather than dropping the file
+        q = np.where(S["quality"] > 0, S["quality"], 0.35 * S["steady"])
+        total = q * (0.6 + 0.4 * S["steady"]) * (0.7 + 0.3 * S["parts"]["energy"])
+        return {"landscape": total, "portrait": total}, total
+    w = dict(W, shake=0.6) if u["role"] == "dance" else W       # socials: shakes, but spins and faces too
+    # dancing the whole shot long; a close-up may hold still -- the face carries it
+    act = np.fmax(S["activity"], 0.5 * S["parts"]["closeup"]) if "activity" in S else 1.0
+    base = (sum(w[k] * S["parts"][k] for k in W) * S["quality"] * prior * (1 + 0.3 * S["face"])
+            * (0.12 + 0.88 * act))
+    per = {f: base * (0.15 + 0.85 * S["framing"][f]) for f in S["framing"]}   # a centred subject first
+    return per, np.fmax(per["landscape"], per["portrait"])
+
+
 def unit_moments(u, S):
     """Top non-overlapping moments inside one unit's time range. Transitions rank on steadiness and image quality."""
     res = dict(id=u["id"], category=u["category"], role=u["role"], orient=u["orient"], interest=0.0, moments=[])
@@ -256,20 +278,7 @@ def unit_moments(u, S):
     m = (t >= u["t0"] + 0.6) & (t <= u["t1"] - 0.6)          # keep clear of the unit's edges
     if not m.any():
         return res
-    # the openings of routines (walking on, finding the frame) rarely hold the best of it: the middle does
-    pos = (t - u["t0"]) / max(u["t1"] - u["t0"], 1e-6)
-    prior = np.clip(0.3 + pos / 0.25 * 0.7, 0.3, 1) * np.clip((1 - pos) / 0.06, 0.5, 1)
-    if u["role"] == "transition":
-        total = S["quality"] * (0.6 + 0.4 * S["steady"]) * (0.7 + 0.3 * S["parts"]["energy"])
-        per = {"landscape": total, "portrait": total}
-    else:
-        w = dict(W, shake=0.6) if u["role"] == "dance" else W   # socials: shakes, but spins and faces too
-        # dancing the whole shot long; a close-up may hold still -- the face carries it
-        act = np.fmax(S["activity"], 0.5 * S["parts"]["closeup"]) if "activity" in S else 1.0
-        base = (sum(w[k] * S["parts"][k] for k in W) * S["quality"] * prior * (1 + 0.3 * S["face"])
-                * (0.12 + 0.88 * act))
-        per = {f: base * (0.15 + 0.85 * S["framing"][f]) for f in S["framing"]}   # a centred subject first
-        total = np.fmax(per["landscape"], per["portrait"])
+    per, total = curve(u, S)
     total = np.where(m, total, -1)
     order, picked = np.argsort(-total), []
     for i in order:

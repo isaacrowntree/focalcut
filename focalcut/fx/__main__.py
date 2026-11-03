@@ -5,6 +5,9 @@
       --peak: where the move lands (s); a velocity curve (hero, bullet, montage) arrives slow there and holds
       --cap: top speed (dancing looks sped up past 1.5x); --closeup: hold deeper and longer (a hair flip)
   python -m focalcut.fx gallery in.mp4 [--peak 1.2] [-o gallery.mp4]      every effect side by side, labelled
+  python -m focalcut.fx lookbook <footage folder> [--library glitch|carnival] [--fmt landscape]
+      every style and look of a library (fx/looks.py) on the reel's own footage, one local page:
+      <folder>/focalcut/reel/review/<library>/index.html
 """
 import argparse
 import json
@@ -50,7 +53,14 @@ def main(argv=None):
         a.add_argument("--peak", type=float); a.add_argument("--beat", type=float, default=0.604)
         a.add_argument("--cap", type=float, default=1.5); a.add_argument("--closeup", action="store_true")
         a.add_argument("-o", "--out")
+    lb = sub.add_parser("lookbook"); lb.add_argument("folder")
+    lb.add_argument("--fmt", default="landscape"); lb.add_argument("--library", default="glitch"); lb.add_argument("--width", type=int, default=960)
     a = ap.parse_args(argv)
+    if a.cmd == "lookbook":
+        from ..reel.project import Project
+        from .lookbook import run
+        run(Project(a.folder), a.fmt, a.width, a.library)
+        return
     if a.cmd == "list":
         print("effects:    ", " ".join(sorted(EFFECTS)))
         print("transitions:", " ".join(sorted(TRANSITIONS)))

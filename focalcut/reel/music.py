@@ -85,6 +85,24 @@ def analyse(song: str, start="auto", start_hint=None, max_len: float = 180.0) ->
                 bar_phase=phase, beat_accent=accent.tolist())
 
 
+def to_end(m: dict, max_len: float) -> dict:
+    """Play the song out to its last sample (reel.json "to_end": true), past the last bar the beat tracker found (an
+    outro or fade), within max_len: the beat grid carries on at the song's period, so cuts keep landing on it."""
+    import soundfile as sf
+    dur = sf.info(m["song"]).duration
+    end = min(dur, m["start"] + max_len)
+    bt, bars, p = list(m["beats"]), list(m["bars"]), m["beat"]
+    while bt[-1] + p <= end + 1e-6:
+        bt.append(bt[-1] + p)
+    k = bt.index(bars[-1]) if bars[-1] in bt else None
+    if k is not None:
+        bars += bt[k + 4::4]
+    energy = list(m["beat_energy"]) + [m["beat_energy"][-1]] * (len(bt) - 1 - len(m["beat_energy"]))
+    accent = list(m.get("beat_accent", [])) + [0.0] * (len(bt) - len(m.get("beat_accent", [])))
+    return dict(m, beats=bt, bars=bars, beat_energy=energy, beat_accent=accent, end=float(end),
+                length=float(end - m["start"]))
+
+
 def drops(y: np.ndarray, sr: int, bars: np.ndarray) -> np.ndarray:
     """How hard each bar drops: the low end (below 150 Hz) over the next 4 bars against the 4 before. A house or EDM
     drop is the kick and bass coming back after a build that took them out, so this peaks on the drop's first bar."""
@@ -128,9 +146,10 @@ def ramp(native: np.ndarray, target: float, n: int) -> np.ndarray:
 def join(songs: list[dict], max_len: float, preroll: float = 0.5, mix: dict | bool | None = None) -> tuple[dict, list]:
     """One reel's music from several songs, in order, mixed into each other the way a DJ would.
 
-    songs: [{"song": path, "bars": n | None, "pre": 8, "acts": {"<act>": bars | None, ...}}, ...]; the last song's
-    bars may be None: whatever fits max_len, in whole 2-bar phrases. Each song's window is chosen around its
-    strongest drop (song_window). Where the next song's tempo is within mix["max_ramp"] of this one's, the outgoing
+    songs: [{"song": path, "bars": n | None, "pre": 8, "from": seconds, "acts": {"<act>": bars | None, ...}}, ...];
+    the last song's bars may be None: whatever fits max_len, in whole 2-bar phrases. Each song's window is chosen
+    around its strongest drop (song_window), or starts on the bar nearest "from" (e.g. where a Latin or pop song is
+    already driving: a drop finder looks for a build, and the build is the soft part). Where the next song's tempo is within mix["max_ramp"] of this one's, the outgoing
     song speeds up or slows down over its last mix["ramp"] bars to the next song's tempo (time-stretched, pitch
     kept), then the two play beat on beat for mix["bars"] bars centred on the handover; mix() crossfades them there
     and swaps the bass on the handover's downbeat. Further apart (or mix false), a clean cut on the downbeat.
@@ -157,7 +176,13 @@ def join(songs: list[dict], max_len: float, preroll: float = 0.5, mix: dict | bo
         if n is None:                                      # the last song fills the reel
             n = int((max_len - used) // (4 * m["beat"]))
             n -= n % 2                                     # whole 2-bar phrases; the stinger covers the end
-        s, e = song_window(m, drop, n, spec.get("pre", 8), tail=max(h, 1) if modes[k] == "mix" else 1)
+        tail = max(h, 1) if modes[k] == "mix" else 1
+        if spec.get("from") is not None:                   # the editor's choice: from the bar nearest this time
+            s = int(np.argmin(np.abs(bars - float(spec["from"]))))
+            s = min(s, max(len(bars) - 1 - tail - n, 0))
+            e = s + n
+        else:
+            s, e = song_window(m, drop, n, spec.get("pre", 8), tail=tail)
         parts.append(dict(spec=spec, m=m, s=s, e=e, out=modes[k]))
         used += bars[e] - bars[s]                          # (a ramp changes this a little; the last song absorbs it)
     for k, p in enumerate(parts):                          # overlap per handover: as much as both songs have room for
@@ -205,7 +230,11 @@ def join(songs: list[dict], max_len: float, preroll: float = 0.5, mix: dict | bo
         a = bar0
         for name, nbars in (p["spec"].get("acts") or {}).items():
             b = bar0 + (e - s) if nbars is None else a + nbars
-            acts.append([name, a, b]); a = b
+            if acts and acts[-1][0] == name and acts[-1][2] == a:
+                acts[-1][2] = b                            # the same act carries on into this song (two sets, one act)
+            else:
+                acts.append([name, a, b])
+            a = b
         t = float(wt[-1])
     beats = np.array(beats)
     return dict(song=None, tempo=float(60 / np.median(np.diff(beats))), beat=float(np.median(np.diff(beats))),
@@ -318,9 +347,9 @@ def run(project, stinger_len: float = 0.0, overlap: float = 1.2) -> dict:
         length = float(cfg.get("length", 180))
         max_music = length - (stinger_len - overlap if stinger_len else 0.0)
         m, _ = join(cfg["songs"], max_music, mix=cfg.get("mix"))
-        m["song"] = mix(m["sections"], project.path("music_mix.wav"),
+        m["song"] = mix(m["sections"], project.path(project.music_file.replace(".json", "_mix.wav")),
                         split=float((cfg.get("mix") or {}).get("split", MIX["split"])))
-        project.dump("music.json", m)
+        project.dump(project.music_file, m)
         for sec in m["sections"]:
             print(f"[reel] {os.path.basename(sec['song'])}: {sec['tempo']:.1f} BPM, {sec['bars']} bars from "
                   f"{sec['src_start']:.2f}s at {sec['at']:.2f}s, then {sec['out']}"
@@ -335,6 +364,8 @@ def run(project, stinger_len: float = 0.0, overlap: float = 1.2) -> dict:
     if isinstance(start, str) and start != "auto":
         start = float(start)
     m = analyse(cfg["song"], start=start, start_hint=cfg.get("start_hint"), max_len=max_music)
-    project.dump("music.json", m)
+    if cfg.get("to_end"):
+        m = to_end(m, max_music)
+    project.dump(project.music_file, m)
     print(f"[reel] {m['tempo']:.1f} BPM; music {m['start']:.2f}s -> {m['end']:.2f}s ({m['length']:.1f}s)")
     return m

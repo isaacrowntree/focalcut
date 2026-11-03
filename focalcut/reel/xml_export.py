@@ -94,7 +94,7 @@ def run(project, fmt, cut=None) -> str:
     cut = cut or fmt
     plan = project.load(f"plan_{cut}.json")
     fmt = plan.get("format", fmt)
-    song = plan.get("song") or project.load("music.json")["song"]
+    song = plan.get("song") or project.load(project.music_file)["song"]
     manifest = project.load(os.path.join("out", f"{cut}_shots.json"))      # final file per shot, from render
     W, H = SIZE[fmt]
     media = project.path("out", f"{cut}_media"); os.makedirs(media, exist_ok=True)

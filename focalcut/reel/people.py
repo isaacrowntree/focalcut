@@ -240,8 +240,9 @@ def linger(apps) -> float:
     return best / RATE
 
 
-def cluster(units: list, D: dict) -> list:
-    """People: faces tracked and grouped inside each unit, then the groups across units."""
+def cluster(units: list, D: dict, min_clear: int = 2) -> list:
+    """People: faces tracked and grouped inside each unit, then the groups across units. A person needs min_clear
+    clear sightings (2: a glimpse might be a false detection; 1: everyone the camera caught, however briefly)."""
     tracks = []                                                  # (unit id, indices into its faces)
     for u in units:
         for ix in tracks_in(D[u["id"]]):
@@ -263,7 +264,7 @@ def cluster(units: list, D: dict) -> list:
                                  q=round(float(d["score"][i]) * min(float(d["sharp"][i]) / 150, 1.0), 3),
                                  score=round(float(d["score"][i]), 3)))
         clear = [a for a in apps if a["h"] >= PROMINENT and a["score"] >= CONFIDENT and a["q"] > 0.3]
-        if len(clear) < 2:                                       # glimpsed, or a false detection
+        if len(clear) < min_clear:                               # glimpsed, or a false detection
             continue
         best = max(clear, key=lambda a: a["h"] * a["q"] * (1.2 - abs(a["cx"] - 0.5)))
         people.append(dict(units=sorted({a["unit"] for a in clear}), seen=len(apps), best=best, linger=linger(apps),
@@ -309,11 +310,13 @@ def sheet(project, people, units) -> str:
 
 def run(project) -> None:
     from concurrent.futures import ThreadPoolExecutor
-    units = project.load("units.json")
+
+    from .shake import export_of
+    units = [u for u in project.load("units.json") if export_of(project, u)]   # a joined B-roll piece has no file
     M = models()
     with ThreadPoolExecutor(4) as ex:
         D = dict(zip([u["id"] for u in units], ex.map(lambda u: detect(project, u, M), units)))
-    people = cluster(units, D)
+    people = cluster(units, D, int((project.config.get("people") or {}).get("min_clear", 2)))
     kiss = scan_kisses(project, units, {u["id"]: k for u in units if (k := kisses(D[u["id"]]))})
     with open(project.path("people.json"), "w") as f:
         json.dump(dict(people=people, kisses=kiss), f)

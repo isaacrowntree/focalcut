@@ -9,6 +9,53 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Cuts** (reel.json `"cuts"`, `focalcut reel run --cut <name>`): other reels from the same footage and analysis,
+  e.g. a portrait-only night reel of everything shot vertically plus the band (`"footage": ["@portrait", "band"]`)
+  and a day reel of the rest (`["@landscape", "!band"]`). Each cut has its own formats, footage, picks (those of its
+  own footage) and setting overrides (`"plan"` merged per format); out as `<name>_<cut>_<fmt>`. Footage matches
+  (`plan.fits`) take `@portrait` / `@landscape` for the way a clip was shot.
+- MilkDrop overlay `"edge_fill"` (default 0.35: how much of a corner MilkDrop's unkeyed ground may cover, the rest
+  keeps the darkened footage) and `"bare"` (default 0.5: how much deeper the fade gets where a preset lights little of
+  the border).
+- **Style libraries** (`focalcut/fx/looks.py`): glitch, carnival and edm, each a family of looks for a whole film;
+  reel.json `"look"` names one (names are unique across libraries). A look can carry its overlay (MilkDrop presets,
+  flickers, strength), used as the default under reel.json's own `"overlay"`. New **carnival** library
+  (`fx/carnival.py`): fiesta glow, sequins, confetti pop, serpentina and pop-art freeze on the dancer; whip pan, confetti
+  cannon, colour flash, serpentina wipe and sun iris transitions; zoom punch, colour strobe, sun flare, mirror ball and
+  halftone accents; looks `carnaval`, `tropical` and `disco` with fireworks, flowers, disco and fire MilkDrop presets.
+  New **edm** library (`fx/edm.py`): `mainstage` (MilkDrop + white/dark flickers) and `lasershow` (the built-in light
+  show). `focalcut fx lookbook --library carnival`.
+- **Picks cut to their best part** (reel.json `plan.<fmt>.pick_hold`, beats): each selection longer than that plays
+  only its best window, scored on the moment curve (moves, quality, framing in that format, activity, face); a clip
+  with many selections is condensed to its best ones, and the picks fill about half the reel (`pick_share`), a long
+  one earning a second piece when there is room. The picks then take turns with the rest of the footage (the rest of
+  a picked clip included), no act more than ~55% picks, no filler over 4 beats or under 2 outside the climax. The
+  pick check lists what was condensed out. `moments.curve` exposes the per-frame moment score.
+- **MilkDrop edges fade cleanly:** only MilkDrop's vivid light fills the edges (its dull ground goes to black), and
+  where a preset lights little of the border the fade to black comes in deeper and wider, so line-art and sparse
+  presets no longer leave a grey haze in the corners. reel.json `overlay.milkdrop_edge` forces it per preset.
+- **Opening and ending as picks:** the source browser's pick editor marks one selection as the reel's opening
+  (under the logo) and one as its ending (picks.json `"open"` / `"end"` on the clip); the plan uses them over
+  reel.json and the pick check reports one that isn't first or last.
+- **Heavy picks fill the reel:** every selection plays its full length; an act they overfill passes its last shots
+  on to the acts after it while those have room, and only then shortens or drops the planner's shots; an act left
+  short (or a long filler in the finale) gets quick cuts from the picks. An act the picks leave empty no longer
+  stops the plan.
+- **`"keep": true`** re-cuts the clips the editor left alone from the last cut rendered (render saves
+  `plan_<fmt>_rendered.json`), so there's no plan file to copy by hand.
+- **Glitch looks** (`focalcut/fx/glitch.py`): 7 subject effects on the dancer through the SAM 3 masks (RGB outline,
+  datamosh, pixel sort, ghost trails, a dissolve that reassembles, slit-scan, block damage), 8 transitions (blocks,
+  datamosh cut, slices, RGB tear, VHS roll, signal lost, sort wipe, stutter) and 9 accents, grouped into four looks.
+  reel.json `"look"` makes the planner say every transition reason and subject effect in that look and put its
+  accents on the hardest hits. `focalcut fx lookbook <folder>` renders every style and look on the reel's own
+  footage as one local page.
+- **Framing follows the action:** the crop is on whoever is doing the move (pose activity about the shoulders),
+  not whoever stands together; a couple shares the frame with the follow featured (new `role` step: SigLIP 2 reads
+  each dancer, woman or man), the follow kept whole when they don't fit; group routines stay whole.
+- **Moments that don't play are switched:** the subject walking or standing, a crowd crossing the crop, or someone
+  blocking the camera ranks a moment well down, for planned shots and the people-coverage shots alike.
+- **Band shots show the band:** the `role` step scores band footage for a player performing, in focus; the plan
+  cuts to the band only there, never the crowd, a back or a blur between the real shots.
 - **Hardware rendering** (`focalcut/reel/hw.py`, [docs/hardware.md](docs/hardware.md)): on WSL, camera files only
   the CPU could decode (Sony 10-bit 4:2:2 HEVC) decode on the Intel iGPU with Quick Sync through a Windows ffmpeg
   build, frame-exact (`-async_depth 1`) and about 6x less CPU; shots encode with NVENC and render several at once

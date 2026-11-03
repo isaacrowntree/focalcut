@@ -276,7 +276,8 @@ def cmd_reel_run(a: argparse.Namespace) -> int:
     if bad:
         print(f"unknown step(s): {bad}; choose from {reel.STEPS}", file=sys.stderr)
         return 2
-    reel.run(a.folder, steps=steps, formats=a.formats.split(","), workers=a.workers, draft=a.draft)
+    reel.run(a.folder, steps=steps, formats=a.formats.split(",") if a.formats else None, workers=a.workers,
+             draft=a.draft, cut=a.cut)
     return 0
 
 
@@ -304,7 +305,8 @@ def main(argv=None) -> int:
     rr.add_argument("folder")
     rr.add_argument("--steps", help="comma list of steps: units,score,shake,focus,subject,semantic,moments,faces,music,plan,render,xml,review "
                     "(default: all)")
-    rr.add_argument("--formats", default="landscape,portrait")
+    rr.add_argument("--formats", help="comma list (default: landscape,portrait, or the cut's formats)")
+    rr.add_argument("--cut", help='one of reel.json\'s "cuts": another reel from the same footage, e.g. night')
     rr.add_argument("--workers", type=int, default=2, help="scoring processes (2 suits a 12 GB GPU)")
     rr.add_argument("--draft", action="store_true", help="render without effects or transitions (fast check)")
     rr.set_defaults(func=cmd_reel_run)

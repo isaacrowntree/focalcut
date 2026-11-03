@@ -25,7 +25,11 @@ Each act has a strength (day sets lighter, night and climax full) and calmer pre
 the logo ease it back so the logo reads. Every effect fades out towards the centre of the frame, where the subject
 is, so the subject is always seen clean (reel.json "clear": the clear radius, 0.8 of the half-frame). With MilkDrop
 the footage fades steadily darker towards the edges ("vignette": how dark at the corners) as MilkDrop comes in, rendered at full size; pattern
-presets are zoomed in 2x ("milkdrop_zoom"). Light goes mostly into the dark parts of the frame, so faces stay clean.
+presets are zoomed in 2x ("milkdrop_zoom"). Only MilkDrop's vivid light fills the edges -- its dull ground goes to
+black there -- and where a preset lights little of the border (line art, sparse dots) the fade to black comes in
+deeper and wider, so the edges read as a clean fade rather than a grey haze ("milkdrop_edge": {preset: 0..1} forces
+that deeper fade for a preset). Where it lights nothing, its ground covers only part of a corner ("edge_fill",
+0.35) and the darkened footage shows through ("bare": 0..1, how much deeper a bare edge fades, default 0.5), so a sparse preset never leaves the corners solid black. Light goes mostly into the dark parts of the frame, so faces stay clean.
 Flickers: whole-frame white flashes or dark drop-outs, each one sharp on a beat and gone within half a beat.
 By default they come up the last bar into every drop (white, white, white, then dark on the beat before it hits) and
 on the hardest single hits of the night (alternately white and dark, at most one every 4 bars); reel.json
@@ -83,6 +87,10 @@ MILKDROP_ZOOM = {                                  # pattern-filling presets rea
 }
 MILKDROP_CALM = ["martin - dark galaxy", "martin - into the fireworks",
                  "Rovastar + Geiss - Hyperkaleidoscope Glow 2 motion blur (Jelly)", "martin - ice flames"]
+EDGE_LIT = 0.008       # MilkDrop lighting this share of the border (keyed) fills it; less, and the edges fade deeper
+EDGE_FILL = 0.35       # how much of a corner MilkDrop's unkeyed ground may cover; the rest keeps the darkened footage
+BARE = 0.5             # how far a bare-edged preset pushes the vignette from its setting towards fully black ("bare")
+DULL = 0.15            # how much of MilkDrop's dull, unkeyed ground stays in the corners (the rest goes to black)
 BUTTERCHURN = ["butterchurn@2.6.7/lib/butterchurn.min.js", "butterchurn-presets@2.4.7/lib/butterchurnPresets.min.js",
                "butterchurn-presets@2.4.7/lib/butterchurnPresetsExtra.min.js",
                "butterchurn-presets@2.4.7/lib/butterchurnPresetsExtra2.min.js"]
@@ -97,6 +105,8 @@ def options(cfg) -> dict | None:
                 beat=tuple(cfg.get("beat", ("kick", "split", "drops"))), engine=cfg.get("engine", "builtin"),
                 milkdrop=list(cfg.get("milkdrop", MILKDROP)), milkdrop_calm=list(cfg.get("milkdrop_calm", MILKDROP_CALM)),
                 milkdrop_zoom={**MILKDROP_ZOOM, **cfg.get("milkdrop_zoom", {})}, vignette=float(cfg.get("vignette", 0.85)),
+                milkdrop_edge=dict(cfg.get("milkdrop_edge", {})), edge_fill=float(cfg.get("edge_fill", EDGE_FILL)),
+                bare=float(cfg.get("bare", BARE)),
                 flicker=dict(auto=True, at=[]) if cfg.get("flicker", True) is True else dict(cfg.get("flicker") or {}))
 
 
@@ -296,6 +306,8 @@ class Show:
         self.qy, self.qx = q[0], q[1]
         self.weight = {}
         self.edge = None                                         # full-size centre mask (set by apply)
+        self.cover, self.bare = None, None                       # MilkDrop's lit share of the border; per-frame
+                                                                 # extra edge fade (reel.json "milkdrop_edge")
         self.flick = {}                                          # flicker beats (set by apply)
         self.zoom = None                                         # MilkDrop zoom per frame (set by apply)
         self.pal, self.ramp = Palette("neon"), Palette("neon").ramp()
@@ -624,10 +636,17 @@ def frame(f, k, show, F, G, S, preset, opts, md=None):
             md = md[(h - ch) // 2:(h - ch) // 2 + ch, (w - cw) // 2:(w - cw) // 2 + cw]
         mdu = cv2.resize(md, up, interpolation=cv2.INTER_LINEAR).astype(np.float32)
         e = show.edge
-        x = x * (1 - opts["vignette"] * e) ** 2                  # the footage darkens to almost black in the corners
-        k_ = key(md, show.W, show.H)                             # ...and MilkDrop fills them in: keyed nearer the
+        k_ = key(md, show.W, show.H)
+        cov = float((k_[::8, ::8] * e[::8, ::8]).sum() / e[::8, ::8].sum())   # how much of the border it lights,
+        show.cover = cov if show.cover is None else show.cover + (cov - show.cover) * min(1.0, 1 / (beat * fps))
+        bare = max(float(np.clip(1 - show.cover / EDGE_LIT, 0, 1)), show.bare[k] if show.bare is not None else 0.0)
+        v = opts["vignette"] + (1 - opts["vignette"]) * opts["bare"] * bare    # over a beat: a preset that leaves the edges dark
+        ee = np.minimum(1.0, e * (1 + 0.5 * opts["bare"] * bare)) if bare > 0.01 else e   # gets a deeper, wider fade to black
+        x = x * (1 - v * ee) ** 2                                # the footage darkens to almost black in the corners
+        mdu = mdu * (k_ + (1 - k_) * DULL)                       # (MilkDrop's dull, unkeyed ground is black there)
+        # ...and MilkDrop fills them in: keyed nearer the
         g = min(1.0, s * (0.75 + 0.25 * kick))                   # middle (lighter in calm acts, between beats), whole
-        am = (k_ + (1 - k_) * e) * e * (g + (1 - g) * e)         # and at full strength in the corners, none in the
+        am = (k_ + (1 - k_) * e * opts["edge_fill"]) * e * (g + (1 - g) * e)   # and strongest in the corners, none in the
         am = 1 - (1 - am) ** 2                                   # centre
         grey = mdu.mean(-1, keepdims=True)                       # and more vivid: richer colour, a little brighter
         mdu = np.clip(grey + (mdu - grey) * 1.4, 0, 255) * 1.1
@@ -708,6 +727,9 @@ def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, en
         zk = np.ones(max(1, int(plan["beat"] * fps))) / max(1, int(plan["beat"] * fps))   # zoom eases over a beat
         z = np.array([opts["milkdrop_zoom"].get(nm, 1) for nm in names], np.float32)
         show.zoom = np.convolve(np.pad(z, (len(zk) // 2, len(zk) - 1 - len(zk) // 2), mode="edge"), zk, "valid")
+        b = np.array([opts["milkdrop_edge"].get(nm, 0.0) for nm in names], np.float32)
+        show.bare = np.convolve(np.pad(b, (len(zk) // 2, len(zk) - 1 - len(zk) // 2), mode="edge"), zk, "valid") \
+            if b.any() else None
         layer = subprocess.Popen(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                                  stdout=subprocess.PIPE)
     else:

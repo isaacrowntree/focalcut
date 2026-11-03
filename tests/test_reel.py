@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+from collections import Counter
 from itertools import pairwise
 
 import numpy as np
@@ -208,7 +209,7 @@ def test_transitions_spin_cut_between_turns_and_hard_cut_to_a_reaction():
 def test_crop_expr_is_piecewise_linear_ffmpeg_expression():
     path = [[0, 0.4, 0.5], [0.3, 0.5, 0.55], [0.6, 0.45, 0.5]]
     x, y = crop_expr(path, 1), crop_expr(path, 2)
-    assert x.startswith("if(lt(t\\,0.3)\\,(0.4+(0.5-0.4)*(t-0)/0.3)")
+    assert "if(lt(t\\,0.3)\\,(0.4+(0.5-0.4)*(t-0)/0.3)" in x
     assert "(0.5+(0.55-0.5)*(t-0)/0.3)" in y
     assert x.count("(") == x.count(")")
 
@@ -508,6 +509,36 @@ def test_picks_add_ranges_are_the_editors_in_out_one_shot_each():
     assert P.in_point(s, 0.5) == 30.0                                # starts at the editor's in-point
 
 
+def test_picks_only_categories_keep_just_the_editors_adds():
+    r, other = picks_rec(), picks_rec()
+    r["unit"]["category"], other["unit"]["category"] = "lesson", "night"
+    P.apply_picks([r], {"C200-01_couple": {"add": ["0:20-0:22.5"]}})
+    unpicked = dict(picks_rec(), id="C201", unit=dict(picks_rec()["unit"], id="C201", category="lesson"))
+    P.picks_only([r, other, unpicked], {"lesson"})
+    assert [m["span"] for m in r["moments"]] == [[30.0, 32.5]]       # only the add survives
+    assert len(other["moments"]) == 4 and unpicked["moments"] == []    # other categories untouched; no pick, no shots
+
+
+def test_act_logos_title_the_acts_first_plain_shot_long_enough_to_read():
+    u = dict(id="u", role="show")
+    seq = [dict(unit=u, act=act, beats=b, fx=[]) for act, b in
+           (("night", 4), ("climax", 4), ("climax", 2), ("climax", 6), ("climax", 8))]
+    seq[1]["fx"] = ["hero"]                                              # an effect shot is never titled
+    P.act_logos(seq, {"climax": "mj.png", "finale": "x.png"})
+    assert [s.get("logo_image") for s in seq] == [None, None, None, "mj.png", None]
+    assert seq[3]["logo"] == "in"
+
+
+def test_act_logos_match_puts_the_title_on_the_acts_own_footage():
+    day, star = dict(id="d", category="day", tag=""), dict(id="s", category="broll", tag="band-star-headline")
+    seq = [dict(unit=u, act="climax", beats=4, fx=[]) for u in (day, star, day)]
+    P.act_logos(seq, {"climax": {"image": "star.png", "match": ["star"]}})
+    assert [s.get("logo_image") for s in seq] == [None, "star.png", None]
+    seq = [dict(unit=day, act="climax", beats=4, fx=[])]                 # nothing matches: the first plain shot
+    P.act_logos(seq, {"climax": {"image": "star.png", "match": ["star"]}})
+    assert seq[0]["logo_image"] == "star.png"
+
+
 def test_focal_points_steer_the_crop_centre_and_keep_its_size():
     unit = dict(id="C200-01_couple", export_t0=10.0)
     keys = P.focus_keys({"C200-01_couple": {"portrait": [["0:21", 0.2, 0.5], ["0:23", 0.95, 0.4]]}}, unit, "portrait")
@@ -737,7 +768,7 @@ def test_assess_drops_shaky_and_lost_subjects_and_favours_faces_in_portrait(tmp_
     social = next(r for r in moments if r["unit"]["clip"] == "C002")
     cache = {}
     for m in social["moments"]:                                 # [present, inside, face, crop width]
-        cache[f"portrait|U02|{m['t']}"] = [1.0, 1.0, 0.9 if m["t"] == 5.0 else 0.0, 1.0]
+        cache[f"portrait|U02|{m['t']}|c"] = [1.0, 1.0, 0.9 if m["t"] == 5.0 else 0.0, 1.0, None, 0.0, 0.0]
     json.dump(cache, open(pr.path("hold_cache.json"), "w"))
     before = {m["t"]: m.get("score_p", m["score"]) for m in social["moments"]}
     P.assess(pr, [social], "portrait", P.config(pr, "portrait"))
@@ -794,7 +825,8 @@ def test_assess_drops_a_subject_who_keeps_leaving_the_crop(tmp_path):
     pr, _, moments = fake_reel(tmp_path)
     social = next(r for r in moments if r["unit"]["clip"] == "C002")
     os.makedirs(pr.reel_dir, exist_ok=True)
-    json.dump({f"portrait|U02|{m['t']}": [0.3 if m["t"] == 5.0 else 1.0, 1.0, 1.0, 1.0] for m in social["moments"]},
+    json.dump({f"portrait|U02|{m['t']}|c": [0.3 if m["t"] == 5.0 else 1.0, 1.0, 1.0, 1.0, None, 0.0, 0.0]
+               for m in social["moments"]},
               open(pr.path("hold_cache.json"), "w"))
     before = {m["t"]: m["score"] for m in social["moments"]}
     P.assess(pr, [social], "portrait", P.config(pr, "portrait"))
@@ -841,9 +873,33 @@ def test_follow_one_dancer_of_a_split_couple_preferring_a_face_then_the_sharper(
     d["boxes"][3:5, 1] = np.nan                                                        # lost for two frames:
     box, _, _ = FR.follow(d, d["pose_t"], union, cw=0.32)                             # held where they were
     assert not np.isnan(box).any() and np.allclose(box[3], box[2])
-    d, union = _couple(faces=(True, False), apart=0.12)                               # close together: the group
+
+
+def test_a_couple_shares_the_frame_with_the_follow_featured():
+    from focalcut.reel import frame as FR
+    d, union = _couple(faces=(True, False), apart=0.12)          # dancing together: x 0.2-0.3 and 0.32-0.42
     box, face, one = FR.follow(d, d["pose_t"], union, cw=0.32)
-    assert not one and np.allclose(box, union)
+    assert one and face.all()
+    assert box[0, 0] <= 0.2 and box[0, 2] >= 0.42                        # both in, room on one side
+    assert box[0, 2] - box[0, 0] == pytest.approx(0.245)
+    n = len(d["pose_t"])
+    d["role"] = dict(t=np.repeat(d["pose_t"], 2).astype(np.float32), p=np.tile([0.1, 0.9], n).astype(np.float32),
+                     box=np.tile([[0.2, 0.2, 0.3, 0.9], [0.32, 0.2, 0.42, 0.9]], (n, 1)).astype(np.float32))
+    box, _, _ = FR.follow(d, d["pose_t"], union, cw=0.32)                # the right one reads as a woman: the
+    assert box[0, 0] == pytest.approx(0.2) and box[0, 2] > 0.42 + 0.02   # room goes on her side
+    d["role"]["p"] = np.tile([0.9, 0.1], n).astype(np.float32)
+    box2, _, _ = FR.follow(d, d["pose_t"], union, cw=0.32)               # and the other way round
+    assert box2[0, 0] < 0.2 - 0.02 and box2[0, 2] == pytest.approx(0.42)
+    d["role"]["p"] = np.tile([0.1, 0.9], n).astype(np.float32)
+    d2, _ = _couple(faces=(True, False), apart=0.12)                     # no role scan: the shorter one
+    d2["boxes"][:, 0, 1] = 0.1 * 360
+    box2, _, _ = FR.follow(d2, d2["pose_t"], union, cw=0.32)
+    assert box2[0, 2] > 0.42 + 0.02
+    box, _, _ = FR.follow(d, d["pose_t"], np.tile([0.2, 0.2, 0.3, 0.9], (n, 1)), cw=0.32)
+    assert box[0, 2] > 0.42                                              # the subject pass caught only the lead
+    box, _, _ = FR.follow(d, d["pose_t"], union, cw=0.2)                 # wider than the crop: the follow whole,
+    assert box[0, 0] <= 0.32 and box[0, 2] >= 0.42 and box[0, 2] - box[0, 0] == pytest.approx(0.18)
+    assert box[0, 0] < 0.3                                               # and part of the lead
 
 
 def test_shake_hf_ignores_pans_and_keeps_one_value_per_frame():
@@ -904,6 +960,22 @@ def test_plan_on_joined_songs_cuts_on_their_real_beats(tmp_path):
         rec += s["beats"]
     assert rec == len(beats)
     assert plan["acts"]["night"][0] == pytest.approx(grid[32 * 4], abs=1e-3)   # the second song's first beat
+
+
+def test_join_lets_an_act_run_on_into_the_next_song(tmp_path):
+    sf = pytest.importorskip("soundfile")
+    pytest.importorskip("librosa")
+    from focalcut.reel.music import join
+    sr = 22050
+    for name, bpm in (("a", 120), ("b", 100)):                         # far apart in tempo: a clean cut between them
+        t = np.arange(60 * sr) / sr
+        click = np.exp(-60 * (t % (60 / bpm))) * np.sin(2 * np.pi * 1000 * t)
+        sf.write(tmp_path / f"{name}.wav", (0.6 * click).astype(np.float32), sr)
+    songs = [dict(song=str(tmp_path / "a.wav"), bars=8, acts={"teaser": 2, "night": None}),
+             dict(song=str(tmp_path / "b.wav"), bars=8, acts={"night": None})]
+    music, _ = join(songs, max_len=60)
+    assert [a[0] for a in music["acts"]] == ["teaser", "night"]       # one night act, over both songs
+    assert music["acts"][1][1:] == [2, 16]
 
 
 def test_drops_find_the_bass_coming_back_after_a_build():
@@ -1175,6 +1247,10 @@ def test_a_pick_plays_once_never_sped_up():
            dict(pick, fx=[], beats=2)]
     P.picks_once(seq)
     assert [s["beats"] for s in seq] == [2, 3, 4] and seq[1]["fx"] == ["bullet"]          # slow motion stays
+    end = dict(pick, fx=[], beats=3, act="finale", ending=True)    # the pick is also the configured ending: it
+    seq = [dict(pick, fx=[]), dict(unit=dict(id="U0"), act="night", beats=2, fx=[]), end]   # stays last, early copy goes
+    P.picks_once(seq)
+    assert seq[-1] is end and [s["beats"] for s in seq] == [5, 3]
 
 
 def test_picks_survive_a_whole_plan(tmp_path):
@@ -1190,6 +1266,135 @@ def test_picks_survive_a_whole_plan(tmp_path):
         assert P.pick_report(plan["shots"], picks) == []
 
 
+def test_heavy_picks_fill_the_reel_and_mark_its_ends(tmp_path):
+    # the SSMC case: three selections in every show and social clip -- more than their acts hold, so the acts must
+    # pass them on (none cut to a beat, the climax not left empty) -- with the opening and the ending marked as picks
+    pr, music, moments = fake_reel(tmp_path)
+    picks = {f"U{i:02d}": {"add": [f"0:{t:02d}-0:{t + 2}.40" for t in (10, 34, 58)]} for i in range(16) if i % 4 != 3}
+    picks["U00"]["open"] = "0:10-0:12.40"                         # also one of its selections
+    picks["U01"]["end"] = "0:58-1:00.40"
+    for fmt in ("landscape", "portrait"):
+        plan = P.build(pr, fmt, music, moments, stinger_len=0.0, picks=picks, assess_shots=False)
+        shots = plan["shots"]
+        assert P.pick_report(shots, picks) == []
+        assert shots[0]["unit"]["id"] == "U00" and shots[0]["span"] == [10.0, 12.4] and shots[0]["logo"] == "in"
+        assert shots[-1]["unit"]["id"] == "U01" and shots[-1].get("ending") and shots[-1]["span"] == [58.0, 60.4]
+        acts = Counter(s["act"] for s in shots)
+        assert all(acts[a] for a in P.ACT_NAMES), acts            # every act has shots
+        assert max(s["beats"] for s in shots if not s.get("span")) <= 8   # no filler held to plug a gap
+        assert sum(s["beats"] for s in shots) == round(plan["video_length"] / plan["beat"])
+
+
+def test_pick_hold_cuts_picks_to_pieces_between_the_rest_of_the_footage(tmp_path):
+    # "pick_hold": long picks play only their best few beats, a clip with many is condensed, and the picks take turns
+    # with the rest of the footage (the rest of a picked clip included) instead of filling the acts
+    pr, music, moments = fake_reel(tmp_path)
+    picks = {f"U{i:02d}": {"add": [f"0:{t:02d}-0:{t + 6}" for t in (10, 30, 50)]} for i in range(12)}
+    picks["U00"]["add"] += ["0:01-0:04", "0:05-0:08", "0:20-0:23", "0:24-0:27", "0:36-0:39", "0:40-0:43",
+                            "0:44-0:47"]                          # one clip with far more than its share
+    picks["U00"]["open"] = "0:10-0:12.40"
+    picks["U01"]["end"] = "0:58-1:00.40"
+    for fmt in ("landscape", "portrait"):
+        pr.config["plan"] = {fmt: {"pick_hold": 3}}
+        plan = P.build(pr, fmt, music, moments, stinger_len=0.0, picks=picks, assess_shots=False)
+        shots, beat = plan["shots"], plan["beat"]
+        assert P.pick_report(shots, picks, plan["picks_condensed"], only=False) == []
+        assert plan["picks_condensed"] and all(c[0] == "U00" for c in plan["picks_condensed"])
+        mine = [s for s in shots if s.get("whole")]
+        assert mine and all(s["span"][1] - s["span"][0] <= 3 * beat + 1e-6 for s in mine)
+        assert all(s["whole"][0] <= s["span"][0] and s["span"][1] <= s["whole"][1] for s in mine)
+        assert sum(s["length"] for s in shots if s.get("span")) <= 0.6 * plan["video_length"]
+        assert shots[0]["span"] == [10.0, 12.4] and shots[-1].get("ending") and shots[-1]["span"] == [58.0, 60.4]
+        assert any(not s.get("span") and s["unit"]["id"] in picks for s in shots)   # the rest of a picked clip
+        assert sum(s["beats"] for s in shots) == round(plan["video_length"] / plan["beat"])
+
+
+def test_marking_a_pick_as_the_ending_overrides_reel_json(tmp_path):
+    pr, music, moments = fake_reel(tmp_path)
+    assert P.pick_ending({"_how": "x", "U02": {"end": "1:01.5-1:03", "add": ["1:01.5-1:03"]}}) == ("U02", 61.5, 63.0)
+    assert P.pick_ending({"U02": {"end": "1:01.5-1:03", "ban": ["all"]}}) is None
+    pr.config["plan"] = {"landscape": {"ending": ["U05", 40.0, 42.0, 0.3]}}
+    plan = P.build(pr, "landscape", music, moments, stinger_len=0.0, picks={"U02": {"end": "0:22-0:24"}},
+                   assess_shots=False)
+    assert plan["shots"][-1]["unit"]["id"] == "U02" and plan["shots"][-1]["span"] == [22.0, 24.0]
+
+
+def test_a_clip_with_selections_gives_only_those():
+    u = dict(id="U1", t0=0.0, t1=60.0, export_t0=0.0)
+    r = dict(id="U1", unit=u, moments=[dict(t=t, score=1.0, kind="dance") for t in (5.0, 20.0, 30.5, 50.0)])
+    P.apply_picks([r], {"U1": {"add": ["0:30-0:32", "0:10"]}})
+    assert sorted(m["t"] for m in r["moments"]) == [10.0, 31.0]       # the pick sits mid-range
+    assert u["bans"][-3:] == [[-1.0, 8.5], [11.5, 30.0], [32.0, 61.0]]
+    shots = [dict(unit=u, span=[30.0, 32.0], src_in=30.0, length=2.0, fx=[]), dict(unit=u, src_in=45.0, length=1.0, fx=[])]
+    assert any("outside your selections" in x for x in P.pick_report(shots, {"U1": {"add": ["0:30-0:32"]}}))
+
+
+def test_untouched_clips_keep_the_earlier_cuts_shots():
+    def rec(uid):
+        return dict(id=uid, unit=dict(id=uid), moments=[dict(t=t, score=1.0) for t in (5.0, 12.0, 30.0)])
+    a, b, c = rec("A"), rec("B"), rec("C")
+    shots = [dict(unit=dict(id="A"), t=12.0), dict(unit=dict(id="A"), t=20.0), dict(unit=dict(id="B"), t=5.0)]
+    P.keep_previous([a, b, c], shots, {"B": {"ban": ["0:00-0:02"]}, "C": {"portrait": []}})
+    assert [(m["t"], m["score"]) for m in a["moments"]] == [(12.0, 1.5), (20.0, 1.5)]
+    assert len(b["moments"]) == 3 and len(c["moments"]) == 3     # the editor's clip; one the cut didn't use
+
+
+def test_the_finale_reuses_picks_as_quick_cuts():
+    def shot(uid, act, beats, span=None, role="dance", **kw):
+        return dict(unit=dict(id=uid, clip=uid, role=role), act=act, beats=beats, t=0.0, fx=[], effect=None,
+                    **({"span": span} if span else {}), **kw)
+    seq = [shot("O", "teaser", 4, [0.0, 3.0], "transition", logo="in", open=True),   # the logo opening
+           shot("A", "arrival", 2, [10.0, 13.0]), shot("N", "night", 2, [40.0, 42.0]),
+           shot("K", "climax", 2, [20.0, 22.0]),
+           shot("F", "finale", 2, [5.0, 8.0], "transition"), shot("G", "finale", 1, [30.0, 30.5]),
+           shot("X", "finale", 9)]                                                      # 12 finale beats
+    P.finale_reuse(seq, 0.5)
+    fin = [s for s in seq if s["act"] == "finale"]
+    assert sum(s["beats"] for s in fin) == 12
+    assert fin[-1]["unit"]["id"] == "F" and fin[-1]["beats"] == 6 and not fin[-1].get("reuse")   # held, all of it
+    cuts = [s for s in fin if s.get("reuse")]
+    assert cuts and all(c["beats"] <= 2 for c in cuts)
+    assert not any(c.get("logo") or c.get("open") for c in cuts)                     # no logo from the opening
+    assert not any(c["unit"]["id"] == "K" and c["span"][0] == 20.0 for c in cuts)    # nothing seen moments ago
+
+
+def test_slow_motion_comes_off_a_shot_too_short_for_it(tmp_path):
+    pr, music, moments = fake_reel(tmp_path)
+    shots = P.build(pr, "landscape", music, moments, stinger_len=0.0)["shots"]
+    assert all(s["beats"] >= 3 for s in shots if set(s["fx"]) & {"hero", "bullet", "montage", "aura"})
+
+
+def test_no_clip_plays_twice_in_a_row():
+    seq = [dict(unit=dict(clip=c), act="climax") for c in "XAABBCY"]
+    P.unclump_clips(seq)
+    clips = [s["unit"]["clip"] for s in seq]
+    assert clips[0] == "X" and clips[-1] == "Y" and all(a != b for a, b in __import__("itertools").pairwise(clips))
+
+
+def test_a_whole_clip_ban_beats_its_picks():
+    u = dict(id="U1", t0=0.0, t1=60.0, export_t0=0.0)
+    r = dict(id="U1", unit=u, moments=[dict(t=t, score=1.0, kind="dance") for t in (5.0, 20.0)])
+    picks = {"U1": {"ban": ["all"], "add": ["0:04-0:06"]}}
+    P.apply_picks([r], picks)
+    assert r["moments"] == [] and P.pick_report([], picks) == []
+
+
+def test_settling_keeps_each_act_on_its_room_without_stretching_picks():
+    def pick(uid, act, a, b, role="dance"):
+        return dict(unit=dict(id=uid, clip=uid, role=role), act=act, beats=1, t=a, fx=[], effect=None, span=[a, b])
+    # night: 3 picks of 2 s (4 beats each at 0.5 s) for 10 beats of room; climax: one 1 s pick for 6 beats of room
+    seq = [pick("A", "night", 0, 2), pick("B", "night", 0, 2, "transition"), pick("C", "night", 0, 2),
+           pick("D", "climax", 10, 11), dict(unit=dict(id="E", clip="E", role="dance"), act="climax", beats=1, t=0,
+                                             fx=["hero"], effect="hero")]
+    P.settle_picks(seq, 0.5, {"night": 10, "climax": 6}, 0.5)
+    night = [s for s in seq if s["act"] == "night"]
+    climax = [s for s in seq if s["act"] == "climax"]
+    assert sum(s["beats"] for s in night) == 10 and sum(s["beats"] for s in climax) == 6
+    assert next(s for s in climax if s["unit"]["id"] == "D")["beats"] == 2          # never past its out-point
+    assert sum(s.get("reuse", False) for s in climax) >= 1                          # the rest: quick cuts
+    assert all(s["act"] == "climax" for s in climax)
+
+
 def test_pick_report_names_each_problem():
     u = dict(id="U1", export_t0=0.0)
     pick = dict(unit=u, span=[10.0, 12.0], src_in=10.0, length=2.0, fx=[])
@@ -1202,3 +1407,163 @@ def test_pick_report_names_each_problem():
     assert any("2 times" in r for r in rep) and any("other shot" in r for r in rep)
     assert any("plays 1.40 s of 3.00" in r for r in rep) and any("sped up" in r for r in rep)
     assert any("0:50-0:51: missing" in r for r in rep) and any("still used" in r for r in rep)
+
+
+def test_empty_broll_still_has_moments():
+    """B-roll with nobody in it (no person box, so no measured quality) still gets moments, ranked on steadiness."""
+    from focalcut.reel import moments as Mo
+    t = np.arange(0, 20, 1 / Mo.HZ)
+    zero = np.zeros_like(t)
+    S = dict(t=t, quality=zero, steady=np.full_like(t, 0.9), parts={k: zero for k in Mo.W})
+    u = dict(id="C1_venue", category="broll", role="transition", orient="landscape", t0=0.0, t1=20.0)
+    r = Mo.unit_moments(u, S)
+    assert r["moments"] and all(m["kind"] == "broll" for m in r["moments"])
+
+
+def test_act_logos_match_lengthens_a_short_title_shot_from_the_next():
+    day, star = dict(id="d", category="day", tag=""), dict(id="s", category="headline", tag="")
+    seq = [dict(unit=u, act="climax", beats=b, fx=[]) for u, b in ((day, 4), (star, 1), (day, 2), (day, 3))]
+    P.act_logos(seq, {"climax": {"image": "star.png", "match": ["headline"]}})
+    assert [s["beats"] for s in seq] == [4, 4, 1, 1] and seq[1]["logo_image"] == "star.png"
+
+
+def test_act_logos_holds_a_title_over_short_shots():
+    day, star = dict(id="d", category="day", tag=""), dict(id="s", category="headline", tag="")
+    seq = [dict(unit=u, act="climax", beats=b, fx=[]) for u, b in ((star, 2), (day, 1), (day, 1), (day, 1), (day, 2))]
+    P.act_logos(seq, {"climax": {"image": "star.png", "match": ["headline"]}})
+    assert [s.get("logo") for s in seq] == ["in", "hold", "hold", None, None]
+    assert {s.get("logo_image") for s in seq[:3]} == {"star.png"}
+
+
+def test_framing_follows_the_action_not_a_bystander_beside_it():
+    from focalcut.reel import frame as FR
+    n = 12
+    boxes = np.full((n, 3, 5), np.nan)
+    kp = np.zeros((n, 3, 17, 3))
+    for j, x in enumerate((0.3, 0.42, 0.7)):                   # a dancer, someone standing by, a dancer far off
+        boxes[:, j] = [(x - 0.05) * 640, 0.2 * 360, (x + 0.05) * 640, 0.9 * 360, 0.9]
+        kp[:, j, :, 0], kp[:, j, :, 1], kp[:, j, :, 2] = x * 640, np.linspace(80, 300, 17), 0.9
+        kp[:, j, 5:7, 1] = 120                                  # shoulders level
+    kp[:, 0, 9:11, 0] += np.where(np.arange(n) % 2, 30, -30)[:, None]    # the first one's arms are working
+    d = dict(pose_t=np.arange(n) * 0.2, boxes=boxes, kp=kp, focus=np.full((n, 3), np.nan), aw=640, ah=360)
+    act = FR.activity(d)
+    assert act[5, 0] > 5 * act[5, 1]
+    union = np.tile([0.25, 0.2, 0.47, 0.9], (n, 1)).astype(float)        # the subject pass: both of them
+    box, _, one = FR.follow(d, d["pose_t"], union, cw=0.32)
+    assert not one and box[5, 2] == pytest.approx(0.35)                   # just the dancer
+
+
+def _set_shot(uid, cat, tag="", role="show", beats=2, clip=None):
+    u = dict(id=uid, category=cat, tag=tag, role=role, clip=clip or uid)
+    return dict(unit=u, act="night", beats=beats, fx=[], effect=None, t=1.0)
+
+
+def test_confine_trades_strays_into_their_own_song():
+    sets = [dict(b0=0, b1=8, footage=["day"]), dict(b0=8, b1=16, footage=["night"])]
+    seq = [_set_shot("a", "day"), _set_shot("n1", "night"), _set_shot("b", "day", beats=4),
+           _set_shot("d1", "day"), _set_shot("n2", "night", beats=4), _set_shot("n3", "night")]
+    P.confine(P.Picker("landscape", []), seq, [], sets)
+    at = P.starts(seq)
+    assert all(P.fits(s["unit"], P.set_at(sets, at[i])["footage"]) for i, s in enumerate(seq))
+    assert [s["beats"] for s in seq] == [2, 2, 4, 2, 4, 2]          # the slots keep their beats
+
+
+def test_relocate_moves_a_files_only_shot_to_its_song():
+    sets = [dict(b0=0, b1=8, footage=["day"]), dict(b0=8, b1=16, footage=["night"])]
+    seq = [_set_shot("a", "day", beats=6), _set_shot("b", "day", beats=2), _set_shot("n1", "night", beats=4),
+           _set_shot("lost", "day", beats=2), _set_shot("n2", "night", beats=2)]
+    P.relocate(seq, sets)
+    assert sum(s["beats"] for s in seq) == 16
+    at = P.starts(seq)
+    assert all(P.fits(s["unit"], P.set_at(sets, at[i])["footage"]) for i, s in enumerate(seq))
+    assert [s["unit"]["id"] for s in seq].count("lost") == 1
+
+
+def test_set_titles_put_each_artist_on_their_own_footage():
+    sets = [dict(b0=0, b1=8, footage=["day", "anna"], titles=[dict(image="anna.png", match=["anna"])]),
+            dict(b0=8, b1=16, footage=["night", "ben"], titles=[dict(image="ben.png", match=["ben"])])]
+    seq = [_set_shot("d1", "day", beats=4), _set_shot("anna", "broll", "singer-anna", "transition", 4),
+           _set_shot("n1", "night", beats=1), _set_shot("ben", "broll", "singer-ben", "transition", 1),
+           _set_shot("n2", "night", beats=1), _set_shot("n3", "night", beats=5)]
+    P.set_titles(P.Picker("landscape", []), seq, [], sets)
+    assert seq[1]["logo_image"] == "anna.png" and seq[3]["logo_image"] == "ben.png"
+    assert seq[3]["logo"] == "in" and seq[4]["logo"] == "hold" and seq[5]["logo"] == "hold"   # held to 4 beats
+
+
+def test_fits_with_exclusions():
+    u = dict(category="broll", tag="singer-steffania-day")
+    assert P.fits(u, ["day"]) and not P.fits(u, ["day", "!steffania"]) and P.fits(u, []) and not P.fits(u, ["night"])
+
+
+def test_band_footage_counts_only_where_a_player_is_in_shot_and_sharp(tmp_path):
+    from focalcut.reel import role
+    pr = Project(str(tmp_path))
+    os.makedirs(pr.path("scores"), exist_ok=True)
+    np.savez(pr.path("scores", "band_C1_band.npz"), t=np.arange(0, 10, 0.5, dtype=np.float32),
+             p=np.r_[np.full(10, 0.95), np.full(10, 0.1)].astype(np.float32),                  # player, then crowd
+             sharp=np.r_[np.full(5, 900.0), np.full(5, 30.0), np.full(10, 900.0)].astype(np.float32))  # a blur
+    u = dict(id="C1_band", role="transition", tag="band", clip="C1")
+    assert role.band_footage(pr, u) and not role.band_footage(pr, dict(u, tag="crowd"))
+    p, sh = role.musician(pr, u, 0.0, 2.0)
+    assert p >= role.BAND_P and sh >= role.BAND_SHARP                     # the player, in focus
+    assert role.musician(pr, u, 2.6, 4.4)[1] < role.BAND_SHARP           # the player, blurred
+    assert role.musician(pr, u, 6.0, 8.0)[0] < role.BAND_P               # the crowd
+    assert role.musician(pr, dict(u, id="C2_band"), 0, 2) is None         # not scanned
+
+
+def test_assess_ranks_down_a_walker_a_crowd_crossing_and_a_blocked_camera(tmp_path):
+    pr, _, moments = fake_reel(tmp_path)
+    social = next(r for r in moments if r["unit"]["clip"] == "C002")
+    os.makedirs(pr.reel_dir, exist_ok=True)
+    seed = {5.0: [1.0, 1.0, 1.0, 1.0, 0.3, 0.0, 0.0],    # walking across: arms still about the shoulders
+            11.0: [1.0, 1.0, 1.0, 1.0, 1.2, 0.7, 0.0],   # people crossing through the crop one after another
+            17.0: [1.0, 1.0, 1.0, 1.0, 1.2, 0.0, 0.5]}   # someone's back right up against the camera
+    json.dump({f"portrait|U02|{m['t']}|c": seed.get(m["t"], [1.0, 1.0, 1.0, 1.0, 1.2, 0.0, 0.0])
+               for m in social["moments"]},
+              open(pr.path("hold_cache.json"), "w"))
+    P.assess(pr, [social], "portrait", P.config(pr, "portrait"))
+    sc = {m["t"]: m["score_p"] for m in social["moments"]}
+    best = max(v for t, v in sc.items() if t not in seed)
+    assert sc[5.0] < 0.2 * best and sc[11.0] < 0.25 * best and sc[17.0] < 0.2 * best
+
+
+def test_cover_people_skips_a_spot_that_plays_badly(tmp_path, monkeypatch):
+    pr, music, moments = fake_reel(tmp_path, n_units=20)
+    people = [dict(id=i + 1, units=[f"U{i:02d}"], appearances=[dict(unit=f"U{i:02d}", t=40.0 + d, cx=0.5, cy=0.4,
+                                                                    h=0.12, q=0.8) for d in (0.0, 0.5)])
+              for i in range(4)]
+    os.makedirs(os.path.dirname(pr.path("people.json")), exist_ok=True)
+    json.dump(dict(people=people, kisses={}), open(pr.path("people.json"), "w"))
+    monkeypatch.setattr(P, "spot_rater", lambda project, fmt: (lambda r, t: 0.05 if r["id"] == "U01" else 1.0))
+    shots = P.build(pr, "landscape", music, moments, stinger_len=0.0)["shots"]
+    added = {s["unit"]["id"] for s in shots if s.get("person")}
+    assert "U01" not in added and added                  # a crowd crossing the crop: not that spot
+
+
+def test_a_glitch_look_speaks_every_transition_and_effect_in_its_own_styles(tmp_path):
+    from focalcut.fx.glitch import LOOKS
+    pr, music, moments = fake_reel(tmp_path)
+    pr.config["look"] = "clean"
+    shots = P.build(pr, "landscape", music, moments, stinger_len=0.0)["shots"]
+    look = LOOKS["clean"]
+    trs = {s["transition"] for s in shots if s.get("transition")}
+    assert trs and trs <= set(look["transitions"])                     # every reason, said in the look
+    fx = [f for s in shots for f in s["fx"] if f not in P.SPEED]
+    assert fx and set(fx) <= set(look["subject"]) | set(look["accents"])
+    for i in range(1, len(shots) - 1):                                 # still one effect at a time
+        if shots[i]["fx"] and not set(shots[i]["fx"]) & set(P.SPEED):
+            assert not (set(shots[i - 1]["fx"]) | set(shots[i + 1]["fx"])) - set(P.SPEED) or shots[i].get("effect")
+
+
+def test_the_editor_can_choose_the_opening_shot_and_a_short_ending(tmp_path):
+    pr, music, moments = fake_reel(tmp_path)
+    end_unit = next(r for r in moments if r["role"] == "dance")["unit"]["id"]
+    pr.config["plan"] = {"landscape": {"ending": [end_unit, 20.0, 21.5]}}
+    pr.config["open"] = {"U03": "0:30.00-0:33.00"}
+    shots = P.build(pr, "landscape", music, moments, stinger_len=0.0)["shots"]
+    first, last = shots[0], shots[-1]
+    assert first["unit"]["id"] == "U03" and first.get("logo") == "in" and first["act"] == "teaser"
+    assert first["span"] == [30.0, 33.0] and first["length"] >= 3.0 - 1e-6        # at its full length
+    assert sum(s["unit"]["id"] == "U03" and s.get("span") == [30.0, 33.0] for s in shots) == 1
+    assert last.get("ending") and last["beats"] == 3                               # 1.5 s at 0.6 s a beat
+    assert abs(last["src_in"] - 20.0) < 0.05                                       # all of it, from its start

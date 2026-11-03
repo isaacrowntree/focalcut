@@ -26,8 +26,19 @@ cd <repo> && python -m venv .venv && .venv/bin/pip install -e ".[reel]"   # once
   (`review/sources.html`) shows every export and the whole cut, takes in-out picks and sets portrait focal points.
   `focalcut reel serve <folder> [<folder> ...]` serves them all from one port (each project at `/p/<slug>/`,
   an index at `/`) and the pages write `focalcut/reel/picks.json` directly; it takes `ban`, `prefer`, `add`,
-  `more` and `portrait`, with times in each export file's own timeline. Re-run `--steps plan,render,xml,review`
-  after any change.
+  `more`, `portrait`, and `open` / `end` (the selection the reel opens on, under the logo, and ends on: the pick
+  editor's Opening and Ending buttons), with times in each export file's own timeline. Picks win over the planner's
+  shots, so a heavily picked reel is mostly picks; reel.json `"keep": true` keeps the last rendered cut's footage
+  for clips the editor left alone. When the picks are too many or too long for that, reel.json
+  `plan.<fmt>.pick_hold` (beats, e.g. 4 landscape, 3 portrait) plays each pick's best few beats instead, condenses
+  a clip with many picks to its best ones, keeps the picks to about half the reel (`pick_share`) and puts them
+  between shots from the rest of the footage, picked clips included. Re-run `--steps plan,render,xml,review` after
+  any change.
+
+Several reels from one shoot: reel.json `"cuts": {"night": {"formats": ["portrait"], "footage": ["@portrait", "band"],
+"open": {}, "plan": {"portrait": {"acts": [...], "ending": null}}}, "day": {"footage": ["@landscape", "!band"]}}`, then
+`focalcut reel run <folder> --cut night --steps plan,render,xml`. A cut reuses the project's analysis; acts it has no
+footage for can be given zero bars.
 
 ## Three ways to make a clip
 
@@ -70,9 +81,11 @@ Read `references/concepts.md` for the rule, the reason, the numbers and the code
 | Show the landing | every dance shot keeps the end of the move and about a beat of rest after it lands, borrowing a beat from a neighbour if needed | `velocity.landed/hold_in`, `plan.lands` | `land_hold` |
 | Transition grammar | mostly hard cuts; each act's own short vocabulary; a reason for every transition | `grammar.py`, `plan.transitions` | `grammar`, `caps`, `flash_at` |
 | Cohesive effects | one effect at a time, one subject effect (on the drop), effects target the subject | `give_slot_fx`, `fx/subject.py` | — |
-| Portrait framing | strip follows one dancer of a split couple; faces (YuNet, not pose keypoints) strongly favoured; no backs; whole subject in frame | `frame.follow/face_seen`, `plan.reframe`, `plan.assess` | — |
+| Portrait framing | the crop is on the action (pose activity), never a bystander; a couple shares the frame, the follow featured (role step) and kept whole; group routines whole; faces (YuNet) strongly favoured; no backs | `frame.follow/couple/activity/face_seen`, `role.py`, `plan.reframe` | — |
+| Moments that play | the subject walking or standing, a crowd crossing the crop, someone blocking the camera: switched for a better moment | `plan.plays`, `plan.assess`, `spot_rater` | — |
 | Shake | measure; too shaky → another part of the clip; mildly shaky → stabilise | `shake.py`, `plan.assess`, `render.stab` | `shake` |
-| Band members | individual players cut in on the hardest musical hits | `plan.band_in` | `members`, `member_clips`, `band_in` |
+| Band members | individual players cut in on the hardest musical hits, only where a player is on screen and sharp | `plan.band_in`, `role.musician` | `members`, `member_clips`, `band_in` |
+| Style look | one look for the film from a style library (glitch: digital damage; carnival: Latin carnival / tropical disco; edm: MilkDrop + white/dark flickers): its transitions, subject effects, accents and MilkDrop presets; chosen from the look book | `fx/looks.py` (`glitch.py`, `carnival.py`, `edm.py` LOOKS), `plan.glitch_look`, `fx/lookbook.py --library` | `look` (its `overlay` sits under reel.json's own) |
 | Ending | a chosen last shot that runs out exactly at its end time; its stretch reserved | `plan.ending_record/reserve_ending` | `ending` |
 | Song start | start on the bar nearest where the song proper begins | `music.analyse` | top-level `start_hint` |
 | Several songs | one song per act (a festival's sets), each around its drop, mixed like a DJ: tempo ramp, 4 bars beat on beat, bass swap on the downbeat | `music.join/mix`, `plan.clock` | top-level `songs`, `mix` |
@@ -120,6 +133,12 @@ Plus `proxies` for the DNxHD stabilised masters.
   Windows ffmpeg (`C:\tools\ffmpeg-*\bin\ffmpeg.exe` or `FOCALCUT_WIN_FFMPEG`; needs `-async_depth 1` or cuts land
   3 frames early), encodes with NVENC, and runs shots in parallel (`FOCALCUT_DECODERS="qsv=5,cpu=2"`). Analysis
   still decodes on the CPU; the shake pass decodes the H.264 exports on the GPU.
+- **Faster analysis (option):** the score step decodes every 4K source frame on the CPU (about 1.6x real time).
+  reel.json `proxies` can point each source at a 1080p H.264 copy that NVDEC decodes on the GPU, e.g.
+  `{"C2150.MP4": ["export/dusk/C2150.mp4"]}`, adding `[[0, -t0]]` shifts for an export trimmed to start at t0. A proxy
+  must cover the whole source, so a clip split across several exports needs one full-length 1080p copy of its own.
+  Caveat: render also decodes from proxies, and a 9:16 strip from 1080p is only ~600 px wide (about 1,200 from 4K).
+  Use proxies for the analysis steps, then remove the key before the render step.
 - **GPU workers:** for example, two scoring workers suit a 12 GB GPU; more can overflow VRAM (on WSL it pages to RAM).
 - **Long jobs:** run them in the background. Kill workers by PID, or with an anchored `pgrep -af '^/full/path'`;
   never an unanchored `pkill -f`, which matches the calling shell.

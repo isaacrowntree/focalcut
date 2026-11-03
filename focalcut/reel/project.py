@@ -9,7 +9,12 @@
 reel.json keys (all optional except song):
     song               path to the track
     songs              several tracks instead of song, one per act group: [{"song": path, "bars": n | null,
-                                         "pre": 8, "acts": {"<act>": bars | null}}, ...] (music.join)
+                                         "pre": 8, "from": seconds, "acts": {"<act>": bars | null}}, ...]
+                                         (music.join; "from": the window starts on the bar nearest)
+                                         song sets (plan): "footage": [category/tag, "!not"] the only footage
+                                         the song's beats use; "title": image over its first shot of
+                                         "title_match" footage (the artist's name); "feature": share of the
+                                         song's shots kept for "feature_match" footage (default title_match)
     mix                how songs hand over: {"bars": 4, "ramp": 8, "max_ramp": 0.15, "split": 150} (overlap bars,
                                          tempo-ramp bars, largest tempo gap to ramp, bass split Hz); false: cut
     start              "auto" (first bar after the intro) or seconds
@@ -28,26 +33,43 @@ reel.json keys (all optional except song):
                                          "more": 2}}  the editor's
                                          calls, times in that export file's own timeline; merged over picks.json
                                          in this folder (the review step's page gives a copyable line per shot)
+    picks_only         ["<category>", ...]  export categories used only where the editor added a pick (e.g. a dance
+                                         class to dip into); left out of "use everything"
     close_only         {"match": ["day"], "face": 0.2}  export files whose category or tag contains a match keep only
                                          close shots (a face at least `face` of the frame height; people step),
                                          e.g. daytime footage where the venue still looked empty
+    people             {"min_clear": 2}  clear sightings (2 a second) that make someone a person the reel must show; 1
+                                         also finds people the camera only passed (people step)
     hips               "movement": the semantic step scores hips on dancing movement, no from-behind / close-up
                                          prompts (an audience, not performers); false: left out
     logo               image file (PNG with transparency) laid front and centre over the opening shots
-    plan               {"landscape": {...}, "portrait": {...}}  overrides for plan.CFG
+    act_logos          {"<act>": "<image>"}  a title over an act's first shot, e.g. the headliner's name on "climax";
+                                         {"<act>": {"image": ..., "match": ["<category or tag>"]}}: on that footage
+    plan               {"landscape": {...}, "portrait": {...}}  overrides for plan.CFG (e.g. "climax_from": ["night"])
+    cuts               {"<cut>": {"formats": ["portrait"], "footage": ["@portrait", "band"], ...}}  other reels from the
+                                         same footage and analysis (`reel run --cut <cut>`): "footage" keeps the
+                                         footage that fits (plan.fits: category/tag substrings, "!x" rules x out,
+                                         "@portrait" / "@landscape" the way it was shot), "formats" the formats it is
+                                         made in, and any other key replaces the project's for this cut ("plan" is
+                                         merged per format; a song of its own -- "song", "start_hint", ... --
+                                         makes its own music_<cut>.json: run its music step). Out as
+                                         <name>_<cut>_<fmt>; the editor's picks of other footage are left out of it
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
+import time
 
 DEFAULT_ROLES = {"segments": "dance", "broll": "transition"}      # anything else is a "show"
 VIDEO_EXT = (".mp4", ".mov", ".mxf", ".m4v", ".mkv")
+MUSIC_KEYS = ("song", "songs", "start", "start_hint", "length", "mix", "to_end")   # a cut with any of these: own music
 
 
 class Project:
-    def __init__(self, folder: str):
+    def __init__(self, folder: str, cut: str | None = None):
         self.folder = os.path.abspath(folder)
         self.focalcut_dir = os.path.join(self.folder, "focalcut")
         self.reel_dir = os.path.join(self.focalcut_dir, "reel")
@@ -55,6 +77,17 @@ class Project:
         self.library = os.path.join(self.focalcut_dir, "library.json")
         self.config_path = os.path.join(self.reel_dir, "reel.json")
         self.config = json.load(open(self.config_path)) if os.path.exists(self.config_path) else {}
+        self.cut, self.footage, self.formats, self.own_music = cut, None, None, False
+        if cut:                                                  # another reel from the same footage (reel.json "cuts")
+            c = copy.deepcopy((self.config.get("cuts") or {}).get(cut))
+            if c is None:
+                raise KeyError(f"reel.json has no cut {cut!r} (cuts: {sorted(self.config.get('cuts') or {})})")
+            self.footage, self.formats = c.pop("footage", None), c.pop("formats", None)
+            self.own_music = any(k in c for k in MUSIC_KEYS)
+            plan = copy.deepcopy(self.config.get("plan") or {})
+            for fmt, over in (c.pop("plan", None) or {}).items():
+                plan[fmt] = {**plan.get(fmt, {}), **over}
+            self.config = {**{k: v for k, v in self.config.items() if k != "cuts"}, **c, "plan": plan}
 
     # paths -------------------------------------------------------------------------------------
     def path(self, *parts: str) -> str:
@@ -63,6 +96,20 @@ class Project:
     @property
     def name(self) -> str:
         return self.config.get("name") or re.sub(r"\W+", "", os.path.basename(self.folder)) or "reel"
+
+    def cut_name(self, fmt: str) -> str:
+        """The name a format's plan, work and output go by: the format itself, or <cut>_<fmt> for a cut."""
+        return f"{self.cut}_{fmt}" if self.cut else fmt
+
+    @property
+    def music_file(self) -> str:
+        """music.json, or music_<cut>.json for a cut with its own song (any of MUSIC_KEYS)."""
+        return f"music_{self.cut}.json" if self.own_music else "music.json"
+
+    def in_cut(self, unit: dict) -> bool:
+        """Is this footage (a unit) in the cut? Everything is, outside one."""
+        from .plan import fits
+        return not self.footage or fits(unit, self.footage)
 
     def role(self, category: str) -> str:
         return {**DEFAULT_ROLES, **self.config.get("roles", {})}.get(category, "show")
@@ -98,13 +145,47 @@ class Project:
 
     def picks(self) -> dict:
         """The editor's picks: focalcut/reel/picks.json, with reel.json's "picks" merged over it."""
-        f = self.path("picks.json")
-        out = json.load(open(f)) if os.path.exists(f) else {}
-        return {**out, **(self.config.get("picks") or {})}
+        out = {**self._picks_file(), **(self.config.get("picks") or {})}
+        if self.footage:                                         # a cut: only picks of its own footage
+            ids = self._cut_ids()
+            out = {k: v for k, v in out.items() if k.startswith("_") or k in ids}
+        if not any(isinstance(e, dict) and e.get("open") for e in out.values()):
+            for clip, v in (self.config.get("open") or {}).items():   # reel.json "open": {clip: in-out} -- the
+                out[clip] = {**out.get(clip, {}), "open": v}           # opening, unless a pick is marked as it
+        return out
 
-    def logo(self) -> str | None:
-        """The event's logo as an absolute path (relative paths are inside the folder), or None."""
-        f = self.config.get("logo")
+    def _cut_ids(self) -> set:
+        """Export file names and unit ids of the cut's footage."""
+        if getattr(self, "_ids", None) is None:
+            recs = self.load("moments.json") if os.path.exists(self.path("moments.json")) else []
+            self._ids = {x for r in recs if self.in_cut(r["unit"]) for x in (r["id"], r["unit"]["id"])}
+        return self._ids
+
+    def _picks_file(self) -> dict:
+        """picks.json, read again only when it changes (the planner asks for it on every crop). The review server
+        saves it by swapping in a new copy, so a read that lands mid-swap (gone, or half there) waits and tries
+        again rather than taking the picks as empty."""
+        f = self.path("picks.json")
+        for _ in range(40):
+            try:
+                st = os.stat(f)
+                key = (st.st_mtime_ns, st.st_size)
+                if getattr(self, "_picks_cache", (None,))[0] != key:
+                    with open(f) as fh:
+                        self._picks_cache = (key, json.load(fh))
+                return copy.deepcopy(self._picks_cache[1])
+            except FileNotFoundError:
+                if not os.path.exists(f + ".bak"):       # never saved: no picks
+                    return {}
+            except ValueError:
+                pass
+            time.sleep(0.05)
+        raise RuntimeError(f"{f}: unreadable (still being written?)")
+
+    def logo(self, image: str | None = None) -> str | None:
+        """The event's logo (or another image, e.g. an act's title) as an absolute path (relative paths are inside the
+        folder), or None."""
+        f = image or self.config.get("logo")
         return (f if os.path.isabs(f) else os.path.join(self.folder, f)) if f else None
 
     def out_stem(self, cut: str, fmt: str) -> str:
@@ -116,6 +197,8 @@ class Project:
 
     def save_config(self) -> str:
         os.makedirs(self.reel_dir, exist_ok=True)
+        if self.cut:
+            raise RuntimeError("save_config on a cut would write its merged settings over reel.json")
         with open(self.config_path, "w") as f:
             json.dump(self.config, f, indent=1)
         return self.config_path

@@ -35,11 +35,16 @@ def crop_expr(path, k):
     """Piecewise-linear crop centre (fraction of the source) over shot time t, as an ffmpeg expression; k picks x (1)
     or y (2) from the path's [t, x, y] points."""
     pts = [(p[0], p[k]) for p in path]
-    expr = f"{pts[-1][1]}"
-    for (t0, x0), (t1, x1) in reversed(list(zip(pts[:-1], pts[1:]))):
-        seg = f"({x0}+({x1}-{x0})*(t-{t0})/{max(t1 - t0, 1e-3)})"
-        expr = f"if(lt(t\\,{t1})\\,{seg}\\,{expr})"
-    return expr
+    pieces = [f"({x0}+({x1}-{x0})*(t-{t0})/{max(t1 - t0, 1e-3)})"
+              for (t0, x0), (t1, x1) in zip(pts[:-1], pts[1:])] + [f"{pts[-1][1]}"]
+    ends = [p[0] for p in pts[1:]]                 # piece i holds while t < ends[i]; the last one after that
+
+    def tree(lo, hi):                              # a balanced if() tree: ffmpeg refuses nesting past ~100 deep,
+        if lo == hi:                               # which a chain hits on a long shot (one point per 0.2 s)
+            return pieces[lo]
+        mid = (lo + hi) // 2
+        return f"if(lt(t\\,{ends[mid]})\\,{tree(lo, mid)}\\,{tree(mid + 1, hi)})"
+    return tree(0, len(pieces) - 1)
 
 
 STAB = os.path.expanduser("~/.cache/focalcut/stab")         # vidstab motion files (a path without spaces for ffmpeg)
@@ -53,8 +58,9 @@ def stab(path, t, dur, rot):
     if not os.path.exists(trf):                    # run in STAB with a bare file name: no filter-string escaping
         pre = (rot + ",") if rot else ""
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.3f}", "-t", f"{dur:.3f}", "-i", path, "-an", "-vf",
-                        f"{pre}vidstabdetect=shakiness=6:accuracy=12:result={name}", "-f", "null", "-"],
+                        f"{pre}vidstabdetect=shakiness=6:accuracy=12:result={name}.part", "-f", "null", "-"],
                        check=True, cwd=STAB)
+        os.replace(trf + ".part", trf)             # (a render stopped mid-pass leaves no half a motion file behind)
     return trf
 
 
@@ -82,7 +88,8 @@ def key(s, beat=None):
     u = s["unit"]
     k = json.dumps([u["id"], u["source"], u.get("rotate"), u["role"], s["src_in"], s["frames"], s.get("fx"),
                     s.get("crop"), s["peak"], s.get("logo"), s.get("stab"), s["kind"] == "closeup", beat, 3, hw.enc_tag()]
-                   + ([s["span"]] if s.get("span") else []), sort_keys=True)
+                   + ([s["span"]] if s.get("span") else []) + ([s["logo_image"]] if s.get("logo_image") else []),
+                   sort_keys=True)
     return hashlib.md5(k.encode()).hexdigest()[:10]
 
 
@@ -93,8 +100,8 @@ def cut_shot(project, s, fmt, out, qsv=False):
     exe, dec, P, pre = hw.ffmpeg(src, qsv and not s.get("stab"))
     chain = pre + shot_filter(s, fmt, project, s["length"] + 0.1)
     vf = ["-vf", chain]
-    logo = project.logo()
-    if s.get("logo") and logo:                              # the event's logo, front and centre over the opening
+    logo = project.logo(s.get("logo_image"))
+    if s.get("logo") and logo:                              # the event's logo over the opening, or an act's title
         W, H = SIZE[fmt]
         fade = ",fade=t=in:st=0.15:d=0.6:alpha=1" if s["logo"] == "in" else ""
         vf = ["-i", P(logo), "-filter_complex",
@@ -158,7 +165,11 @@ def write_frames(frames, out):
                           "-r", str(FPS), "-i", "-", *hw.enc(), out], stdin=subprocess.PIPE)
     for f in frames:
         p.stdin.write(np.ascontiguousarray(f).tobytes())
-    p.stdin.close(); p.wait()
+    p.stdin.close()
+    if p.wait():
+        if os.path.exists(out):
+            os.remove(out)
+        raise subprocess.CalledProcessError(p.returncode, "ffmpeg (write_frames)")
 
 
 def render_shots(project, plan, fmt, work, draft=False):
@@ -251,7 +262,7 @@ def run(project, fmt, draft=False, cut=None) -> str:
     cut = cut or fmt
     plan = project.load(f"plan_{cut}.json")
     fmt = plan.get("format", fmt)
-    music = project.load("music.json") if os.path.exists(project.path("music.json")) else {}
+    music = project.load(project.music_file) if os.path.exists(project.path(project.music_file)) else {}
     W, H = SIZE[fmt]
     outdir, work = project.path("out"), project.path("work", cut)
     os.makedirs(outdir, exist_ok=True); os.makedirs(work, exist_ok=True)
@@ -260,8 +271,9 @@ def run(project, fmt, draft=False, cut=None) -> str:
         files = apply_transitions(plan, files)
     with open(os.path.join(outdir, f"{cut}_shots.json"), "w") as f:
         json.dump([os.path.relpath(p, project.reel_dir) for p in files], f, indent=1)
+    from ..fx import looks
     from . import overlay
-    ov = overlay.options(project.config.get("overlay"))
+    ov = overlay.options(looks.overlay(project.config, fmt))   # reel.json "overlay" over the look's own
     if ov and not draft:                           # the visualiser layer over the cut (not the stinger)
         lst = os.path.join(work, "list_shots.txt")
         with open(lst, "w") as f:
@@ -299,5 +311,7 @@ def run(project, fmt, draft=False, cut=None) -> str:
                     "-c:v", "copy", "-c:a", "aac", "-b:a", "320k", "-shortest", "-movflags", "+faststart",
                     final + ".part.mp4"], check=True)
     os.replace(final + ".part.mp4", final)
+    if not draft:                                            # the cut as rendered: what "keep": true re-cuts from
+        project.dump(f"plan_{cut}_rendered.json", plan)
     print(f"[reel] -> {final}")
     return final

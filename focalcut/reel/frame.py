@@ -162,11 +162,64 @@ def face_seen(d, times, boxes, kp):
     return out
 
 
+LIMBS = [0, 7, 8, 9, 10]                          # COCO keypoints: nose, elbows, wrists
+ACTIVE = 0.35                                     # in the frame: moving at least this share of the busiest dancer
+GROUP_W = 0.6                                     # a subject wider than this (of the frame) is a group routine
+
+
+def activity(d):
+    """How much each pose person dances (F, P), over the whole clip: how far their head and arms move about their
+    shoulders since the previous pose frame (the same person: the nearest box) -- the two busiest of those points,
+    so the body's own travel and stride drop out, so walking across the floor scores low and styling, turns and arm
+    work score high -- in body heights a second, smoothed over ~0.6 s along the person. Cached in d["act"]."""
+    if "act" in d:
+        return d["act"]
+    bx, kp, pt = d["boxes"], d["kp"], d["pose_t"]
+    F, P = bx.shape[:2]
+    cx, h = (bx[..., 0] + bx[..., 2]) / 2, np.maximum(bx[..., 3] - bx[..., 1], 1.0)
+    prev = np.full((F, P), -1)
+    raw = np.zeros((F, P))
+    for f in range(1, F):
+        for k in range(P):
+            if np.isnan(cx[f, k]):
+                continue
+            dist = np.abs(cx[f - 1] - cx[f, k])
+            j = int(np.nanargmin(dist)) if not np.isnan(dist).all() else -1
+            if j < 0 or dist[j] > 0.5 * (bx[f, k, 2] - bx[f, k, 0]):
+                continue
+            prev[f, k] = j
+            a, b = kp[f, k], kp[f - 1, j]
+            if min(a[5, 2], a[6, 2], b[5, 2], b[6, 2]) < 0.3:
+                continue                                       # no shoulders to measure against
+            ok = (a[LIMBS, 2] > 0.3) & (b[LIMBS, 2] > 0.3)
+            if ok.sum() >= 2:
+                here = a[LIMBS, :2] - (a[5, :2] + a[6, :2]) / 2   # about the shoulders: the stride and the
+                then = b[LIMBS, :2] - (b[5, :2] + b[6, :2]) / 2   # travel drop out
+                mv = np.linalg.norm(here[ok] - then[ok], axis=1)
+                raw[f, k] = np.mean(np.sort(mv)[-2:]) / h[f, k] / max(pt[f] - pt[f - 1], 1e-3)
+    act = raw.copy()
+    for _ in range(2):                                        # smooth back and forth along each person's chain
+        for f in range(1, F):
+            for k in range(P):
+                if prev[f, k] >= 0:
+                    act[f, k] = 0.6 * act[f, k] + 0.4 * act[f - 1, prev[f, k]]
+        for f in range(F - 1, 0, -1):
+            for k in range(P):
+                if prev[f, k] >= 0:
+                    j = prev[f, k]
+                    act[f - 1, j] = 0.6 * act[f - 1, j] + 0.4 * act[f, k]
+    d["act"] = np.where(np.isnan(cx), 0.0, act)
+    return d["act"]
+
+
 def follow(d, times, union, cw, split=0.8):
-    """For a 9:16 strip out of a 16:9 frame. When the subject group is wider than the strip for a good part of the shot
-    (a couple dancing apart), centring on the group frames the empty floor between them: follow one dancer instead --
-    the one who shows their face most, then the sharpest and biggest -- tracked box to box. Returns (boxes (F, 4),
-    face (F,) bool, followed one?)."""
+    """What a portrait crop (cw: its width at zoom 1, as a fraction of the frame) should hold, frame by frame.
+    The crop is about the action, not whoever stands together: the people moving most (activity). A couple dancing
+    shares the frame (couple: both dancers, the follow featured); a group is cut down to the people in the move.
+    Otherwise, in a 9:16 strip out of a 16:9 frame, when the subject group is wider than the strip for a good part of the shot, centring on the group
+    frames the empty floor between them: follow one dancer instead -- the one who shows their face most, then the
+    sharpest and biggest -- tracked box to box. Returns (boxes (F, 4), face (F,) bool, own boxes? -- the group's
+    edge contact no longer applies)."""
     with warnings.catch_warnings():                         # (all-NaN stretches: a dancer lost for a moment)
         warnings.simplefilter("ignore", RuntimeWarning)
         return _follow(d, times, union, cw, split)
@@ -182,12 +235,34 @@ def _follow(d, times, union, cw, split):
     foc = d["focus"][idx] if "focus" in d else np.zeros(boxes.shape[:2])
     m = members(boxes, grown, d["aw"], d["ah"]) & close[:, None]
     fv = face_seen(d, times, boxes, kp) & m
-    wide = np.nan_to_num(w) > split * cw
+    act = activity(d)[idx]
+    hgt = np.nan_to_num(boxes[..., 3] - boxes[..., 1])
+    act = act * np.sqrt(hgt / np.maximum(hgt.max(1, keepdims=True), 1e-6))   # small, far people jitter most
+    pair = couple(d, times, boxes, m & close[:, None], close, cw, face_seen(d, times, boxes, kp), act, union)
+    if pair is not None:
+        return pair[0], pair[1], True
+    # the group, but only the people in the action: a bystander inside the subject's box doesn't widen the crop
+    nb0 = boxes[..., :4] / [d["aw"], d["ah"], d["aw"], d["ah"]]
+    mm = m & close[:, None]
+    busy = np.where(mm, act, -1.0)
+    top = busy.max(1, keepdims=True)
+    keep = mm & (busy >= ACTIVE * np.maximum(top, 1e-6))
+    # (a routine danced by a whole group is the group's action -- and the pose pass sees only a few of them)
+    group = (keep.sum(1) >= 3) | (np.nan_to_num(union[:, 2] - union[:, 0]) > GROUP_W)
+    trim = ~np.isnan(union[:, 0]) & keep.any(1) & (top[:, 0] > 0.05) & ~group
+    if trim.any():
+        union = union.copy()
+        for f in np.nonzero(trim)[0]:
+            b = nb0[f, keep[f]]
+            union[f] = [b[:, 0].min(), b[:, 1].min(), b[:, 2].max(), b[:, 3].max()]
+        w = union[:, 2] - union[:, 0]
+    wide = (np.nan_to_num(w) > split * cw) & (cw < 0.5)       # (a strip a third of the frame wide)
     if wide.mean() < 0.3:
-        # the face that counts is the main person's (the biggest in the group): a partner's face over a back
-        # is still a shot of a back
+        # the face that counts is the main person's (the one in the move, else the biggest): a partner's face over
+        # a back is still a shot of a back
         area = np.where(m, (boxes[..., 2] - boxes[..., 0]) * (boxes[..., 3] - boxes[..., 1]), -1)
-        main = np.argmax(np.nan_to_num(area, nan=-1), 1)
+        area = np.nan_to_num(area, nan=-1)
+        main = np.argmax(np.where(m, act + 1e-6 * area, -1), 1)
         return union, fv[np.arange(len(idx)), main] & m.any(1), False
     nb = boxes[..., :4] / [d["aw"], d["ah"], d["aw"], d["ah"]]
     f0 = int(np.argmax(np.where(wide, m.sum(1), -1)))
@@ -214,7 +289,9 @@ def _follow(d, times, union, cw, split):
             continue
         area = np.nanmean((seq[ok, 2] - seq[ok, 0]) * (seq[ok, 3] - seq[ok, 1]))
         sharp = np.nanmean([foc[f, slot[f]] for f in np.nonzero(ok)[0]])
-        sc = 2.0 * face.mean() + ok.mean() + np.sqrt(area) + 0.5 * np.nan_to_num(sharp / (np.nanmax(foc) + 1e-6))
+        moving = np.mean([act[f, slot[f]] for f in np.nonzero(ok)[0]]) / (act[m].max() + 1e-6) if m.any() else 0
+        sc = 2.0 * face.mean() + 1.5 * moving + ok.mean() + np.sqrt(area) + \
+            0.5 * np.nan_to_num(sharp / (np.nanmax(foc) + 1e-6))
         if sc > best_sc:
             best, best_sc = (seq, face), sc
     if best is None:
@@ -227,6 +304,124 @@ def _follow(d, times, union, cw, split):
         j[:first] = first
         seq = seq[j]
     return seq, face, True
+
+
+PAIR_GAP, PAIR_H = 1.0, (0.6, 1.65)              # partners: closer than this many widths (arm's length in open
+                                                  # position), heights within this ratio
+FOLLOW_ROOM = 0.25                                # extra room on the follow's side, in follow widths (arms, spins)
+FOLLOW_W = 0.62                                   # when the couple won't fit: the crop centre's weight on the follow
+
+
+def _partners(a, b):
+    """Two boxes (fractions) that dance together: side by side or overlapping, about the same height."""
+    ha, hb = a[3] - a[1], b[3] - b[1]
+    return (PAIR_H[0] <= hb / max(ha, 1e-6) <= PAIR_H[1]
+            and _gap(a, b) < PAIR_GAP * max(a[2] - a[0], b[2] - b[0]))
+
+
+def couple(d, times, boxes, m, close, cw, fv, act=None, union=None):
+    """A couple dancing together shares the frame: the subject and their partner (the nearest person about their
+    size, whether or not the subject pass caught them), both tracked box to box. The follow -- the one the role scan
+    reads as a woman, else the shorter -- gets the emphasis: the target box takes in both with extra room on the
+    follow's side, so the crop centres a little towards her and zooms in only as far as both fit; when they are
+    wider than the crop, the crop keeps the follow whole and as much of the lead as fits, weighted to the follow.
+    Returns (target boxes (F, 4), face (F,) bool) or None when the shot isn't of a couple."""
+    from .role import woman
+    F = len(times)
+    nb = boxes[..., :4] / [d["aw"], d["ah"], d["aw"], d["ah"]]
+    ok = ~np.isnan(nb[..., 0]) & close[:, None]
+    found = {}
+    for f in range(F):
+        mem = [k for k in np.nonzero(m[f])[0]]
+        if not mem:
+            continue
+        size = lambda k: (nb[f, k, 2] - nb[f, k, 0]) * (nb[f, k, 3] - nb[f, k, 1])      # noqa: B023
+        mem.sort(key=lambda k: -(act[f, k] + 0.02 * size(k) ** 0.5) if act is not None else -size(k))
+        a = mem[0]                                # the one doing the move (the biggest, all else equal)
+        cand = [k for k in np.nonzero(ok[f])[0] if k != a and _partners(nb[f, a], nb[f, k])]
+        if act is not None:                       # a partner dances too: not someone standing by
+            cand = [k for k in cand if act[f, k] >= 0.2 * act[f, a] or act[f, a] < 0.05]   # (a lead posing too)
+        if cand:                                  # a fellow member first, else the nearest person beside them
+            inm = [k for k in cand if k in mem]
+            b = (inm or sorted(cand, key=lambda k: _gap(nb[f, a], nb[f, k])))[0]
+            found[f] = (a, b)
+    seen = int(m.any(1).sum())
+    if not seen or len(found) < 0.4 * seen:
+        return None
+    if act is not None:                           # a routine danced by a group is not a couple
+        busy = np.where(m, act, -1.0)
+        many = (m & (busy >= ACTIVE * np.maximum(busy.max(1, keepdims=True), 1e-6))).sum(1) >= 3
+        wide = np.nan_to_num(union[:, 2] - union[:, 0]) > GROUP_W if union is not None and cw < 0.5 else many & False
+        if (many | wide)[m.any(1)].mean() >= 0.5:
+            return None
+    # who may be one of the pair: the subject's own people and anyone dancing right beside them -- never someone
+    # across the floor the tracker wandered onto
+    allow = m.copy()
+    for f in range(F):
+        for k in np.nonzero(ok[f] & ~m[f])[0]:
+            allow[f, k] = any(_partners(nb[f, j], nb[f, k]) for j in np.nonzero(m[f])[0])
+    f0 = max(found, key=lambda f: sum((nb[f, k, 2] - nb[f, k, 0]) * (nb[f, k, 3] - nb[f, k, 1]) for k in found[f]))
+    slots = np.full((F, 2), -1)
+    for order in (range(f0, F), range(f0, -1, -1)):
+        prev = [nb[f0, found[f0][0]], nb[f0, found[f0][1]]]
+        for f in order:
+            if f == f0:
+                slots[f] = found[f0]
+                continue
+            c = list(np.nonzero(ok[f] & allow[f])[0])
+            gap = np.abs((nb[f, :, 0] + nb[f, :, 2])[:, None] - [p_[0] + p_[2] for p_ in prev]) / 2   # (P, 2)
+            best, cost = (-1, -1), 9.0
+            for i in [*c, -1]:                    # each dancer to a box (or lost), never both to the same one
+                for j in [*c, -1]:
+                    if i == j != -1:
+                        continue
+                    di = gap[i, 0] if i >= 0 else 0.12
+                    dj = gap[j, 1] if j >= 0 else 0.12
+                    if di <= 0.12 and dj <= 0.12 and di + dj < cost:
+                        best, cost = (i, j), di + dj
+            slots[f] = best
+            for j in (0, 1):
+                if best[j] >= 0:
+                    prev[j] = nb[f, best[j]]
+    seq = np.full((2, F, 4), np.nan)
+    face = np.zeros((2, F), bool)
+    for j in (0, 1):
+        got = slots[:, j] >= 0
+        seq[j, got] = nb[np.nonzero(got)[0], slots[got, j]]
+        face[j, got] = fv[np.nonzero(got)[0], slots[got, j]]
+        if not got.any():
+            return None
+        idx = np.maximum.accumulate(np.where(got, np.arange(F), 0))   # lost a moment: hold where they were
+        idx[:np.argmax(got)] = np.argmax(got)
+        seq[j] = seq[j, idx]
+    wo = woman(d, times, boxes)
+    p = [np.nanmean([wo[f, slots[f, j]] for f in range(F) if slots[f, j] >= 0] or [np.nan]) for j in (0, 1)]
+    if np.isnan(p).any() or abs(p[0] - p[1]) < 0.15:
+        hgt = [np.nanmean(seq[j, :, 3] - seq[j, :, 1]) for j in (0, 1)]
+        fo = int(np.argmin(hgt))
+    else:
+        fo = int(np.argmax(p))
+    fb, lb = seq[fo], seq[1 - fo]
+    fw = fb[:, 2] - fb[:, 0]
+    out = np.c_[np.minimum(fb[:, 0], lb[:, 0]), np.minimum(fb[:, 1], lb[:, 1]),
+                np.maximum(fb[:, 2], lb[:, 2]), np.maximum(fb[:, 3], lb[:, 3])]
+    fc, lc = (fb[:, 0] + fb[:, 2]) / 2, (lb[:, 0] + lb[:, 2]) / 2
+    left = fc <= lc                                            # the follow is on the left
+    out[:, 0] = np.where(left, out[:, 0] - FOLLOW_ROOM * fw, out[:, 0])
+    out[:, 2] = np.where(left, out[:, 2], out[:, 2] + FOLLOW_ROOM * fw)
+    win = 0.9 * cw
+    wide = (out[:, 2] - out[:, 0]) > 0.95 * cw
+    if wide.any():                                             # too wide: the follow whole, the lead as fits
+        c = FOLLOW_W * fc + (1 - FOLLOW_W) * lc
+        lo, hi = fb[:, 2] - win / 2, fb[:, 0] + win / 2
+        c = np.where(lo <= hi, np.clip(c, lo, hi), fc)
+        out[wide, 0], out[wide, 2] = c[wide] - win / 2, c[wide] + win / 2
+    if union is not None:                         # drifted off the subject (holds under half of it): the
+                                                  # subject's own box that frame
+        iw = np.clip(np.minimum(out[:, 2], union[:, 2]) - np.maximum(out[:, 0], union[:, 0]), 0, None)
+        off = ~np.isnan(union[:, 0]) & (np.nan_to_num(iw / np.maximum(union[:, 2] - union[:, 0], 1e-6)) < 0.5)
+        out[off] = union[off]
+    return out, face[fo] | face[1 - fo]
 
 
 def _gap(a, b):

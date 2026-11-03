@@ -4,9 +4,13 @@ portrait reels use it), where the editor marks as many in-out selections per cli
 every selection that plays them back to back.
 
     review/sources.html  (+ review/sources/<unit>.jpg: a filmstrip per clip, one frame a second)
+    focalcut/reel/previews/<unit>.mp4: what the page plays for exports bigger than 1080p (4K H.264 seeks too slowly
+    in a browser to scrub, and vertical 4K is past most hardware decoders): 1280 px on the long side, a keyframe every
+    0.2 s, same timeline. reel.json "previews": false plays the exports themselves.
 
 Selections are picks "add" ranges ("1:12.40-1:15.10", export time): the planner puts each in the reel as one shot, from its
-in-point, for its length. Served by `focalcut reel serve`, the page saves picks.json itself on every change; opened as a file, it
+in-point, for its length. One selection can open the reel (the clip's "open": its in-out, under the event's logo) and
+one can end it ("end"), set with the pick editor's Opening and Ending buttons. Served by `focalcut reel serve`, the page saves picks.json itself on every change; opened as a file, it
 keeps changes in the browser and offers a download.
 """
 from __future__ import annotations
@@ -17,10 +21,15 @@ import json
 import math
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
+
+from . import hw
 
 TILE = (160, 90)          # filmstrip frame size
 MAX_TILES = 400           # a longer clip gets a frame every dur / MAX_TILES seconds
+PREVIEW_EDGE = 1280       # long side of the page's preview copies
+PREVIEW_OVER = 1920       # exports bigger than this on either side get one
 
 
 def duration(f):
@@ -39,15 +48,58 @@ def created(f):
         return None
 
 
-def filmstrip(video, jpg, dur):
-    """One row of frames across the clip, from keyframes only (the exports have one every 0.5 s), so it is quick."""
+def size(f):
+    """(width, height) as displayed, rotation tag applied."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "stream=width,height:stream_side_data=rotation", "-of", "json", f],
+                         capture_output=True, text=True).stdout
+    try:
+        st = json.loads(out)["streams"][0]
+    except (ValueError, KeyError, IndexError):
+        return TILE
+    w, h = st.get("width", TILE[0]), st.get("height", TILE[1])
+    rot = next((abs(int(d.get("rotation", 0))) for d in st.get("side_data_list", []) if "rotation" in d), 0)
+    return (h, w) if rot % 180 == 90 else (w, h)
+
+
+def tile(w, h):
+    """A clip's filmstrip frame: TILE's height at the clip's own shape (a vertical clip gets narrow frames, so the
+    timeline shows more of them), never wider than TILE."""
+    return TILE if w / h >= TILE[0] / TILE[1] - 0.02 else (max(2, round(TILE[1] * w / h / 2) * 2), TILE[1])
+
+
+def filmstrip(video, jpg, dur, size=TILE):
+    """One row of frames across the clip, from keyframes only (the exports have one every 0.5 s), so it is quick.
+    Each frame keeps its shape inside the tile, as the player shows it."""
     step = max(1.0, dur / MAX_TILES)
     n = max(1, math.ceil(dur / step))
     if not os.path.exists(jpg):
+        fit = (f"scale={size[0]}:{size[1]}:force_original_aspect_ratio=decrease,"
+               f"pad={size[0]}:{size[1]}:(ow-iw)/2:(oh-ih)/2")
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-skip_frame", "nokey", "-i", video, "-vf",
-                        f"fps=1/{step},scale={TILE[0]}:{TILE[1]},tile={n}x1", "-frames:v", "1", "-q:v", "5", jpg],
+                        f"fps=1/{step},{fit},tile={n}x1", "-frames:v", "1", "-q:v", "5", jpg],
                        check=False)
     return step, n
+
+
+def preview(video, out, wh):
+    """The page's copy of a big export (see the module notes); decoded and scaled on the GPU when it can be."""
+    if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(video):
+        return True
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    scale = (f"-2:{PREVIEW_EDGE}" if wh[1] > wh[0] else f"{PREVIEW_EDGE}:-2")
+    enc = (["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "28"] if hw.nvenc()
+           else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26"])
+    tail = ["-an", *enc, "-g", "10", "-bf", "0", "-pix_fmt", "yuv420p", "-movflags", "+faststart", out + ".tmp.mp4"]
+    for dec, vf in ((["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"], f"scale_cuda={scale}:format=yuv420p"),
+                    ([], f"scale={scale}")):
+        r = subprocess.run(["ffmpeg", "-v", "error", "-y", *dec, "-i", video, "-vf", vf, *tail], capture_output=True)
+        if r.returncode == 0:
+            os.replace(out + ".tmp.mp4", out)
+            return True
+    if os.path.exists(out + ".tmp.mp4"):
+        os.remove(out + ".tmp.mp4")
+    return False
 
 
 def clips(project, page_dir, plans):
@@ -59,14 +111,26 @@ def clips(project, page_dir, plans):
     clock_shift = float(project.config.get("clock_offset_h", 0.0))
     strips = os.path.join(page_dir, "sources")
     os.makedirs(strips, exist_ok=True)
+    found = [(u, os.path.join(project.export_dir, u.get("category", ""), u["id"] + ".mp4")) for u in units]
+    found = [(u, f) for u, f in found if "#" not in u["id"] and os.path.exists(f)]
+    sizes = {u["id"]: size(f) for u, f in found}
+    plays = {u["id"]: f for u, f in found}
+    big = [(u, f) for u, f in found if max(sizes[u["id"]]) > PREVIEW_OVER]
+    if big and project.config.get("previews", True) is not False:
+        print(f"[reel] sources: preview copies of {len(big)} clips bigger than 1080p (once)", flush=True)
+        prev = {u["id"]: project.path("previews", u["id"] + ".mp4") for u, _ in big}
+        with ThreadPoolExecutor(3) as ex:
+            ok = list(ex.map(lambda uf: preview(uf[1], prev[uf[0]["id"]], sizes[uf[0]["id"]]), big))
+        plays.update({u["id"]: prev[u["id"]] for (u, _), good in zip(big, ok) if good})
     out = []
-    for u in units:
-        f = os.path.join(project.export_dir, u.get("category", ""), u["id"] + ".mp4")
-        if "#" in u["id"] or not os.path.exists(f):
-            continue
+    for u, f in found:
         x0 = u.get("export_t0", 0.0)
         d = duration(f)
-        step, n = filmstrip(f, os.path.join(strips, u["id"] + ".jpg"), d)
+        w, h = sizes[u["id"]]
+        tw, th = tile(w, h)
+        name = u["id"] + ("" if (tw, th) == TILE else f"_{tw}x{th}")
+        step, n = filmstrip(f, os.path.join(strips, name + ".jpg"), d, (tw, th))
+        strip = f"sources/{quote(name)}.jpg"
         src = os.path.join(project.folder, u["source"])
         c = created(src) if os.path.exists(src) else None
         clock = (c + dt.timedelta(hours=clock_shift, seconds=u["t0"])).strftime("%H:%M") if c else ""
@@ -75,8 +139,8 @@ def clips(project, page_dir, plans):
                       for i, s in enumerate(p["shots"]) if s["unit"]["id"] == u["id"]] for fmt, p in plans.items()}
         out.append(dict(id=u["id"], cat=u.get("category", ""), tag=u.get("tag", ""), clock=clock,
                         sort=(c + dt.timedelta(seconds=u["t0"])).isoformat() if c else u["id"], dur=round(d, 2),
-                        video=quote(os.path.relpath(f, page_dir).replace(os.sep, "/")),
-                        strip=f"sources/{quote(u['id'])}.jpg", step=step, n=n,
+                        video=quote(os.path.relpath(plays[u["id"]], page_dir).replace(os.sep, "/")), ar=round(w / h, 4),
+                        strip=strip, tile=[tw, th], step=step, n=n,
                         moments=[[round(m["t"] - x0, 2), m["kind"]] for m in ms if m["t"] - x0 >= 0],
                         L=uses.get("landscape", []), P=uses.get("portrait", [])))
     out.sort(key=lambda c: c["sort"])
@@ -196,7 +260,8 @@ letter-spacing:.05em}
 .blk{top:3px;bottom:3px;border-radius:4px;background:color-mix(in srgb,var(--sel) 45%,transparent);
 border:2px solid var(--sel);cursor:grab;font-size:11px;color:var(--fg);padding-left:4px;overflow:hidden;
 white-space:nowrap;font-weight:600}.blk.act{background:color-mix(in srgb,var(--sel) 75%,transparent);color:#000}
-.blk .h{position:absolute;top:0;bottom:0;width:7px;cursor:ew-resize}.blk .h.l{left:-2px}.blk .h.r{right:-2px}
+.blk .h{position:absolute;top:0;bottom:0;width:5px;cursor:ew-resize;background:var(--sel);opacity:0}.blk .h.l{left:0}.blk .h.r{right:0}
+#lsel .blk:hover .h{opacity:.9}
 .pend{top:3px;bottom:3px;border:2px dashed var(--io);background:color-mix(in srgb,var(--io) 22%,transparent);
 border-radius:4px;pointer-events:none}
 .pt{top:2px;bottom:2px;width:3px;background:var(--sel);border-radius:2px}
@@ -286,7 +351,7 @@ font:12px ui-monospace,monospace;pointer-events:none}.frl b{color:var(--io)}
 <div id=tl class=tl>
 <div id=ruler title="click or drag to scrub"></div>
 <div id=strip title="click or drag to scrub; scroll to zoom, shift+scroll to pan"><canvas></canvas></div>
-<div id=lsel class=lane title="drag here to make a selection; drag a selection to move it, its edges to trim"><span class=lab>selections</span></div>
+<div id=lsel class=lane title="drag here to make a selection; drag a selection to move it, either end to make it longer or shorter"><span class=lab>selections</span></div>
 <div id=lland class=lane><span class=lab>landscape</span></div><div id=lport class=lane><span class=lab>portrait</span></div>
 </div>
 <div id=mysel></div>
@@ -318,7 +383,8 @@ Each selection goes in the reel starting at its in-point.</div>
 <span class=grp>Slip <button data-n="slip:-0.5" title="move the whole pick earlier (,)">◀ ½s</button><button data-n="slip:-0.02">◀ f</button>
 <button data-n="slip:0.02">f ▶</button><button data-n="slip:0.5" title="move the whole pick later (.)">½s ▶</button></span>
 <button id=pframe class=frt title="portrait crop; drag on the picture to set a focal point (F)">▯ Portrait <kbd>F</kbd></button>
-<button id=pfclr title="remove this pick's focal points">Clear focus</button><span class=sp></span><button id=popen title="open this clip in Clips">Open in Clips</button><button id=pdel title="remove (Backspace)">✕ Remove</button></div>
+<button id=pfclr title="remove this pick's focal points">Clear focus</button>
+<span class=grp><button id=pfirst title="open the reel on this pick, under the event's logo (one opening per reel)">★ Opening</button><button id=plast title="end the reel on this pick (one ending per reel)">⚑ Ending</button></span><span class=sp></span><button id=popen title="open this clip in Clips">Open in Clips</button><button id=pdel title="remove (Backspace)">✕ Remove</button></div>
 <div id=pt class=tl><div id=pruler></div><div id=pstrip title="drag the edges to trim or lengthen, the block to slip it, anywhere else to scrub; scroll to zoom"><canvas></canvas></div></div>
 <p style="color:var(--mut);font-size:12px;margin:6px 0 0">Drag the pick's edges to lengthen or trim, drag the block to slip it, click
 elsewhere to scrub · tick cards (<kbd>X</kbd>, shift-click for a range, <kbd>A</kbd> all the planner's) then <kbd>Delete</kbd> drops them all · <kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> previous / next pick · <kbd>I</kbd>/<kbd>O</kbd> in / out
@@ -366,6 +432,13 @@ function setSels(id,list){const e=ent(id);const pts=(e.add||[]).filter(v=>!isRan
  list=list.map(([a,b])=>[Math.max(0,Math.min(a,b)),Math.max(a,b)]).filter(([a,b])=>b-a>=0.1).sort((x,y)=>x[0]-y[0]);
  e.add=[...pts,...list.map(([a,b])=>fmt(a)+"-"+fmt(b))];save()}
 function banned(id){return((P[id]||{}).ban||[])}
+// one pick opens the reel and one ends it: the clip's "open" / "end" is that pick's in-out (it stays a selection too)
+const same=(v,a,b)=>{if(!v)return false;const[u,w]=span(v);return Math.abs(u-a)<0.01&&Math.abs(w-b)<0.01};
+function roleOf(id,a,b){const e=P[id]||{};return same(e.open,a,b)?"open":same(e.end,a,b)?"end":null}
+function setRole(x,f){const on=same((P[x.c.id]||{})[f],x.a,x.b);
+ for(const k in P){const e=P[k];if(k[0]!="_"&&e&&typeof e=="object"&&!Array.isArray(e))delete e[f]}
+ if(!on){const e=ent(x.c.id);e[f]=fmt(x.a)+"-"+fmt(x.b);if(x.k<0){const ss=sels(x.c.id);ss.push([x.a,x.b]);return setSels(x.c.id,ss)}}
+ save();status(on?`no ${f=="open"?"opening":"ending"} pick: the planner chooses`:`${x.c.id} ${fmt(x.a)} ${f=="open"?"opens":"ends"} the reel`,"ok")}
 // --- clip list ---
 let cur=0,cat="all",onlySel=false,rub=null;const seen=new Set(ls.get("seen")||[]);
 const C=()=>D.clips[cur];
@@ -376,12 +449,16 @@ $("filters").onclick=ev=>{const b=ev.target.closest("button");if(!b)return;if(b.
  b.classList.toggle("on",onlySel)}else{cat=b.dataset.c;$("filters").querySelectorAll("[data-c]").forEach(x=>
  x.classList.toggle("on",x===b))}list()};
 const visible=()=>D.clips.map((c,i)=>i).filter(i=>(cat=="all"||D.clips[i].cat==cat)&&(!onlySel||sels(D.clips[i].id).length));
-const thumbAt=(c,t,h)=>{const k=Math.min(c.n-1,Math.max(0,Math.floor(t/c.step))),s=h/TH;
- return`background-image:url('${c.strip}');background-size:${c.n*TW*s}px ${h}px;background-position:-${k*TW*s}px 0`};
+// a clip's frame at t as a background, h tall; in a box W wide, a narrower (vertical) frame sits in the middle, its
+// neighbours in the strip clipped off
+const tileOf=c=>c.tile||[TW,TH];
+const thumbAt=(c,t,h,W)=>{const[tw,th]=tileOf(c),k=Math.min(c.n-1,Math.max(0,Math.floor(t/c.step))),s=h/th,pad=W?Math.max(0,(W-tw*s)/2):0;
+ return`background-image:url('${c.strip}');background-size:${c.n*tw*s}px ${h}px;background-position:-${k*tw*s}px 0`+
+  (pad?`;box-sizing:border-box;padding-left:${pad}px;padding-right:${pad}px;background-origin:content-box;background-clip:content-box`:"")};
 function list(){$("list").innerHTML=visible().map(i=>{const c=D.clips[i],n=sels(c.id).length,
  tot=sels(c.id).reduce((a,[x,y])=>a+y-x,0),bn=banned(c.id).includes("all");
  return`<div class="ci${i==cur?" cur":""}${seen.has(c.id)?" seen":""}" data-i=${i} style="${bn?"opacity:.4":""}">
- <div class=th style="${thumbAt(c,c.dur*0.3,54)}">${n?`<b>${n}</b>`:""}</div><div><div class=nm>${esc(c.id)}</div>
+ <div class=th style="${thumbAt(c,c.dur*0.3,54,96)}">${n?`<b>${n}</b>`:""}</div><div><div class=nm>${esc(c.id)}</div>
  <div class=meta><span class=chip>${esc(c.cat)}</span> ${esc(c.clock)} · ${short(c.dur)}${n?` · <span style="color:var(--sel)">● ${short(tot)}</span>`:""}</div>
  <div class=meta>${c.L.length?`<span style="color:var(--land)">L${c.L.length}</span> `:""}${c.P.length?`<span style="color:var(--port)">P${c.P.length}</span>`:""}${bn?" banned":""}</div></div></div>`}).join("");
  const el=$("list").querySelector(".cur");if(el)el.scrollIntoView({block:"nearest"})}
@@ -389,23 +466,27 @@ $("list").onclick=ev=>{const d=ev.target.closest(".ci");if(d)go(+d.dataset.i)};
 // --- player + timeline ---
 const vid=$("vid"),tl=$("tl"),ov=$("ov"),hov=$("hover");
 let va=0,vb=1,inPt=null,outPt=null,act=-1,loop=false,shuttle=0,rew=null,drag=null,img=new Image();
-const now=()=>vid.currentTime||0,dur=()=>C().dur||vid.duration||1;
+// scrubbing: one seek in flight per video, the next goes to wherever the pointer is by then (a new currentTime on every
+// mouse move restarts the seek, so the picture would never catch up until the mouse stops)
+function goTo(v,t){if(v.seeking){v._want=t;return}v._want=null;v.currentTime=t}
+for(const v of[$("vid"),$("pv")])v.addEventListener("seeked",()=>{if(v._want!=null){const t=v._want;v._want=null;v.currentTime=t}});
+const now=()=>vid._want??(vid.currentTime||0),dur=()=>C().dur||vid.duration||1;
 function go(i,first){if(i<0||i>=D.clips.length)return;cur=i;const c=C();seen.add(c.id);ls.set("seen",[...seen]);
  ls.set("clip",c.id);inPt=outPt=null;act=-1;loop=false;stopShuttle();vid.pause();
  vid.src=c.video;va=0;vb=c.dur;img=new Image();img.onload=paint;img.src=c.strip;
  $("cname").textContent=c.id;$("cmeta").innerHTML=`<span class=chip>${esc(c.cat)}</span> ${esc(c.tag)} · ${esc(c.clock)}
   · ${short(c.dur)} · clip ${i+1} of ${D.clips.length}`;
  vid.addEventListener("loadedmetadata",()=>{vid.currentTime=0;renderAll()},{once:true});renderAll()}
-function seek(t){if(rew)stopShuttle();vid.currentTime=Math.min(Math.max(0,t),dur()-0.02);follow();draw()}
+function seek(t){if(rew)stopShuttle();goTo(vid,Math.min(Math.max(0,t),dur()-0.02));follow();draw()}
 function follow(){const t=now(),w=vb-va;if(t<va||t>vb){va=Math.max(0,Math.min(t-w*0.1,dur()-w));vb=va+w;paint()}}
 const X=(t,a=va,b=vb)=>(100*(t-a)/(b-a)).toFixed(3)+"%";
 function wspan(a,b,A=va,B=vb){const x0=Math.max(a,A),x1=Math.min(b,B);return`left:${X(x0,A,B)};width:${(100*(x1-x0)/(B-A)).toFixed(3)}%`}
 function film(canvas,A,B,h,c=C(),im=img){const r=canvas.getBoundingClientRect(),dpr=devicePixelRatio||1,img=im;
  canvas.width=Math.max(1,r.width*dpr);canvas.height=h*dpr;const g=canvas.getContext("2d");
  g.fillStyle="#000";g.fillRect(0,0,canvas.width,canvas.height);if(!img.complete||!img.naturalWidth)return;
- const tw=h*TW/TH*dpr,W=canvas.width;
+ const[TW_,TH_]=tileOf(c),tw=h*TW_/TH_*dpr,W=canvas.width;
  for(let x=0;x<W;x+=tw){const t=A+(x+tw/2)/W*(B-A);if(t>c.dur)break;
-  const k=Math.min(c.n-1,Math.max(0,Math.floor(t/c.step)));g.drawImage(img,k*TW,0,TW,TH,x,0,tw,h*dpr)}}
+  const k=Math.min(c.n-1,Math.max(0,Math.floor(t/c.step)));g.drawImage(img,k*TW_,0,TW_,TH_,x,0,tw,h*dpr)}}
 function paint(){film($("strip").querySelector("canvas"),va,vb,80);film(ov.querySelector("canvas"),0,dur(),30);draw()}
 function draw(){const c=C();if(!c)return;const W=vb-va,t=now();
  // ruler
@@ -442,9 +523,9 @@ function draw(){const c=C();if(!c)return;const W=vb-va,t=now();
  sels(c.id).forEach(([a,b])=>o+=`<i class=blk style="${wspan(a,b,0,D0)};top:4px;bottom:4px;pointer-events:none"></i>`);
  o+=`<i class=win style="${wspan(va,vb,0,D0)}"></i><i class=ph style="left:${X(t,0,D0)}"></i>`;ov.insertAdjacentHTML("beforeend",o);
  $("tc").textContent=fmt(t)+"  /  "+short(D0);
- const st=$("still"),noVid=vid.error||vid.readyState<2||vid.seeking;st.classList.toggle("on",!!noVid);
- if(noVid){const r=$("vwrap").getBoundingClientRect(),h=Math.min(r.height,r.width*TH/TW);
-  st.setAttribute("style",thumbAt(c,t,h)+`;width:${h*TW/TH}px;height:${h}px;left:${(r.width-h*TW/TH)/2}px;top:${(r.height-h)/2}px`)}
+ const st=$("still"),noVid=vid.error||vid.readyState<2&&!vid.seeking||!vid.videoWidth;st.classList.toggle("on",!!noVid);
+ if(noVid){const r=$("vwrap").getBoundingClientRect(),[tw,th]=tileOf(c),h=Math.min(r.height,r.width*th/tw);
+  st.setAttribute("style",thumbAt(c,t,h)+`;width:${h*tw/th}px;height:${h}px;left:${(r.width-h*tw/th)/2}px;top:${(r.height-h)/2}px`)}
  $("io").textContent=(inPt===null&&outPt===null)?"":"in "+(inPt===null?"—":fmt(inPt))+"  out "+(outPt===null?"—":fmt(outPt))+
   (io?"  ("+(io[1]-io[0]).toFixed(2)+" s)":"");
  $("play").textContent=vid.paused&&!rew?"▶ Play":"❚❚ Pause";
@@ -476,7 +557,7 @@ function counts(){const n=f=>D.clips.reduce((a,c)=>a+f(c),0),L=n(c=>c.L.length),
   it(unseen,"clips not looked at yet")].filter(Boolean).join(" · ")}
 // timeline mouse: scrub on ruler/strip/overview; make, move and trim selections in the selections lane
 function tAt(el,ev,A=va,B=vb){const r=el.getBoundingClientRect();return A+Math.min(Math.max((ev.clientX-r.left)/r.width,0),1)*(B-A)}
-function showHover(ev,t,el){const c=C();hov.style.display="block";hov.querySelector("div").setAttribute("style",thumbAt(c,t,108));
+function showHover(ev,t,el){const c=C();hov.style.display="block";hov.querySelector("div").setAttribute("style",thumbAt(c,t,108,192));
  hov.querySelector("span").textContent=fmt(t);const r=el.getBoundingClientRect();
  hov.style.left=Math.min(innerWidth-205,Math.max(4,ev.clientX-100))+"px";hov.style.top=(r.top-136)+"px"}
 for(const el of[$("ruler"),$("strip")]){
@@ -489,18 +570,24 @@ function movewin(t){const w=vb-va;va=Math.max(0,Math.min(t-w/2,dur()-w));vb=va+w
 const near=(el,t,p)=>p!=null&&Math.abs(t-p)*el.getBoundingClientRect().width/(vb-va)<10;
 const snapT=(el,ev,p=now())=>{const t=tAt(el,ev);return near(el,t,p)?p:t};
 const L=$("lsel");
-L.addEventListener("pointerdown",ev=>{pause();L.setPointerCapture(ev.pointerId);const ph=now(),t=snapT(L,ev,ph),b=ev.target.closest(".blk");
- if(b){const k=+b.dataset.k,ss=sels(C().id);act=k;
-  drag={k:ev.target.classList.contains("l")?"trimL":ev.target.classList.contains("r")?"trimR":"move",i:k,t0:tAt(L,ev),
-   orig:ss[k].slice(),ss,moved:false,ph}}
+// a selection's edge within 8 px of the pointer, inside or just outside the block (the nearer one wins)
+function edgeAt(ev){const r=L.getBoundingClientRect(),px=(r.right-r.left)/(vb-va),x=ev.clientX-r.left;let best=null,bd=8;
+ sels(C().id).forEach(([a,b],k)=>{for(const[t,side]of[[a,"trimL"],[b,"trimR"]]){const d=Math.abs((t-va)*px-x);
+  if(d<=bd){bd=d;best={k,side}}}});return best}
+L.addEventListener("pointerdown",ev=>{pause();L.setPointerCapture(ev.pointerId);const ph=now(),t=snapT(L,ev,ph),b=ev.target.closest(".blk"),
+  e=edgeAt(ev);
+ if(e||b){const k=e?e.k:+b.dataset.k,ss=sels(C().id);act=k;
+  drag={k:e?e.side:"move",i:k,t0:tAt(L,ev),orig:ss[k].slice(),ss,moved:false,ph}}
  else drag={k:"new",a:t,b:t,ph};draw()});
-L.addEventListener("pointermove",ev=>{showHover(ev,tAt(L,ev),tl);if(!drag||drag.el)return;const t=snapT(L,ev,drag.ph);
+L.addEventListener("pointermove",ev=>{showHover(ev,tAt(L,ev),tl);
+ L.style.cursor=drag?(drag.k.startsWith("trim")?"ew-resize":""):edgeAt(ev)?"ew-resize":"";if(!drag||drag.el)return;const t=snapT(L,ev,drag.ph);
  if(drag.k=="new"){drag.b=t;inPt=Math.min(drag.a,t);outPt=Math.max(drag.a,t);seek(t)}
  else{const o=drag.orig,d=t-drag.t0;if(Math.abs(d)>0.03)drag.moved=true;let[a,b]=o;
   if(drag.k=="move"){const w=b-a;a=Math.max(0,Math.min(o[0]+tAt(L,ev)-drag.t0,dur()-w));
    if(near(L,a,drag.ph))a=drag.ph;else if(near(L,a+w,drag.ph))a=drag.ph-w;b=a+w}
-  else if(drag.k=="trimL"){a=Math.min(t,b-0.1);seek(a)}else{b=Math.max(t,a+0.1);seek(b)}
-  drag.ss[drag.i]=[a,b];const blk=L.querySelector(`.blk[data-k="${drag.i}"]`);if(blk)blk.setAttribute("style",wspan(a,b))}});
+  else if(drag.k=="trimL"){a=Math.max(0,Math.min(t,b-0.1));seek(a)}else{b=Math.min(dur(),Math.max(t,a+0.1));seek(b)}
+  drag.ss[drag.i]=[a,b];const blk=L.querySelector(`.blk[data-k="${drag.i}"]`);
+  if(blk){blk.setAttribute("style",wspan(a,b));blk.childNodes[1].textContent=`${drag.i+1} · ${(b-a).toFixed(1)}s`}}});
 L.addEventListener("pointerup",ev=>{if(!drag||drag.el)return;const c=C();
  if(drag.k=="new"){if(Math.abs(drag.b-drag.a)>=0.2){const ss=sels(c.id);ss.push([Math.min(drag.a,drag.b),Math.max(drag.a,drag.b)]);
    inPt=outPt=null;drag=null;setSels(c.id,ss);act=sels(c.id).findIndex(([a])=>Math.abs(a-Math.min(...ss[ss.length-1]))<0.01);renderAll()}
@@ -539,7 +626,7 @@ function pause(){vid.pause();stopShuttle();draw()}
 function playL(){if(rew)stopShuttle();shuttle=vid.paused?1:Math.min((shuttle||1)*2,8);
  vid.playbackRate=+$("rate").value*shuttle;vid.play()}
 function playJ(){vid.pause();shuttle=0;const n=rew?Math.min(rew.n*2,8):1;if(rew)clearInterval(rew.id);
- rew={n,id:setInterval(()=>{if(now()<=0)return stopShuttle();vid.currentTime=Math.max(0,now()-0.04*n);follow();draw()},40)};draw()}
+ rew={n,id:setInterval(()=>{if(now()<=0)return stopShuttle();goTo(vid,Math.max(0,now()-0.04*n));follow();draw()},40)};draw()}
 const step=d=>{pause();seek(now()+d)};
 vid.addEventListener("play",()=>{const f=()=>{const ss=sels(C().id);
   if(loop&&act>=0&&ss[act]&&now()>=ss[act][1])vid.currentTime=ss[act][0];
@@ -615,12 +702,13 @@ function selview(){order=allSels();
  let h="",sep=false;order.forEach((x,k)=>{if(!x.shot&&!sep){sep=true;h+=`<div class=catgrp>Not in the cut yet — placed on the next re-plan</div>`}
   const ck=chosen.has(ckey(x));
   h+=`<div class="card${k==j?" act":""}${x.cut?" cut":""}${ck?" chk":""}" data-j=${k}><div class=th data-j=${k}></div>
-  <div class=bd><div><b>${x.shot?(x.shot.fmt=="L"?"Shot ":"Portrait shot ")+x.shot.n:"New"}</b> ${x.cut?"":"<span class=tag>pick</span> "}· ${esc(x.c.id)}<br>
+  <div class=bd><div><b>${x.shot?(x.shot.fmt=="L"?"Shot ":"Portrait shot ")+x.shot.n:"New"}</b> ${x.cut?"":"<span class=tag>pick</span> "}${{open:"<span class=tag>★ opening</span> ",end:"<span class=tag>⚑ ending</span> "}[roleOf(x.c.id,x.a,x.b)]||""}· ${esc(x.c.id)}<br>
   <small>${fmt(x.a)} – ${fmt(x.b)} · <b>${(x.b-x.a).toFixed(2)} s</b> · ${esc(x.c.clock)}</small></div>
   <div><button data-del=${k} title="${x.cut?"take this shot out of the cut (bans its stretch)":"remove this pick"}">✕</button></div></div></div>`});
  $("cards").innerHTML=h||`<p style="color:var(--mut)">No picks yet — choose footage in Sources.</p>`;
- $("cards").querySelectorAll(".th").forEach(el=>{const x=order[+el.dataset.j],w=el.clientWidth||200,hh=w*TH/TW;
-  el.setAttribute("style",thumbAt(x.c,x.a,hh));
+ const ths=$("cards").querySelectorAll(".th"),tw0=(ths[0]&&ths[0].clientWidth)||200;
+ ths.forEach(el=>{const x=order[+el.dataset.j],hh=tw0*TH/TW;
+  el.setAttribute("style",thumbAt(x.c,x.a,hh,tw0));
   el.innerHTML=`<span>${k1(el)}</span><input type=checkbox class=ck data-ck=${el.dataset.j} title="select (shift-click: a range)"${chosen.has(ckey(x))?" checked":""}>`});
  function k1(el){const x=order[+el.dataset.j];return (+el.dataset.j+1)+" · "+(x.b-x.a).toFixed(1)+"s"}
  $("ped").style.display=PX()?"block":"none";if(PX())pdraw()}
@@ -642,10 +730,11 @@ function pick(j,play){const x=order[j];if(!x)return stopAll();pk={id:x.c.id,a:x.
 // change the current pick's in / out (lengthen, trim, slip); it keeps its place in the cut
 function edit(a,b){const x=PX();if(!x)return;const L=x.c.dur;if(b-a<0.1)return;
  if(a<0){b-=a;a=0}if(b>L){a-=b-L;b=L}a=Math.max(0,a);
+ const e0=P[x.c.id]||{};for(const f of["open","end"])if(same(e0[f],x.a,x.b))e0[f]=fmt(a)+"-"+fmt(b);   // (its role goes with it)
  const ss=sels(x.c.id);if(x.k>=0)ss[x.k]=[a,b];else ss.push([a,b]);place.set(pfmt+"|"+pkey(x.c.id,a),x.shot);pk={id:x.c.id,a};
  if(a<pa||b>pb){const ctx=Math.max(2,(b-a)*0.75);pa=Math.max(0,a-ctx);pb=Math.min(L,b+ctx)}
  setSels(x.c.id,ss)}
-const pnow=()=>pv.currentTime||0;
+const pnow=()=>pv._want??(pv.currentTime||0);
 function pdraw(){const x=PX();if(!x)return;const T=$("pt"),W=pb-pa,t=pnow();
  film($("pstrip").querySelector("canvas"),pa,pb,64,x.c,pimg);
  T.querySelectorAll(":scope>i,#pstrip>i").forEach(e=>e.remove());let a=x.a,b=x.b;if(pdrag&&pdrag.cur)[a,b]=pdrag.cur;
@@ -659,24 +748,25 @@ function pdraw(){const x=PX();if(!x)return;const T=$("pt"),W=pb-pa,t=pnow();
  for(let v=Math.ceil(pa/step)*step;v<=pb;v+=step)r+=`<i class="tk" style="left:${X(v,pa,pb)}"></i>`;
  $("pruler").innerHTML=r+`<i class=lb style="left:${X(a,pa,pb)}">in ${fmt(a)}</i><i class=lb style="left:${X(b,pa,pb)}">out ${fmt(b)}</i>`;
  $("plen").textContent=(b-a).toFixed(2)+" s";
+ const ro=roleOf(x.c.id,x.a,x.b);$("pfirst").classList.toggle("on",ro=="open");$("plast").classList.toggle("on",ro=="end");
  $("pvtc").textContent=(pj()+1)+"/"+order.length+" · "+x.c.id+" · "+fmt(t);
  $("pplay").textContent=pv.paused?"▶ Play pick":"❚❚ Pause";$("ploop").classList.toggle("on",mode=="loop");
- const st=$("pstill"),no=pv.error||pv.readyState<2||pv.seeking;st.classList.toggle("on",!!no);
- if(no){const R=$("pvwrap").getBoundingClientRect(),hh=Math.min(R.height,R.width*TH/TW);
-  st.setAttribute("style",thumbAt(x.c,t,hh)+`;width:${hh*TW/TH}px;height:${hh}px;left:${(R.width-hh*TW/TH)/2}px;top:${(R.height-hh)/2}px`)}
+ const st=$("pstill"),no=pv.error||pv.readyState<2&&!pv.seeking||!pv.videoWidth;st.classList.toggle("on",!!no);
+ if(no){const R=$("pvwrap").getBoundingClientRect(),[tw,th]=tileOf(x.c),hh=Math.min(R.height,R.width*th/tw);
+  st.setAttribute("style",thumbAt(x.c,t,hh)+`;width:${hh*tw/th}px;height:${hh}px;left:${(R.width-hh*tw/th)/2}px;top:${(R.height-hh)/2}px`)}
  frameDraw($("pfr"),$("pvwrap"),pv,x.c,x.a,x.b,t)}
 const PT=$("pstrip");
 PT.addEventListener("pointerdown",ev=>{const x=PX();if(!x)return;pv.pause();PT.setPointerCapture(ev.pointerId);
  const t=tAt(PT,ev,pa,pb),blk=ev.target.closest(".blk");
  pdrag=blk?{k:ev.target.classList.contains("l")?"l":ev.target.classList.contains("r")?"r":"slip",t0:t,o:[x.a,x.b],cur:[x.a,x.b]}:{k:"scrub"};
- if(!blk)pv.currentTime=t;pdraw()});
+ if(!blk)goTo(pv,t);pdraw()});
 PT.addEventListener("pointermove",ev=>{const x=PX();if(!x)return;const t=tAt(PT,ev,pa,pb);
- hov.style.display="block";hov.querySelector("div").setAttribute("style",thumbAt(x.c,t,108));hov.querySelector("span").textContent=fmt(t);
+ hov.style.display="block";hov.querySelector("div").setAttribute("style",thumbAt(x.c,t,108,192));hov.querySelector("span").textContent=fmt(t);
  const R=PT.getBoundingClientRect();hov.style.left=Math.min(innerWidth-205,Math.max(4,ev.clientX-100))+"px";hov.style.top=(R.top-136)+"px";
- if(!pdrag)return;if(pdrag.k=="scrub"){pv.currentTime=t;pdraw();return}
+ if(!pdrag)return;if(pdrag.k=="scrub"){goTo(pv,t);pdraw();return}
  let[a,b]=pdrag.o;const d=t-pdrag.t0;
- if(pdrag.k=="slip"){const w=b-a;a=Math.max(0,Math.min(a+d,x.c.dur-w));b=a+w;pv.currentTime=a}
- else if(pdrag.k=="l"){a=Math.max(0,Math.min(t,b-0.1));pv.currentTime=a}else{b=Math.min(x.c.dur,Math.max(t,a+0.1));pv.currentTime=b}
+ if(pdrag.k=="slip"){const w=b-a;a=Math.max(0,Math.min(a+d,x.c.dur-w));b=a+w;goTo(pv,a)}
+ else if(pdrag.k=="l"){a=Math.max(0,Math.min(t,b-0.1));goTo(pv,a)}else{b=Math.min(x.c.dur,Math.max(t,a+0.1));goTo(pv,b)}
  pdrag.cur=[a,b];pdraw()});
 PT.addEventListener("pointerup",()=>{const d=pdrag;pdrag=null;if(d&&d.cur&&(d.cur[0]!==d.o[0]||d.cur[1]!==d.o[1]))edit(...d.cur);else pdraw()});
 PT.addEventListener("pointerleave",()=>hov.style.display="none");
@@ -699,9 +789,11 @@ $("ped").onclick=ev=>{const b=ev.target.closest("button");if(!b)return;const x=P
  else if(b.id=="pprev")pick(Math.max(0,pj()-1),!pv.paused);else if(b.id=="pnext")pick(Math.min(order.length-1,pj()+1),!pv.paused)
  else if(b.id=="pin")edit(Math.min(pnow(),x.b-0.1),x.b);else if(b.id=="pout")edit(x.a,Math.max(pnow(),x.a+0.1))
  else if(b.id=="popen"){view(1);go(x.i);act=x.k;vid.addEventListener("loadedmetadata",()=>seek(x.a),{once:true})}
+ else if(b.id=="pfirst")setRole(x,"open");else if(b.id=="plast")setRole(x,"end")
  else if(b.id=="pdel"){const j=pj();pk=null;pv.pause();drop(x);if(order[j])pick(j,false)}};
 // a pick goes; a shot of the cut is banned, so the next re-plan puts something else there
-function drop(x){if(x.k>=0){const ss=sels(x.c.id);ss.splice(x.k,1);setSels(x.c.id,ss)}
+function drop(x){if(x.k>=0){const e=P[x.c.id]||{};for(const f of["open","end"])if(same(e[f],x.a,x.b))delete e[f];
+  const ss=sels(x.c.id);ss.splice(x.k,1);setSels(x.c.id,ss)}
  else{const e=ent(x.c.id);e.ban=e.ban||[];e.ban.push(fmt(x.a)+"-"+fmt(x.b));save()}}
 $("playall").onclick=()=>{mode="all";const j=Math.max(0,pj());pick(j,true)};
 $("stopall").onclick=stopAll;
@@ -713,20 +805,27 @@ const putKeys=(id,ks)=>{ent(id).portrait=ks.sort((p,q)=>p[0]-q[0]).map(([t,x,y])
 const clamp=(v,lo,hi)=>Math.min(Math.max(v,lo),hi);
 const lerp=(ts,vs,t)=>{if(t<=ts[0])return vs[0];for(let i=1;i<ts.length;i++)if(t<=ts[i]){const f=(t-ts[i-1])/(ts[i]-ts[i-1]||1);
  return vs[i-1]+f*(vs[i]-vs[i-1])}return vs[vs.length-1]};
-function derived(c,a,b){const k=c.id+"|"+a.toFixed(2)+"|"+b.toFixed(2);if(crops.has(k))return crops.get(k);
- if(!server){crops.set(k,false);return false}crops.set(k,undefined);
+// one request at a time (each is worked out by the server): a drag asks for a new stretch on every move, so only the
+// latest one waiting is fetched next, and the clip's last crop stands in meanwhile. Returns [crop, its a] or a state.
+let cropBusy=false,cropNext=null;const lastCrop=new Map();
+function fetchCrop(c,a,b,k){cropBusy=true;
  fetch(`${D.root}api/crop?id=${encodeURIComponent(c.id)}&a=${a.toFixed(3)}&b=${b.toFixed(3)}&fmt=portrait`)
-  .then(r=>r.ok?r.json():Promise.reject()).then(j=>crops.set(k,j)).catch(()=>crops.set(k,false)).then(()=>{draw();pdraw()});return undefined}
+  .then(r=>r.ok?r.json():Promise.reject()).then(j=>{crops.set(k,[j,a]);lastCrop.set(c.id,[j,a])}).catch(()=>crops.set(k,false))
+  .then(()=>{cropBusy=false;const n=cropNext;cropNext=null;if(n&&!crops.has(n[3]))fetchCrop(...n);draw();pdraw()})}
+function derived(c,a,b){const k=c.id+"|"+a.toFixed(2)+"|"+b.toFixed(2);if(crops.has(k))return crops.get(k)??lastCrop.get(c.id);
+ if(!server){crops.set(k,false);return false}
+ if(cropBusy)cropNext=[c,a,b,k];else{crops.set(k,undefined);fetchCrop(c,a,b,k)}return lastCrop.get(c.id)}
 // where the frame is worked out from: the selection or portrait reel shot under the playhead, else the 3 s around it
 function rangeFor(c,t){const s=sels(c.id).find(([a,b])=>t>=a-0.02&&t<=b+0.02)||c.P.find(([a,b])=>t>=a&&t<=b);
  if(s)return[s[0],s[1]];const a=Math.max(0,Math.min(Math.floor(t/3)*3,c.dur-3));return[a,Math.min(a+3,c.dur)]}
-function frameAt(c,a,b,t){const cr=derived(c,a,b);if(cr===undefined)return"wait";if(cr===false)return"off";if(cr===null)return"fills";
- const ts=cr.path.map(q=>a+q[0]),d={x:lerp(ts,cr.path.map(q=>q[1]),t),y:lerp(ts,cr.path.map(q=>q[2]),t)};
+function frameAt(c,a,b,t){const g=derived(c,a,b);if(g===undefined)return"wait";if(g===false)return"off";
+ const[cr,a0]=g;if(cr===null)return"fills";
+ const ts=cr.path.map(q=>a0+q[0]),d={x:lerp(ts,cr.path.map(q=>q[1]),t),y:lerp(ts,cr.path.map(q=>q[2]),t)};
  const ks=fkeys(c.id).filter(k=>k[0]>=a-0.5&&k[0]<=b+0.5);let o=null;
  if(ks.length){const kt=ks.map(k=>k[0]);o={x:clamp(lerp(kt,ks.map(k=>k[1]),t),cr.w/2,1-cr.w/2),
   y:clamp(lerp(kt,ks.map(k=>k[2]),t),cr.h/2,1-cr.h/2)}}
  return{d,o,w:cr.w,h:cr.h,z:cr.z}}
-function vrect(wrap,v){const R=wrap.getBoundingClientRect(),ar=v.videoWidth&&v.videoHeight?v.videoWidth/v.videoHeight:TW/TH;
+function vrect(wrap,v){const R=wrap.getBoundingClientRect(),ar=v.videoWidth&&v.videoHeight?v.videoWidth/v.videoHeight:(C()?.ar||TW/TH);
  const w=Math.min(R.width,R.height*ar),h=w/ar;return{l:(R.width-w)/2,t:(R.height-h)/2,w,h}}
 function frameDraw(el,wrap,v,c,a,b,t){el.classList.toggle("on",frameOn);$("fhelp").hidden=!frameOn;document.querySelectorAll(".frt").forEach(x=>x.classList.toggle("on",frameOn));
  if(!frameOn){el.innerHTML="";return}const F=frameAt(c,a,b,t);

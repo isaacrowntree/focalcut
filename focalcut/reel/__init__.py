@@ -1,7 +1,7 @@
 """Recap reels: beat-synced highlight reels cut from a curated footage folder.
 
-    units -> score -> shake -> focus -> subject -> semantic -> moments -> faces -> people -> music -> plan -> render
-          -> xml -> review
+    units -> score -> shake -> focus -> subject -> semantic -> moments -> faces -> people -> role -> music -> plan
+          -> render -> xml -> review
 
   score     poses, people, camera / subject motion, sharpness and exposure (RT-DETR + ViTPose, 5-10 fps)
   shake     camera jitter per source: shaky stretches are avoided, mildly shaky ones stabilised at render
@@ -10,6 +10,7 @@
   semantic  what the subject's crop shows (SigLIP 2 zero-shot): hips / butt working, an expressive face
   moments   ranked moves per unit, with how well each frames after reframing the 4K source
   people    everyone in the footage by face (YuNet + SFace), grouped across clips, so the plan can show every person
+  role      who leads and who follows (SigLIP 2 per person): a couple shares the portrait frame, the follow featured
   plan      the story in acts, locked to the beat grid; effects and transitions chosen per cut (picks.json: the
             editor's bans and preferences, by export file and time)
   review    a local HTML page per reel: a frame per shot, its export file and time range, a copyable picks line;
@@ -28,7 +29,7 @@ import subprocess
 
 from .project import Project
 
-STEPS = ["units", "score", "shake", "focus", "subject", "semantic", "moments", "faces", "people", "music", "plan", "render",
+STEPS = ["units", "score", "shake", "focus", "subject", "semantic", "moments", "faces", "people", "role", "music", "plan", "render",
          "xml", "review"]
 FORMATS = ["landscape", "portrait"]
 
@@ -45,10 +46,12 @@ def stinger_length(project: Project, formats) -> float:
     return best
 
 
-def run(folder: str, steps=None, formats=None, workers: int = 2, draft: bool = False) -> None:
-    project = Project(folder)
+def run(folder: str, steps=None, formats=None, workers: int = 2, draft: bool = False, cut: str | None = None) -> None:
+    """cut: one of reel.json's "cuts" (another reel from the same footage) in place of the main reel; the analysis
+    steps are the project's own, so a cut runs from music on."""
+    project = Project(folder, cut)
     steps = steps or STEPS
-    formats = formats or FORMATS
+    formats = formats or project.formats or FORMATS
     sl = stinger_length(project, formats)
     import importlib
     for step in STEPS:
@@ -64,14 +67,14 @@ def run(folder: str, steps=None, formats=None, workers: int = 2, draft: bool = F
                 mod.run(project, f, stinger_len=sl)
         elif step == "render":
             for f in formats:
-                mod.run(project, f, draft=draft)
+                mod.run(project, f, draft=draft, cut=project.cut_name(f))
         elif step in ("xml", "review"):
             for f in formats:
-                mod.run(project, f)
-            if step == "review":
+                mod.run(project, f, cut=project.cut_name(f))
+            if step == "review" and not cut:
                 from . import browse
                 browse.run(project)
         elif step in ("shake", "focus"):
             mod.run(project, workers=max(workers, 1) + 1)
-        else:                                       # units, subject, semantic, moments, faces, people
+        else:                                       # units, subject, semantic, moments, faces, people, role
             mod.run(project)
