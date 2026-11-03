@@ -1608,3 +1608,17 @@ def test_day_picks_never_spread_into_the_night():
     budget = {"arrival": 4, "shows": 4, "night": 40, "climax": 40}
     out = spread_picks([], [day, night], home, 0.5, budget)
     assert out and all(a in ("arrival", "shows") for (rid, _), a in out.items() if rid == "D1")
+
+
+def test_the_close_ends_the_reel_when_picks_dont_fill_it():
+    from focalcut.reel.plan import close_last
+
+    def s(uid, act, span=None, beats=2):
+        return dict(unit=dict(id=uid, clip=uid, role="show", category="night"), act=act, span=span, beats=beats,
+                    fx=["hero"] if uid == "C9" else [], effect=None, rank=0.5, t=1.0, add=bool(span))
+    seq = [s("C1", "night"), s("C9", "climax", [66.0, 70.0]), s("C2", "climax"), s("C3", "finale"),
+           s("C4", "finale")]
+    assert close_last(seq, 0.5, ["C9", 66.03])
+    last = seq[-1]
+    assert last["unit"]["id"] == "C9" and last["act"] == "finale" and last["fx"] == [] and last["beats"] == 8
+    assert not close_last(seq, 0.5, ["C7", 1.0])

@@ -618,6 +618,28 @@ FINALE_HOLD = 4          # a plain shot in the finale holds at most this long wh
 CLOSE_BEATS = 4          # the closing shot holds at least this long (when its footage allows)
 
 
+def close_last(seq, beat, close):
+    """The pick named by close ([clip, source time], reel.json plan.<fmt> "close") ends the reel when the picks don't
+    fill it (finale_reuse does it when they do): moved to the end, its old place quick cuts, held at real speed for
+    all its footage up to 2 x CLOSE_BEATS. The beats it adds come off the plain shots afterwards (the grid's
+    evening out). Returns whether it was found."""
+    want = next((s for s in seq if s.get("span") and s["unit"]["id"].startswith(close[0])
+                 and s["span"][0] - 0.5 <= close[1] <= s["span"][1]), None)
+    if want is None:
+        return False
+    k = seq.index(want)
+    if k != len(seq) - 1:
+        seq.remove(want)
+        want["reuse"] = True                                 # (none of the cuts from its own footage)
+        quick_cuts(seq, want["beats"], want["act"], beat, k)
+        want["reuse"] = None
+        seq.append(want)
+    want["act"] = "finale"
+    want["beats"] = min(max(1, math.floor((want["span"][1] - want["span"][0]) / beat + 0.25)), 2 * CLOSE_BEATS)
+    want["fx"], want["effect"] = [], None
+    return True
+
+
 def finale_reuse(seq, beat, close=None):
     """When the editor's picks fill the reel, the finale is rebuilt on its budget: its picks in their order, then
     quick cuts from the picks (quick_cuts, 2 beats each: the song's outro), and a closing shot held as long as its
@@ -687,15 +709,16 @@ QUICK_DROP = ("beats", "act", "fx", "effect", "logo", "logo_image", "band", "rea
 def quick_cuts(seq, n, act, beat, at=None, size=1):
     """n beats of quick cuts, size beats each, from the editor's picks, put into act at at (default: spread through
     it, never at its ends): first the ends that pick_beat trimmed off them (footage not seen yet), then the openings
-    of picks two acts or more away (never footage seen moments ago); crowd and B-roll picks first, never the same clip
-    twice in a row. A cut is plain footage: no logo, title, effect or ending from the pick it comes from."""
+    of picks two acts or more away (never footage seen moments ago); picks from the act's own time of day first (day
+    picks into the day, DAY_ACTS), crowd and B-roll picks first, never the same clip twice in a row. A cut is plain footage: no logo, title, effect or ending from the pick it comes from."""
     picks = [s for s in seq if s.get("span") and not s.get("reuse")]
     if not n or not picks:
         return
     used = {(s["unit"]["id"], round(s["span"][0], 2)) for s in seq if s.get("reuse")}
     names = [a for a in ACT_NAMES if any(x["act"] == a for x in seq)]
     near = set(names[max(0, names.index(act) - 1):names.index(act) + 1]) if act in names else {act}
-    order = sorted(picks, key=lambda s: (s["unit"]["role"] != "transition", s["act"] != act,
+    order = sorted(picks, key=lambda s: ((s["act"] in DAY_ACTS) != (act in DAY_ACTS),   # day into the day first
+                                         s["unit"]["role"] != "transition", s["act"] != act,
                                          -(s["span"][1] - s["span"][0])))
     tails = [(s, [s["span"][0] + s["beats"] * beat, s["span"][1]]) for s in order]
     srcs = [(s, sp) for s, sp in tails if sp[1] - sp[0] >= 0.8 * beat * size] + \
@@ -982,6 +1005,7 @@ def cover_people(P, seq, recs, home, people, fmt, beat, climax_from=None, allowe
 
         skip = ("climax",) if (climax_from and act != "climax" and r["role"] != "transition"
                                and not any(k in r.get("category", "") for k in climax_from)) else ()
+        skip = (*skip, *(a for a in ACT_NAMES if (a in DAY_ACTS) != (act in DAY_ACTS)))   # day stays in the day
         if allowed:
             skip = (*skip, *(a for a in ACT_NAMES if not allowed(r, a)))
             if act in skip:
@@ -2034,6 +2058,8 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
     if pbeat != music["beat"]:
         settle_picks(seq, pbeat, budget, music["beat"])
         finale_reuse(seq, music["beat"], cfg.get("close"))
+    elif cfg.get("close") and not close_last(seq, music["beat"], cfg["close"]):
+        print(f"[reel] {fmt}: the close {cfg['close']} isn't among the picks placed")
     unclump_clips(seq)
     for s in seq:                                            # slow motion needs room: none on a shot under 3 beats
         if s["beats"] < 3 and any(f in ("hero", "bullet", "montage", "aura") for f in s["fx"]):
@@ -2987,6 +3013,11 @@ def ensure_units(project, fmt, shots, moments, cfg):
     from . import shake
     lo = cfg["shake"][0]
     have = Counter(s["unit"]["id"] for s in shots)
+    day_cats = [*(cfg.get("day") or ()), *(cfg.get("day_shows") or ())]
+
+    def day(r):
+        return bool(day_cats) and fits(r["unit"], day_cats)
+
     def passing(r):
         return [m for m in r["moments"] if (m.get("fmt_ok") or {}).get(fmt, True) and not m.get("unusable")
                 and not (fmt == "portrait" and m.get("plays_p", 1.0) < UNFRAMED)]
@@ -3004,6 +3035,8 @@ def ensure_units(project, fmt, shots, moments, cfg):
                 return False
             if cfg.get("sets") and x["unit"].get("category") != r["unit"].get("category"):
                 return False
+            if day(r) != (x["act"] in DAY_ACTS) and (day(r) or x["act"] == "arrival"):
+                return False                                 # day footage stays in the day, and the day is day
             nb = [shots[k] for k in (i - 1, i + 1) if 0 <= k < len(shots)]
             return all(n["unit"]["clip"] != clip for n in nb) and \
                 not (r["role"] == "transition" and any(n["unit"]["role"] == "transition" for n in nb))
