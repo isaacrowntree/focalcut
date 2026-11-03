@@ -169,3 +169,21 @@ def test_band_broll_from_behind_is_framed_and_rejected_in_portrait_scenery_is_no
     assert plan.unusable(dict(back=back, w=0.32), "transition") == "back"
     r = {"id": "C2007_band-singer", "role": "transition", "unit": singer, "moments": [dict(t=1.0, plays_p=0.05)]}
     assert not plan.framable(r, "portrait") and plan.framable(r, "landscape")
+
+
+def test_window_ok_reports_every_failing_rule(monkeypatch):
+    good = dict(w=0.32, h=1.0, z=1.0, path=[[0, 0.5, 0.5]], present=1.0, inside=1.0, face=0.9, action=1.0, churn=0.0,
+                blocked=0.0, split=0.0, body=1.0, low=0.5, hide=0.0, head=1.0, back=0.0, torn=0.0, fill=0.7)
+    crops = {"good": good, "bad": dict(good, back=0.9, low=0.8, present=0.7, fill=0.2)}
+    monkeypatch.setattr(plan, "reframe", lambda pr, u, t0, L, fmt: dict(crops[u["id"]]))
+    from focalcut.reel import shake
+    monkeypatch.setattr(shake, "jitter", lambda pr, u, a, b: 0.0001 if u["id"] == "good" else 0.01)
+    rec = lambda i: {"unit": {"id": i, "role": "dance", "tag": ""}, "role": "dance"}   # noqa: E731
+    w = plan.window_ok(None, rec("good"), 1.0, 3.4, "portrait")
+    assert w["ok"] and w["reasons"] == [] and w["score"] > 0.5
+    w = plan.window_ok(None, rec("bad"), 1.0, 3.4, "portrait")
+    assert not w["ok"] and set(w["reasons"]) == {"exit", "low", "back", "shake"}
+    assert plan.window_ok(None, rec("bad"), 1.0, 3.4, "portrait", rules={"back": 0.95})["reasons"].count("back") == 0
+    assert plan.R == plan.RULES                                 # (rules apply to the one call only)
+    scenery = {"unit": {"id": "x", "role": "transition", "tag": "venue-night"}, "role": "transition"}
+    assert plan.window_ok(None, scenery, 0, 2, "portrait")["ok"]

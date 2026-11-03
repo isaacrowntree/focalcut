@@ -2278,7 +2278,7 @@ def _reframe(project, unit, t0, length, fmt):
     # not cut by the crop or the camera's own edge) and face (a face to the camera, in the crop), as fractions
     inn = (pt[sel] >= t0) & (pt[sel] <= t0 + length)
     stats = dict(present=0.0, inside=0.0, face=0.0, action=0.0, churn=0.0, blocked=0.0, split=0.0, body=1.0, low=0.5,
-                 hide=0.0, head=1.0, back=0.0, torn=0.0)
+                 hide=0.0, head=1.0, back=0.0, torn=0.0, fill=0.0)
     if inn.any():
         tt = pt[sel][inn] - t0
         bx, by = np.interp(tt, grid, x), np.interp(tt, grid, y)
@@ -2318,7 +2318,8 @@ def _reframe(project, unit, t0, length, fmt):
                      face=float((face[inn] & (ov >= 0.6)).mean()),
                      action=float(np.where(seen, act, 0).max(1).mean()), churn=churn,
                      blocked=float(wall.any(1).mean()), split=cut, body=body, hide=hide, head=head, back=back,
-                     torn=torn,
+                     torn=torn, fill=float(np.nanmedian((b[:, 3] - b[:, 1]) / ch)) if not np.isnan(b[:, 1]).all()
+                     else 0.0,
                      low=float(np.nanmedian(((b[:, 1] + b[:, 3]) / 2 - (by - ch / 2)) / ch))
                      if not np.isnan(b[:, 1]).all() else 0.5)
     return dict(w=round(cw, 4), h=round(ch, 4), z=round(zz, 3),
@@ -2326,6 +2327,8 @@ def _reframe(project, unit, t0, length, fmt):
                       for a, b, c in zip(grid[::2], x[::2], y[::2])],
                 **{k: round(v, 2) for k, v in stats.items()})
 
+
+FILL_GOOD = 0.55         # window_ok: a subject this tall in the crop (of its height) or more scores in full
 
 RULES = dict(            # portrait rules: reel.json plan.<fmt>.portrait_rules (a profile can set them)
     low=0.66,            # the subject's centre this far down the crop (0 top, 1 bottom): sits low
@@ -2787,6 +2790,59 @@ def framed(c, role):
     social, face, inside = role == "dance", c.get("face", 0.0), c.get("inside", 1.0)
     g = plays(c, role, True) * ((0.3 + 0.7 * inside) if social else (0.45 + 0.55 * inside))
     return g * (((0.3 + 1.4 * face) * (0.25 if face < 0.3 else 1)) if social else (0.5 + 1.0 * face))
+
+
+def window_ok(project, rec, t0, t1, fmt, rules=None):
+    """Does the stretch t0..t1 (source seconds) of rec's unit pass every framing rule in this format? A pure check,
+    for scrubbing a clip densely and choosing only from windows that already work. Returns dict(ok, score, crop,
+    reasons, jitter): score is how well it frames -- framed() / plays() with the subject's own face term, times its
+    size in the crop (an editor picks one clear subject, large, face to the lens: not a busy, "sharp" crowd), times
+    the shake factor; no energy or kind in it. crop is reframe's for exactly this span, reasons every rule it fails
+    (names below). rules: overrides of R (portrait_rules) and "shake": [lo, hi]. Scenery B-roll always passes."""
+    from . import shake
+    u, role = rec["unit"], rec["role"]
+    saved = dict(R)
+    try:
+        R.update({k: v for k, v in (rules or {}).items() if k in RULES})
+        lo, hi = (rules or {}).get("shake") or CFG[fmt]["shake"]
+        if role == "transition" and not people_broll(u):
+            return dict(ok=True, score=1.0, crop=None, reasons=[], jitter=None)
+        c = reframe(project, u, t0, t1 - t0, fmt) or {}
+        portrait = fmt == "portrait"
+        why = []
+        if c.get("present", 1.0) < 0.6:
+            why.append("lost")
+        if portrait:
+            for name, bad in (("exit", c.get("present", 1.0) < R["stay"]),
+                              ("low", c.get("w", 1.0) < 0.5 and c.get("low", 0.5) > R["low"]),
+                              ("hide", c.get("hide", 0.0) > R["hide"]),
+                              ("torn", role == "dance" and c.get("torn", 0.0) > R["torn"]),
+                              ("head", c.get("head", 1.0) < R["head"]),
+                              ("back", c.get("back", 0.0) > R["back"]),
+                              ("split", c.get("split", 0.0) > SPLIT),
+                              ("body", c.get("w", 1.0) < 0.5 and c.get("body", 1.0) < BODY),
+                              ("noface", role == "dance" and c.get("face", 1.0) < 0.3)):
+                if bad:
+                    why.append(name)
+        perf = people_broll(u)
+        if not perf and c.get("action") is not None and c["action"] < IDLE:
+            why.append("idle")
+        if not perf and c.get("churn", 0.0) > CHURN:
+            why.append("churn")
+        if c.get("blocked", 0.0) > BLOCKED:
+            why.append("blocked")
+        j = shake.jitter(project, u, t0, t1)
+        j = j / max(c.get("w", 1.0), 0.2) if j is not None else None
+        if j is not None and j > hi:
+            why.append("shake")
+        g = framed(c, role) if portrait else plays(c, role, False) * (0.85 + 0.3 * c.get("face", 0.0))
+        if j is not None and j > lo:
+            g *= 1 - 0.35 * min((j - lo) / (hi - lo), 1)
+        g *= 0.4 + 0.6 * min(c.get("fill", FILL_GOOD) / FILL_GOOD, 1.0)   # the subject large in frame
+        return dict(ok=not why, score=round(float(g), 3), crop=c or None, reasons=why,
+                    jitter=round(j, 5) if j is not None else None)
+    finally:
+        R.clear(); R.update(saved)
 
 
 def recast(project, fmt, seq, moments, beat):
