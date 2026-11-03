@@ -335,6 +335,9 @@ editor's own picks are exempt). The scrub (`windows.py`) checks each one over th
 `plan.snap_windows` / `plan.window_report` keep every planner shot on passing windows. A rule the scrub cannot
 check yet is a bug in the scrub, not a reason to let the shot through.
 
+The editor's picks always win, in every format: no rule overrides a pick, and where a clip is "picks only" the
+planner adds nothing between them.
+
 The face that counts is the subject's own: the person the shot is about, and for a couple, duo or group, every
 person in the action. A face somewhere else in the frame (a cheering crowd behind, a friend at the edge) never
 makes a back pass.
@@ -342,8 +345,9 @@ makes a back pass.
 A shot is never:
 - **A back.** No subject seen from behind for the shot (the back of a head, a back-turned dancer hiding the
   partner, a singer facing away). Slide along the clip to where the face or the partner shows. (`head`, `body`)
-- **Turned away.** A face in profile looking off, down at a phone or away from the action, or one turning away
-  during the shot, fails the same way. Take the stretch where they turn back toward the camera.
+- **Turned away.** A face looking down at a phone, away from the action, or turning its back during the shot
+  fails. Side-on alone is not a back: a profile engaged in the moment (singing, dancing, looking at a partner)
+  passes (EN: C2107, C2091, C2103 kept). Take the stretch where they turn back toward the camera.
 - **Behind a foreground back.** When the largest, nearest person in frame shows their back, the shot fails even
   if the people beyond them are smiling at the camera.
 - **Blocked or at the edge.** A subject hidden behind their own arm or another person, or half out of the frame
@@ -355,7 +359,8 @@ A shot is never:
   dancing with each other, it isn't a group shot. Pick the stretch where they're together and facing the camera.
 - **The crowd.** A pan off the dancers onto an audience sitting or standing still, or a single bored onlooker as
   the only face, is never a subject shot. Someone has to be dancing or performing for the whole shot. (`idle`)
-- **Blurry.** The subject's face must be sharp, not just something in the frame: a sharp foreground arm in front
+- **Blurry.** Haze, stage fog and a dark but readable face are fine (EN: C2130, C2125 kept). The subject's face
+  must not be smeared, though, not just something in the frame: a sharp foreground arm in front
   of a soft dancer fails. Missed focus, a face smeared by camera motion, or a face pressed
   up against the lens all fail. The floor is absolute, not relative to the clip, and it applies after speed
   effects too: frame-blending on a fast stretch must not smear a close face. (`soft`, `blocked`)
