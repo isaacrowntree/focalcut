@@ -2232,12 +2232,15 @@ def _reframe(project, unit, t0, length, fmt):
         x = np.interp(grid, ts, v)
         k = np.exp(-0.5 * (np.arange(-3 * sig, 3 * sig + 1) / sig) ** 2); k /= k.sum()
         return np.convolve(np.pad(x, 3 * sig, mode="edge"), k, mode="valid")
+    if narrow and unit["role"] != "transition":            # never through someone the subject's size beside them
+        zz, sx = clean_centre(d, pt[sel][ok], union[ok], sx, zz, cw0, ch0)
+        cw, ch = cw0 / zz, ch0 / zz
     x = np.clip(smooth(sx, 3 if narrow else 6), cw / 2, 1 - cw / 2)   # ~0.3 / 0.6 s: like a camera operator
     y = np.clip(smooth(sy, 10), ch / 2, 1 - ch / 2)
     # how well the crop holds the subject over the shot itself: present (mostly in the crop), inside (wholly in it,
     # not cut by the crop or the camera's own edge) and face (a face to the camera, in the crop), as fractions
     inn = (pt[sel] >= t0) & (pt[sel] <= t0 + length)
-    stats = dict(present=0.0, inside=0.0, face=0.0, action=0.0, churn=0.0, blocked=0.0)
+    stats = dict(present=0.0, inside=0.0, face=0.0, action=0.0, churn=0.0, blocked=0.0, split=0.0, body=1.0)
     if inn.any():
         tt = pt[sel][inn] - t0
         bx, by = np.interp(tt, grid, x), np.interp(tt, grid, y)
@@ -2270,17 +2273,89 @@ def _reframe(project, unit, t0, length, fmt):
         fseen = FR.face_seen(d, pt[sel][inn], pb, d["kp"][ii])
         wall = (np.nan_to_num(y0n, nan=1) <= 0.03) & (np.nan_to_num(y1n) - np.nan_to_num(y0n) >= 0.75) & \
             (cov >= 0.5) & ~fseen
+        cut, body = sliced(d, ii, union[inn], bx, by, cw, ch)
         stats = dict(present=float((ov >= 0.6).mean()), inside=float(((ov >= 0.92) & ~edge).mean()),
                      face=float((face[inn] & (ov >= 0.6)).mean()),
                      action=float(np.where(seen, act, 0).max(1).mean()), churn=churn,
-                     blocked=float(wall.any(1).mean()))
+                     blocked=float(wall.any(1).mean()), split=cut, body=body)
     return dict(w=round(cw, 4), h=round(ch, 4), z=round(zz, 3),
                 path=[[round(float(a), 2), round(float(b), 4), round(float(c), 4)]
                       for a, b, c in zip(grid[::2], x[::2], y[::2])],
                 **{k: round(v, 2) for k, v in stats.items()})
 
 
+PEER_H = 0.75            # someone at least this tall (of the subject) beside them counts as the subject's size
+SLICE_COST = 2.5         # a crop centre's cost per such person cut through (vs. a crop width off the subject)
+
+
+def _people(d, ii, union):
+    """At pose frames ii: the people as fractions of the frame (F, P, 4), the subject (the tallest pose box mostly
+    inside the subject's union, -1 if none) and who is the subject's size (PEER_H) -- the ones a crop must not cut."""
+    nb = d["boxes"][ii, :, :4] / [d["aw"], d["ah"], d["aw"], d["ah"]]
+    ok = ~np.isnan(nb[..., 0])
+    hgt = np.where(ok, nb[..., 3] - nb[..., 1], 0)
+    m = FR.members(d["boxes"][ii], union, d["aw"], d["ah"])
+    main = np.where(m.any(1), np.argmax(np.where(m, hgt, -1), 1), -1)
+    mh = np.where(main >= 0, hgt[np.arange(len(ii)), np.maximum(main, 0)], 9)
+    return nb, main, ok & (hgt >= PEER_H * mh[:, None])
+
+
+def _cut(nb, x0, x1):
+    """How badly each box is cut by a crop's sides (F, P) or (C, F, P): 0 wholly in or out, 1 cut down the middle."""
+    vis = np.clip(np.minimum(nb[..., 2], x1) - np.maximum(nb[..., 0], x0), 0, None) / \
+        np.maximum(nb[..., 2] - nb[..., 0], 1e-3)
+    return np.clip(np.minimum(vis, 1 - vis) / 0.3, 0, 1), vis
+
+
+def clean_centre(d, times, union, sx, zz, cw0, ch0):
+    """A portrait strip's centre, frame by frame, moved off anyone the subject's size it would cut through: the
+    partner of a couple too far apart for the strip is left out whole rather than cut in half, someone half in at the
+    edge goes out, while the subject stays whole and near the centre. The shot's zoom widens to 1 when that cuts
+    through fewer people. Returns (zoom, centres)."""
+    pt = d["pose_t"]
+    ii = np.clip(np.searchsorted(pt, times), 0, len(pt) - 1)
+    nb, main, peer = _people(d, ii, union)
+    if (main < 0).all():
+        return zz, sx
+    F = len(ii)
+    sub = nb[np.arange(F), np.maximum(main, 0)]
+
+    def best(z):
+        cw = cw0 / z
+        cand = np.linspace(cw / 2, 1 - cw / 2, 41)[:, None]                  # (C, 1)
+        cut, _ = _cut(nb[None], (cand - cw / 2)[..., None], (cand + cw / 2)[..., None])   # (C, F, P)
+        others = np.where(peer[None] & (np.arange(nb.shape[1]) != main[:, None])[None], cut, 0).sum(2)
+        _, sv = _cut(sub[None], cand - cw / 2, cand + cw / 2)
+        cost = np.abs(cand - sx[None]) / cw + SLICE_COST * others + 6 * np.clip(0.95 - sv, 0, None)
+        cost = np.where((main >= 0)[None], cost, np.abs(cand - sx[None]) / cw)
+        k = cost.argmin(0)
+        return cand[k, 0], cost[k, np.arange(F)].sum(), others[k, np.arange(F)].sum()
+    c, cost, n = best(zz)
+    if zz > 1.0:
+        c1, cost1, n1 = best(1.0)
+        if n1 < 0.7 * n:
+            return 1.0, c1
+    return zz, c
+
+
+def sliced(d, ii, union, bx, by, cw, ch):
+    """Over a shot: the share of frames where someone the subject's size is cut through by the crop's sides, and the
+    share where the subject's body (hips) is in the crop -- not only a head and shoulders that hide the dancing."""
+    nb, main, peer = _people(d, ii, union)
+    cut, _ = _cut(nb, (bx - cw / 2)[:, None], (bx + cw / 2)[:, None])
+    others = np.where(peer & (np.arange(nb.shape[1]) != main[:, None]), cut, 0)
+    kp = d["kp"][ii, np.maximum(main, 0)]                                    # (F, 17, 3)
+    kx, ky = kp[..., 0] / d["aw"], kp[..., 1] / d["ah"]
+    inside = (kp[..., 2] > 0.3) & (np.abs(kx - bx[:, None]) <= cw / 2) & (np.abs(ky - by[:, None]) <= ch / 2)
+    has = main >= 0
+    if not has.any():
+        return 0.0, 1.0
+    return float((others.max(1) > 0.5)[has].mean()), float(inside[:, [11, 12]].any(1)[has].mean())
+
+
 IDLE = 0.55              # frame.activity of the crop's subject below this: walking or standing, not dancing
+SPLIT = 0.5              # portrait: share of frames with someone the subject's size cut through, at the full mark-down
+BODY = 0.5               # portrait: share of frames with the subject's hips in the crop, below which it marks down
 BLOCKED = 0.3            # share of frames someone right up against the camera covers the crop (head cut, no face)
 CHURN = 0.45             # share of frames where the one at the crop's centre is someone else: a crowd passing
 
@@ -2298,6 +2373,9 @@ def plays(c, role):
         g *= 0.3
     if c.get("blocked", 0.0) > BLOCKED:
         g *= 0.15
+    if c.get("w", 1.0) < 0.5:                                # a portrait strip: someone the subject's size cut in
+        g *= 1 - 0.7 * min(c.get("split", 0.0) / SPLIT, 1)  # half beside them, or only a head and shoulders
+        g *= 0.35 + 0.65 * min(c.get("body", 1.0) / BODY, 1)
     return g
 
 
@@ -2338,12 +2416,13 @@ def assess(project, recs, fmt, cfg):
             r["band_ok"] = (z["t"], (z["p"] >= role.BAND_P) & (z["sharp"] >= role.BAND_SHARP))
         yf = "|yf" if os.path.exists(project.path("scores", f"faces_{u['id']}.npz")) else ""   # (face scan: re-assess)
         for m in r["moments"]:
-            k = f"{fmt}|{u['id']}|{m['t']}{yf}|c"
+            k = f"{fmt}|{u['id']}|{m['t']}{yf}|c2"
             if k not in cache:
                 c = reframe(project, u, m["t"] - 0.8, 2.4, fmt) or {}
                 cache[k] = [c.get("present", 1.0), c.get("inside", 1.0), c.get("face", 0.0), c.get("w", 1.0),
-                            c.get("action"), c.get("churn", 0.0), c.get("blocked", 0.0)]
-            present, inside, face, cw, action, churn, blocked = cache[k]
+                            c.get("action"), c.get("churn", 0.0), c.get("blocked", 0.0), c.get("split", 0.0),
+                            c.get("body", 1.0)]
+            present, inside, face, cw, action, churn, blocked, split, body = cache[k]
             j = shake.jitter(project, u, m["t"] - 0.8, m["t"] + 1.6)
             j = j / max(cw, 0.2) if j is not None else None
             m["jitter"] = round(j, 5) if j is not None else None
@@ -2366,7 +2445,7 @@ def assess(project, recs, fmt, cfg):
                 m["action"] = action
                 social = r["role"] == "dance"
                 g = 1.0 if m.get("pick") else plays(dict(present=present, inside=inside, action=action, churn=churn,
-                                                         blocked=blocked), r["role"])
+                                                         blocked=blocked, w=cw, split=split, body=body), r["role"])
                 g *= (0.3 + 0.7 * inside) if social else (0.45 + 0.55 * inside)
                 if fmt == "portrait":
                     g *= ((0.3 + 1.4 * face) * (0.25 if face < 0.3 else 1)) if social else (0.5 + 1.0 * face)

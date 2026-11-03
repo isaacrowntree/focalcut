@@ -768,7 +768,7 @@ def test_assess_drops_shaky_and_lost_subjects_and_favours_faces_in_portrait(tmp_
     social = next(r for r in moments if r["unit"]["clip"] == "C002")
     cache = {}
     for m in social["moments"]:                                 # [present, inside, face, crop width]
-        cache[f"portrait|U02|{m['t']}|c"] = [1.0, 1.0, 0.9 if m["t"] == 5.0 else 0.0, 1.0, None, 0.0, 0.0]
+        cache[f"portrait|U02|{m['t']}|c2"] = [1.0, 1.0, 0.9 if m["t"] == 5.0 else 0.0, 1.0, None, 0.0, 0.0, 0.0, 1.0]
     json.dump(cache, open(pr.path("hold_cache.json"), "w"))
     before = {m["t"]: m.get("score_p", m["score"]) for m in social["moments"]}
     P.assess(pr, [social], "portrait", P.config(pr, "portrait"))
@@ -777,6 +777,27 @@ def test_assess_drops_shaky_and_lost_subjects_and_favours_faces_in_portrait(tmp_
     assert after[11.0] < 0.25 * before[11.0]                    # a back ranks well down
     shaky = [m for m in social["moments"] if m["t"] > 46]
     assert all(m["jitter"] > 0.006 and m["score_p"] < 0.05 * before[m["t"]] for m in shaky)
+
+
+def test_portrait_strip_never_cuts_through_the_partner_and_body_shots_rank_over_head_shots():
+    # a couple too far apart for a 9:16 strip (each 0.12 wide, 0.1 apart): the strip takes one whole and leaves the
+    # other out whole, never half of each
+    F, aw, ah = 10, 640.0, 360.0
+    boxes = np.full((F, 3, 5), np.nan, np.float32)
+    boxes[:, 0, :4] = [0.30 * aw, 0.2 * ah, 0.42 * aw, 0.95 * ah]          # the subject
+    boxes[:, 1, :4] = [0.52 * aw, 0.2 * ah, 0.64 * aw, 0.95 * ah]          # the partner, the same size
+    d = dict(pose_t=np.arange(F) * 0.2, boxes=boxes, kp=np.zeros((F, 3, 17, 3), np.float32), aw=aw, ah=ah)
+    union = np.tile([0.30, 0.2, 0.64, 0.95], (F, 1))
+    cw0 = (9 / 16) / (16 / 9)
+    sx = np.full(F, 0.47)                                                  # the old centre: the floor between them
+    z, c = P.clean_centre(d, d["pose_t"], union, sx, 1.2, cw0, 1.0)
+    for x in c:
+        for b in ((0.30, 0.42), (0.52, 0.64)):
+            vis = max(0.0, min(b[1], x + cw0 / z / 2) - max(b[0], x - cw0 / z / 2)) / (b[1] - b[0])
+            assert vis < 0.15 or vis > 0.85
+    assert P.plays(dict(w=0.3, body=1.0), "dance") > 2 * P.plays(dict(w=0.3, body=0.0), "dance")
+    assert P.plays(dict(w=0.3, split=1.0), "dance") < 0.5 * P.plays(dict(w=0.3, split=0.0), "dance")
+    assert P.plays(dict(w=1.0, body=0.0, split=1.0), "dance") == 1.0           # landscape: unchanged
 
 
 def test_band_members_cut_in_and_the_reel_ends_on_the_chosen_shot(tmp_path):
@@ -825,7 +846,7 @@ def test_assess_drops_a_subject_who_keeps_leaving_the_crop(tmp_path):
     pr, _, moments = fake_reel(tmp_path)
     social = next(r for r in moments if r["unit"]["clip"] == "C002")
     os.makedirs(pr.reel_dir, exist_ok=True)
-    json.dump({f"portrait|U02|{m['t']}|c": [0.3 if m["t"] == 5.0 else 1.0, 1.0, 1.0, 1.0, None, 0.0, 0.0]
+    json.dump({f"portrait|U02|{m['t']}|c2": [0.3 if m["t"] == 5.0 else 1.0, 1.0, 1.0, 1.0, None, 0.0, 0.0, 0.0, 1.0]
                for m in social["moments"]},
               open(pr.path("hold_cache.json"), "w"))
     before = {m["t"]: m["score"] for m in social["moments"]}
@@ -1515,10 +1536,10 @@ def test_assess_ranks_down_a_walker_a_crowd_crossing_and_a_blocked_camera(tmp_pa
     pr, _, moments = fake_reel(tmp_path)
     social = next(r for r in moments if r["unit"]["clip"] == "C002")
     os.makedirs(pr.reel_dir, exist_ok=True)
-    seed = {5.0: [1.0, 1.0, 1.0, 1.0, 0.3, 0.0, 0.0],    # walking across: arms still about the shoulders
-            11.0: [1.0, 1.0, 1.0, 1.0, 1.2, 0.7, 0.0],   # people crossing through the crop one after another
-            17.0: [1.0, 1.0, 1.0, 1.0, 1.2, 0.0, 0.5]}   # someone's back right up against the camera
-    json.dump({f"portrait|U02|{m['t']}|c": seed.get(m["t"], [1.0, 1.0, 1.0, 1.0, 1.2, 0.0, 0.0])
+    seed = {5.0: [1.0, 1.0, 1.0, 1.0, 0.3, 0.0, 0.0, 0.0, 1.0],    # walking across: arms still about the shoulders
+            11.0: [1.0, 1.0, 1.0, 1.0, 1.2, 0.7, 0.0, 0.0, 1.0],   # people crossing through the crop one after another
+            17.0: [1.0, 1.0, 1.0, 1.0, 1.2, 0.0, 0.5, 0.0, 1.0]}   # someone's back right up against the camera
+    json.dump({f"portrait|U02|{m['t']}|c2": seed.get(m["t"], [1.0, 1.0, 1.0, 1.0, 1.2, 0.0, 0.0, 0.0, 1.0])
                for m in social["moments"]},
               open(pr.path("hold_cache.json"), "w"))
     P.assess(pr, [social], "portrait", P.config(pr, "portrait"))
