@@ -113,3 +113,19 @@ def test_the_plan_log_warns_about_a_planner_shot_left_on_failing_windows(fakes, 
 def test_an_in_point_rounded_to_the_millisecond_still_sits_on_its_window():
     W = [win(57.3, 60.9, True), win(57.8, 61.4, False)]
     assert plan.span_ok(W, 57.996, 57.996 + 3.204) is True    # b - tol is 60.900000000000006
+
+
+def test_a_recast_trusts_the_windows_over_assess_s_guess(fakes):
+    W = {"A": grid(0.3, 40.0, bad=[(0.0, 40.0)]), "C": grid(0.3, 40.0), "D": grid(0.3, 40.0)}
+    shots = [placed("C", 2.0), placed("A", 10.0), placed("C", 20.0)]
+    d = rec("D", [15.0])
+    d["moments"][0]["unusable"] = "shake"                     # judged around the moment, not over this span
+    _, recast, _ = plan.snap_windows(None, "portrait", shots, [rec("A", [10.7], ok=False), d], CFG, W)
+    assert recast == 1 and shots[1]["unit"]["id"] == "D"
+
+
+def test_a_unit_whose_scrubbed_moment_passes_is_covered_whatever_assess_guessed(fakes):
+    shots = [placed("A", 1.0), placed("A", 5.0), placed("B", 2.0), placed("A", 9.0), placed("B", 6.0)]
+    d = rec("D", [20.0])
+    d["moments"][0].update(unusable="shake", plays_p=0.05)
+    assert plan.ensure_units(None, "portrait", shots, [d], CFG) == ["D"]

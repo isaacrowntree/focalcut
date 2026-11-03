@@ -3019,9 +3019,9 @@ def ensure_units(project, fmt, shots, moments, cfg):
     def day(r):
         return bool(day_cats) and fits(r["unit"], day_cats)
 
-    def passing(r):
-        return [m for m in r["moments"] if (m.get("fmt_ok") or {}).get(fmt, True) and not m.get("unusable")
-                and not (fmt == "portrait" and m.get("plays_p", 1.0) < UNFRAMED)]
+    def passing(r):                                          # the scrub's verdict where there is one (it judged
+        return [m for m in r["moments"] if (m.get("fmt_ok") or {}).get(fmt) is True or (   # the windows themselves)
+                "fmt_ok" not in m and not m.get("unusable") and not (fmt == "portrait" and m.get("plays_p", 1.0) < UNFRAMED))]
     miss = [r for r in moments if r["id"] not in have and passing(r)
             and (r["role"] != "transition" or people_broll(r["unit"]))]
     miss.sort(key=lambda r: -max(rk(m, fmt) for m in passing(r)))
@@ -3168,8 +3168,8 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None):
         return (u["t0"] - 1e-6 <= na and na + L <= u["t1"] + 1e-6 and clear_of_bans(na, L, u) == na
                 and span_ok(W.get(u["id"]), na, na + L) is True and free(u["id"], na, na + L, s))
 
-    def passing(r):
-        return [m for m in r["moments"] if (m.get("fmt_ok") or {}).get(fmt) is True and not m.get("unusable")]
+    def passing(r):                                          # (the windows judge the exact span: assess's
+        return [m for m in r["moments"] if (m.get("fmt_ok") or {}).get(fmt) is True]   # "unusable" is a guess at it)
 
     def measure(s):
         u = s["unit"]
@@ -3219,7 +3219,7 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None):
             d = bool(day_cats) and fits(ru, day_cats)
             if d != (s["act"] in DAY_ACTS) and (d or s["act"] == "arrival"):
                 continue
-            ms = passing(r)
+            ms = passing(r) or r["moments"]                  # none left: footage the config keeps out
             for dt in offsets(s, r, r["id"], a, L, speedy):
                 if not ms or not fits_at(s, ru, dt, a, L):
                     continue
