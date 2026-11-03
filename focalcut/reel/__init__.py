@@ -29,7 +29,8 @@ import subprocess
 
 from .project import Project
 
-STEPS = ["units", "score", "shake", "focus", "subject", "semantic", "moments", "faces", "people", "role", "music", "plan", "render",
+STEPS = ["units", "score", "shake", "focus", "subject", "semantic", "moments", "faces", "expression", "people", "role",
+         "windows", "music", "plan", "render",
          "xml", "review"]
 FORMATS = ["landscape", "portrait"]
 

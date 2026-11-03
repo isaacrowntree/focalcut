@@ -268,7 +268,7 @@ def clip_series(path):
     top = np.nanmax(np.where(~np.isnan(d["boxes"][..., 0]), d["focus"], np.nan), axis=1)
     measured = d["sharp"][d["sharp"] > 0]                       # (10 Hz series, measured at 5 Hz: zeros between)
     return dict(t=pt_, parts=parts, quality=quality, steady=steady, framing=frm, activity=act,
-                face=np.clip((face_sem - 0.5) / 0.4, 0, 1), soft=soft(sharp, top, cam, float(np.median(measured)) if len(measured) else 0.0))
+                face=np.clip((face_sem - 0.5) / 0.4, 0, 1), sub_focus=sub_sharp, soft=soft(sharp, top, cam, float(np.median(measured)) if len(measured) else 0.0))
 
 
 def activity(pt_, t10, subj, present):

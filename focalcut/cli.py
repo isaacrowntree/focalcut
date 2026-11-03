@@ -303,7 +303,7 @@ def main(argv=None) -> int:
     ri.set_defaults(func=cmd_reel_init)
     rr = rsub.add_parser("run", help="run the pipeline (or chosen steps)")
     rr.add_argument("folder")
-    rr.add_argument("--steps", help="comma list of steps: units,score,shake,focus,subject,semantic,moments,faces,music,plan,render,xml,review "
+    rr.add_argument("--steps", help="comma list of steps: units,score,shake,focus,subject,semantic,moments,faces,expression,people,role,windows,music,plan,render,xml,review "
                     "(default: all)")
     rr.add_argument("--formats", help="comma list (default: landscape,portrait, or the cut's formats)")
     rr.add_argument("--cut", help='one of reel.json\'s "cuts": another reel from the same footage, e.g. night')

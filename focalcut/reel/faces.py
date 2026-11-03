@@ -1,7 +1,9 @@
 """Second pass on the shortlisted moments: a full-resolution frame, face crops from the pose keypoints, and a
-facial-expression score from SigLIP 2 zero-shot (joy / laughter / excitement / intensity against neutral / turned
-away / blurry). Adds "face" (0-1) to every moment in moments.json and saves thumbs/<unit>_<t>.jpg.
-Scores are cached in faces_cache.json by unit and time, so re-planning never re-extracts frames.
+facial-expression score from SigLIP 2 zero-shot -- expression only, never looks: engaged (smiling, laughing, joyful,
+eyes open on the partner) against disengaged (eyes closed mid-blink, a grimace, a blank or bored look, a frown,
+looking down) and not a face at all (the back of a head, blur). Adds "face" (0-1) to every moment in moments.json
+and saves thumbs/<unit>_<t>.jpg. Scores are cached in faces_cache.json by unit and time, so re-planning never
+re-extracts frames. The expression step (expression.py) runs the same scoring twice a second over whole units.
 """
 from __future__ import annotations
 
@@ -15,9 +17,11 @@ import numpy as np
 
 MODEL = "google/siglip2-base-patch16-512"
 POS = ["a photo of a person smiling happily", "a photo of a person laughing", "a photo of an excited, joyful face",
-       "a photo of a dancer with a passionate, intense expression"]
-NEG = ["a photo of a person with a neutral, bored expression", "a photo of the back of a person's head",
-       "a blurry photo of a face", "a photo of a person looking down"]
+       "a photo of a person with eyes open, looking at their dance partner"]
+BAD = ["a photo of a person with eyes closed, mid-blink", "a photo of a person grimacing",
+       "a photo of a person with a blank, bored expression", "a photo of an unhappy, frowning face",
+       "a photo of a person looking down"]
+NEG = BAD + ["a photo of the back of a person's head", "a blurry photo of a face"]   # (not expressions: no penalty)
 _m = None
 
 
@@ -67,15 +71,36 @@ def face_boxes(kp, scale, W, H):
     return out
 
 
+def face_boxes_at(kp, scale, W, H):
+    """face_boxes with each face's nose (analysis-res x, y): [(box, (nx, ny)), ...]."""
+    noses = [(p[0, 0], p[0, 1]) for p in kp if not np.isnan(p[0, 0]) and p[0, 2] >= 0.5
+             and sum(p[i, 2] >= 0.4 for i in range(5)) >= 3]
+    return list(zip(face_boxes(kp, scale, W, H), noses))
+
+
 def expression(crops):
+    """Per face crop: (engaged, disengaged) probabilities over the prompts."""
     import torch
     M = model()
     with torch.inference_mode():
         inp = M["proc"](images=crops, return_tensors="pt").to(M["dev"])
         e = M["model"].get_image_features(pixel_values=inp["pixel_values"].to(M["dt"]))
         e = torch.nn.functional.normalize(getattr(e, "pooler_output", e).float(), dim=-1)
-        p = (e @ M["txt"].T * 100).softmax(-1)
-    return p[:, :len(POS)].sum(-1).cpu().numpy()
+        p = (e @ M["txt"].T * 100).softmax(-1).cpu().numpy()
+    return p[:, :len(POS)].sum(-1), p[:, len(POS):len(POS) + len(BAD)].sum(-1)
+
+
+def subject_faces(d, j, union, boxes):
+    """The subject's and partner's faces in pose frame j: the two largest face boxes whose nose lies in the subject
+    box (grown a little); everyone's when there is no subject box."""
+    if union is not None and not np.isnan(union[0]):
+        w, h = union[2] - union[0], union[3] - union[1]
+        x0, y0, x1, y1 = union[0] - 0.1 * w, union[1] - 0.1 * h, union[2] + 0.1 * w, union[3] + 0.1 * h
+        aw, ah = d["aw"], d["ah"]
+        keep = [b for b, (nx, ny) in boxes if x0 <= nx / aw <= x1 and y0 <= ny / ah <= y1]
+    else:
+        keep = [b for b, _ in boxes]
+    return sorted(keep, key=lambda b: -b[4])[:2]
 
 
 def run(project) -> int:
@@ -112,7 +137,7 @@ def run(project) -> int:
             if not boxes:
                 m["face"] = 0.0
                 continue
-            ex_scores = expression([im.crop(b[:4]) for b in boxes])
+            ex_scores = expression([im.crop(b[:4]) for b in boxes])[0]
             size = np.array([min(1.0, b[4] / 160) for b in boxes])      # small, distant faces count for less
             m["face"] = round(float(np.max(ex_scores * size)), 3)
     for c in mo:
