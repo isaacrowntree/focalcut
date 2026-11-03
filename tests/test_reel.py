@@ -768,7 +768,7 @@ def test_assess_drops_shaky_and_lost_subjects_and_favours_faces_in_portrait(tmp_
     social = next(r for r in moments if r["unit"]["clip"] == "C002")
     cache = {}
     for m in social["moments"]:                                 # [present, inside, face, crop width]
-        cache[f"portrait|U02|{m['t']}|c2"] = [1.0, 1.0, 0.9 if m["t"] == 5.0 else 0.0, 1.0, None, 0.0, 0.0, 0.0, 1.0]
+        cache[f"portrait|U02|{m['t']}|c4"] = [1.0, 1.0, 0.9 if m["t"] == 5.0 else 0.0, 1.0, None, 0.0, 0.0, 0.0, 1.0]
     json.dump(cache, open(pr.path("hold_cache.json"), "w"))
     before = {m["t"]: m.get("score_p", m["score"]) for m in social["moments"]}
     P.assess(pr, [social], "portrait", P.config(pr, "portrait"))
@@ -854,7 +854,7 @@ def test_assess_drops_a_subject_who_keeps_leaving_the_crop(tmp_path):
     pr, _, moments = fake_reel(tmp_path)
     social = next(r for r in moments if r["unit"]["clip"] == "C002")
     os.makedirs(pr.reel_dir, exist_ok=True)
-    json.dump({f"portrait|U02|{m['t']}|c2": [0.3 if m["t"] == 5.0 else 1.0, 1.0, 1.0, 1.0, None, 0.0, 0.0, 0.0, 1.0]
+    json.dump({f"portrait|U02|{m['t']}|c4": [0.3 if m["t"] == 5.0 else 1.0, 1.0, 1.0, 1.0, None, 0.0, 0.0, 0.0, 1.0]
                for m in social["moments"]},
               open(pr.path("hold_cache.json"), "w"))
     before = {m["t"]: m["score"] for m in social["moments"]}
@@ -1547,7 +1547,7 @@ def test_assess_ranks_down_a_walker_a_crowd_crossing_and_a_blocked_camera(tmp_pa
     seed = {5.0: [1.0, 1.0, 1.0, 1.0, 0.3, 0.0, 0.0, 0.0, 1.0],    # walking across: arms still about the shoulders
             11.0: [1.0, 1.0, 1.0, 1.0, 1.2, 0.7, 0.0, 0.0, 1.0],   # people crossing through the crop one after another
             17.0: [1.0, 1.0, 1.0, 1.0, 1.2, 0.0, 0.5, 0.0, 1.0]}   # someone's back right up against the camera
-    json.dump({f"portrait|U02|{m['t']}|c2": seed.get(m["t"], [1.0, 1.0, 1.0, 1.0, 1.2, 0.0, 0.0, 0.0, 1.0])
+    json.dump({f"portrait|U02|{m['t']}|c4": seed.get(m["t"], [1.0, 1.0, 1.0, 1.0, 1.2, 0.0, 0.0, 0.0, 1.0])
                for m in social["moments"]},
               open(pr.path("hold_cache.json"), "w"))
     P.assess(pr, [social], "portrait", P.config(pr, "portrait"))
