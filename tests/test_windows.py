@@ -39,3 +39,20 @@ def test_moments_come_only_from_passing_windows_and_a_unit_without_says_why():
 def test_the_grid_steps_every_length_through_the_unit():
     g = WI.grid(dict(t0=0.0, t1=5.0))
     assert (0.3, 1.5) in g and (0.3, 3.9) in g and all(b <= 4.7 + 1e-6 for _, b in g)
+
+
+def test_the_taste_model_learns_a_direction_and_scores_held_out_clips_without_sklearn():
+    from focalcut.reel import taste as TA
+    rng = np.random.default_rng(1)
+    d, n = 16, 240
+    X = rng.normal(size=(n, d))
+    y = (X[:, 0] + 0.3 * rng.normal(size=n) > 0.8).astype(int)        # unbalanced: about a fifth picked
+    w, b = TA.fit(X, y)
+    assert w[0] > 3 * np.abs(w[1:]).max()                              # it found the direction that matters
+    assert TA.auc(y, TA.predict(X, w, b)) > 0.95
+    assert TA.auc([1, 0, 1, 0], [0.9, 0.1, 0.4, 0.4]) == 0.875          # ties count half
+    folds = TA.group_folds(np.array(list("aabbbcdd")), 3)
+    for tr, te in folds:
+        assert not set(np.array(list("aabbbcdd"))[tr]) & set(np.array(list("aabbbcdd"))[te])
+    lab = dict(X=X, y=y, group=np.repeat(np.arange(12), 20))
+    assert TA.cv_auc(lab, np.zeros((0, d)), np.zeros(0, int)) > 0.9

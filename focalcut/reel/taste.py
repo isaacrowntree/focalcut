@@ -93,27 +93,72 @@ def pooled(exclude=None):
     return np.concatenate([pool[f"{n}|X"] for n in names]), np.concatenate([pool[f"{n}|y"] for n in names])
 
 
-def fit(X, y):
-    from sklearn.linear_model import LogisticRegression
-    return LogisticRegression(C=1.0, class_weight="balanced", max_iter=2000).fit(X.astype(np.float32), y)
+def fit(X, y, C=1.0, iters=25):
+    """Logistic regression with balanced classes and an L2 penalty (C, as sklearn's: C x the weighted log-loss plus
+    half the squared weights), by Newton's method -- numpy only, so any of focalcut's environments can run it.
+    Returns (w, b)."""
+    X = np.asarray(X, np.float64)
+    y = np.asarray(y, np.float64)
+    n, d = X.shape
+    sw = np.where(y == 1, n / (2 * max(y.sum(), 1)), n / (2 * max(n - y.sum(), 1)))   # balanced class weights
+    A = np.c_[X, np.ones(n)]
+    reg = np.r_[np.ones(d), 0.0] / C                         # (the intercept is not penalised)
+    w = np.zeros(d + 1)
+    for _ in range(iters):
+        p = 1 / (1 + np.exp(-np.clip(A @ w, -30, 30)))
+        g = A.T @ (sw * (p - y)) + reg * w
+        H = (A * (sw * p * (1 - p))[:, None]).T @ A + np.diag(reg)
+        step = np.linalg.solve(H, g)
+        w -= step
+        if np.abs(step).max() < 1e-6:
+            break
+    return w[:-1], float(w[-1])
+
+
+def predict(X, w, b):
+    return 1 / (1 + np.exp(-np.clip(np.asarray(X, np.float64) @ w + b, -30, 30)))
+
+
+def auc(y, s):
+    """Area under the ROC curve: the chance a positive outscores a negative (ties count half)."""
+    y, s = np.asarray(y), np.asarray(s, float)
+    pos, neg = s[y == 1], s[y == 0]
+    if not len(pos) or not len(neg):
+        return np.nan
+    order = np.argsort(np.r_[pos, neg], kind="mergesort")
+    ranks = np.empty(len(order)); ranks[order] = np.arange(1, len(order) + 1)
+    allv = np.r_[pos, neg]
+    for v in np.unique(allv):                                # average ranks over ties
+        m = allv == v
+        ranks[m] = ranks[m].mean()
+    return float((ranks[:len(pos)].sum() - len(pos) * (len(pos) + 1) / 2) / (len(pos) * len(neg)))
+
+
+def group_folds(groups, k):
+    """k folds that never split a group (largest groups first, each into the smallest fold so far)."""
+    names, counts = np.unique(groups, return_counts=True)
+    load, fold_of = np.zeros(k), {}
+    for i in np.argsort(-counts):
+        f = int(np.argmin(load)); fold_of[names[i]] = f; load[f] += counts[i]
+    f = np.array([fold_of[g] for g in groups])
+    return [(np.nonzero(f != j)[0], np.nonzero(f == j)[0]) for j in range(k)]
 
 
 def cv_auc(lab, Xo, yo, folds=5):
     """AUC on this project's labels, by held-out clip: each fold trains on the other projects plus this project's
     other clips."""
-    from sklearn.metrics import roc_auc_score
-    from sklearn.model_selection import GroupKFold
     g = lab["group"]
     n = min(folds, len(set(g)))
     if n < 2 or lab["y"].sum() < 3 or (lab["y"] == 0).sum() < 3:
         return None
     pred = np.zeros(len(g))
-    for tr_i, te_i in GroupKFold(n).split(lab["X"], lab["y"], g):
+    for tr_i, te_i in group_folds(g, n):
         X = np.concatenate([Xo, lab["X"][tr_i]]); y = np.concatenate([yo, lab["y"][tr_i]])
-        if len(set(y)) < 2:
+        if len(set(y.tolist())) < 2:
             return None
-        pred[te_i] = fit(X, y).predict_proba(lab["X"][te_i].astype(np.float32))[:, 1]
-    return float(roc_auc_score(lab["y"], pred))
+        pred[te_i] = predict(lab["X"][te_i], *fit(X, y))
+    a = auc(lab["y"], pred)
+    return None if np.isnan(a) else a
 
 
 def model(project):
@@ -136,9 +181,9 @@ def model(project):
     y = np.concatenate([yo, lab["y"]]) if lab is not None else yo
     if len(set(y.tolist())) < 2:
         return None
-    clf = fit(X, y)
+    w, b = fit(X, y)
+    w = w.astype(np.float32)
     auc = cv_auc(lab, Xo, yo) if lab is not None else None
-    w, b = clf.coef_[0].astype(np.float32), float(clf.intercept_[0])
     stamp = tuple(os.path.getmtime(f) if os.path.exists(f) else 0.0 for f in (project.path("picks.json"), POOL))
     np.savez(cache, w=w, b=b, auc=np.nan if auc is None else auc, n=len(y), stamp=np.array(stamp))
     return w, b, auc, len(y)
