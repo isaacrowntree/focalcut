@@ -2819,8 +2819,9 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     plan = place(project, fmt, seq, music, cfg, direction, stinger_len, acts)
     if fmt == "portrait" and assess_shots:
         recast_placed(project, fmt, plan["shots"], moments, cfg)
-    ensure_units(project, fmt, plan["shots"], [r for r in moments if fmt == "portrait" or r["orient"] == "landscape"],
-                 cfg)
+    fm = [r for r in moments if fmt == "portrait" or r["orient"] == "landscape"]
+    ensure_units(project, fmt, plan["shots"], fm, cfg)
+    snap_windows(project, fmt, plan["shots"], fm, cfg)        # last: whichever pass placed it, on passing windows
     mo = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
     plan["units_total"] = len({r["id"] for r in mo})
     plan["music_length"] = music["length"]
@@ -3068,6 +3069,197 @@ def ensure_units(project, fmt, shots, moments, cfg):
     return placed
 
 
+SNAP_TOL = 0.3           # a window "covers" a shot that starts or ends this close inside it (windows.grid's edge)
+SNAP_GAP = 1.0           # a shot moved onto passing windows keeps this far (s) from the unit's other shots
+
+
+def load_windows(project, fmt):
+    """The scrub's windows for this format ({unit: [{t0, t1, ok, ...}]}), None without a scrub."""
+    p = project.path(f"windows_{fmt}.json")
+    return json.load(open(p)) if os.path.exists(p) else None
+
+
+def span_ok(wins, a, b, tol=SNAP_TOL):
+    """Does the source stretch a..b sit on passing windows? True / False, None when the scrub didn't judge it (no
+    windows there: scenery, an unscrubbed unit). The windows that cover it (start within tol after a, end within tol
+    before b) decide: any passing one passes it. A shot longer than every window passes when passing windows inside
+    it tile it end to end."""
+    if not wins:
+        return None
+    cover = [w for w in wins if w["t0"] <= a + tol and w["t1"] >= b - tol]
+    if cover:
+        return any(w["ok"] for w in cover)
+    if not any(w["t1"] > a and w["t0"] < b for w in wins):
+        return None
+    reach = a + tol
+    for w in sorted((w for w in wins if w["ok"] and w["t0"] >= a - tol and w["t1"] <= b + tol), key=lambda w: w["t0"]):
+        if w["t0"] > reach + 1e-6:
+            break
+        reach = max(reach, w["t1"])
+    return reach >= b - tol - 1e-6
+
+
+def window_exempt(s):
+    """Shots chosen by hand or by config, which play where they were put: the editor's picks (and the close among
+    them), the ending, the opening, logos and titles. (cover_people's shots are marked add too, with person: those
+    the planner chose.)"""
+    return bool(s.get("span") or (s.get("add") and not s.get("person")) or s.get("ending") or s.get("open") or s.get("logo")
+                or s.get("logo_image") or s.get("title"))
+
+
+def played(s):
+    """(source in, source length) render reads for a shot: a speed effect reads more or less source than the shot's
+    length, around its peak (render.fx_shot)."""
+    sp = [f for f in s["fx"] if f in SPEED and f != "fit"]
+    if not sp or s.get("span"):
+        return s["src_in"], s["length"]
+    from .. import fx
+    from ..fx.speed import Speed
+    u, L = s["unit"], s["length"]
+    ctx = fx.Context(fps=FPS, beat=s["beat"], peak=s["peak"], seed=0,
+                     params={"group": s.get("group"), "closeup": s.get("kind") == "closeup",
+                             "cap": 3.5 if u["role"] == "transition" else 1.5})
+    src_len, src_peak = L, s["peak"]
+    for n in s["fx"]:
+        e = fx.EFFECTS[n]()
+        if isinstance(e, Speed):
+            src_len, src_peak = e.source_length(L, ctx), e.source_peak(s["peak"], ctx, L)
+    return min(max(s["t"] - src_peak, u["t0"]), max(u["t1"] - src_len, u["t0"])), src_len
+
+
+def window_fails(shots, W):
+    """The shots that play a stretch every covering window fails: [(index, shot, why)], why the exempt kind
+    (window_exempt) or None for one the planner chose."""
+    out = []
+    for i, s in enumerate(shots):
+        a, L = played(s)
+        if span_ok(W.get(s["unit"]["id"]), a, a + L) is False:
+            out.append((i, s, "pick" if s.get("span") or (s.get("add") and not s.get("person")) else "ending" if s.get("ending")
+                        else "opening" if s.get("open") or s.get("logo") else "title" if window_exempt(s) else None))
+    return out
+
+
+def snap_windows(project, fmt, shots, moments, cfg, W=None):
+    """Every shot the planner chose (not the editor's picks, the ending, the opening) plays a stretch that passes
+    the scrub in this format, whichever pass put it there (band inserts, people, quick cuts, landings, slides): one
+    on failing windows moves along its own clip, as little as it can, onto passing ones (the move and its beat move
+    with it); else it takes a passing moment of another unit of the same kind (a unit not in the reel yet first,
+    never beside its own clip, day footage in the day), keeping its effect; else it is logged. Returns
+    (slid, recast, stuck)."""
+    from . import shake
+    W = load_windows(project, fmt) if W is None else W
+    if not W:
+        return 0, 0, []
+    lo = cfg["shake"][0]
+    have = Counter(s["unit"]["id"] for s in shots)
+    day_cats = [*(cfg.get("day") or ()), *(cfg.get("day_shows") or ())]
+
+    def free(uid, a, b, me):                                 # no other shot of the unit plays this stretch, or
+        for x in shots:                                      # one just beside it (the same moment twice)
+            if x is not me and x["unit"]["id"] == uid:
+                xa, xl = played(x)
+                if min(b, xa + xl) - max(a, xa) > -SNAP_GAP:
+                    return False
+        return True
+
+    def fits_at(s, u, dt, a, L):                             # the shot moved by dt: inside the unit, clear, passing
+        na = a + dt
+        return (u["t0"] - 1e-6 <= na and na + L <= u["t1"] + 1e-6 and clear_of_bans(na, L, u) == na
+                and span_ok(W.get(u["id"]), na, na + L) is True and free(u["id"], na, na + L, s))
+
+    def passing(r):
+        return [m for m in r["moments"] if (m.get("fmt_ok") or {}).get(fmt) is True and not m.get("unusable")]
+
+    def measure(s):
+        u = s["unit"]
+        a, L = played(s)
+        c = reframe(project, u, s["src_in"], s["length"], fmt) if s.get("crop") or fmt == "portrait" else None
+        s["crop"] = c or s.get("crop")
+        j = shake.jitter(project, u, a, a + L)
+        j = j / max((c or {}).get("w", 1.0), 0.2) if j is not None else None
+        s["jitter"] = round(j, 5) if j is not None else None
+        s["stab"] = bool(j is not None and j > lo and "_stabilized" not in u["source"])
+        s.pop("land", None); s.pop("land_fits", None)
+
+    slid = recast_n = 0
+    stuck = []
+    for i, s, why in window_fails(shots, W):
+        if why:
+            continue
+        u = s["unit"]
+        a, L = played(s)
+        speedy = any(f in SPEED for f in s["fx"])
+        rec = next((r for r in moments if r["id"] == u["id"]), None)
+        dts = [m["t"] - s["t"] for m in (passing(rec) if rec else [])]
+        if not speedy:                                       # a plain shot can start anywhere: on a window's edges
+            for w in W.get(u["id"]) or ():
+                if w["ok"]:
+                    dts += [w["t0"] - a, w["t1"] - L - a, w["t0"] - SNAP_TOL - a, w["t1"] - L + SNAP_TOL - a]
+        dts = sorted({round(d, 3) for d in dts}, key=abs)
+        dt = next((d for d in dts if fits_at(s, u, d, a, L)), None)
+        if dt is not None:
+            s.update(t=round(s["t"] + dt, 3), src_in=round(s["src_in"] + dt, 3), snapped=round(dt, 2))
+            measure(s)
+            slid += 1
+            continue
+        nb = [shots[k] for k in (i - 1, i + 1) if 0 <= k < len(shots)]
+        perf = people_broll(u)
+        best = None
+        for r in moments:
+            ru = r["unit"]
+            if r["id"] == u["id"] or (r["role"] != u["role"] if not perf else not people_broll(ru)):
+                continue
+            if any(n["unit"]["clip"] == ru["clip"] for n in nb):
+                continue
+            if cfg.get("sets") and ru.get("category") != u.get("category"):
+                continue
+            d = bool(day_cats) and fits(ru, day_cats)
+            if d != (s["act"] in DAY_ACTS) and (d or s["act"] == "arrival"):
+                continue
+            for m in passing(r):
+                dt = m["t"] - s["t"]
+                if not fits_at(s, ru, dt, a, L):
+                    continue
+                key = (have[r["id"]] == 0, ru.get("category") == u.get("category"), rk(m, fmt))
+                if best is None or key > best[0]:
+                    best = (key, r, m, dt)
+        if best:
+            _, r, m, dt = best
+            x = shot(r, m, fmt, s["beats"], act=s["act"])
+            have[u["id"]] -= 1
+            have[r["id"]] += 1
+            s.update({k: x[k] for k in ("unit", "t", "kind", "rank", "face", "framing", "thumb") if k in x},
+                     src_in=round(s["src_in"] + dt, 3), recast_window=True)
+            s["peak"] = round(s["t"] - s["src_in"], 3)
+            measure(s)
+            recast_n += 1
+            continue
+        stuck.append(f"#{i} {u['id']}@{a:.1f}")
+    if slid or recast_n or stuck:
+        print(f"[reel] {fmt}: {slid} shots slid onto passing windows, {recast_n} recast to another unit's"
+              + (f"; none passes for {stuck}" if stuck else ""))
+    return slid, recast_n, stuck
+
+
+def window_report(project, fmt, plan):
+    """The plan log's check: every shot the planner chose plays on passing windows (WARNING lines for any that
+    doesn't); the editor's picks and the ending on failing ones are counted, as their choice."""
+    W = load_windows(project, fmt)
+    if not W:
+        return []
+    bad = window_fails(plan["shots"], W)
+    mine = [(i, s) for i, s, why in bad if not why]
+    chosen = Counter(why for _, _, why in bad if why)
+    print(f"[reel]   windows: {len(plan['shots']) - len(bad)}/{len(plan['shots'])} shots on passing windows"
+          + (f" ({', '.join(f'{n} {k}' for k, n in sorted(chosen.items()))} on failing ones, as chosen)" if chosen else ""))
+    lines = []
+    for i, s in mine:
+        a, L = played(s)
+        lines.append(f"shot {i} {s['unit']['id']} {a:.2f}-{a + L:.2f}: every window there fails")
+        print(f"[reel]   WARNING windows: {lines[-1]}")
+    return lines
+
+
 def shot(r, m, fmt, beats, act="shows", fx=(), **kw):
     """One shot of a moment (a moments.json record r and one of its moments m), for a hand-built sequence: place()
     times it, frames it and gives it its transition."""
@@ -3234,6 +3426,7 @@ def run(project, fmt, stinger_len=0.0) -> dict:
             print(f"[reel]     {line}")
     print("[reel]   effects:", {f: fxs.count(f) for f in sorted(set(fxs))})
     coverage_report(project, fmt, plan)
+    window_report(project, fmt, plan)
     for line in V.speed_tails(plan):                         # every shot ends at real speed
         print(f"[reel]   WARNING speed: {line}")
     return plan
