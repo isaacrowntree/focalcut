@@ -76,9 +76,11 @@ That gives H.264, HEVC Main/Main10, VP9 and AV1 decode and encode on either GPU,
 - **Two scoring workers on a 12 GB GPU.** More overflows VRAM; on WSL that pages to system RAM and everything slows
   to a crawl.
 - **Cap SAM 3 in crowds:** the masks module tracks at most 6 confident people at 960 px.
-- **Headless WebGL on WSL** (the MilkDrop overlay): Chromium needs `GALLIUM_DRIVER=d3d12`,
-  `MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA`, `LD_LIBRARY_PATH=/usr/lib/wsl/lib` and `--use-angle=gl`, or it falls
-  back to software.
+- **The MilkDrop overlay** renders natively with projectM 4 (`focalcut/reel/milkdrop/mdrender.cpp`, built once by
+  `milkdrop/build.sh` into `~/.cache/focalcut/bin`; needs cmake, g++ and the EGL / GL headers): about 100 fps at
+  1080p on an RTX 4070 Ti, frames read back raw and encoded on NVENC. On WSL it reaches the GPU through Mesa's D3D12
+  driver (`GALLIUM_DRIVER=d3d12`, `MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA`, `LD_LIBRARY_PATH=/usr/lib/wsl/lib`, set
+  by the overlay).
 - Set `FOCALCUT_DISABLE_CUDNN=1` if your torch build has broken cuDNN engines.
 - **Another Mac or PC** could take shots too (ffmpeg with VideoToolbox, over SSH and a shared folder), but it only
   speeds up plain shots; measure where a render's time goes first.

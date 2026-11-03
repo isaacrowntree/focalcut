@@ -7,6 +7,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **MilkDrop renders natively** with projectM 4 (`reel/milkdrop/mdrender.cpp`, off-screen EGL, a fixed frame time
+  and the song's own samples per frame), about 6x faster than Butterchurn in headless Chromium and sharper: frames
+  are read back raw, not as JPEG. `milkdrop/build.sh` builds projectM and the renderer once into
+  `~/.cache/focalcut/bin`; presets are the same `.milk` sources Butterchurn's packs were converted from, downloaded on
+  first use. The Chromium path (`render.mjs`, `cdp.mjs`, `FOCALCUT_CHROME`) is gone, and with it the need for node.
+
 ### Added
 
 - **Cuts** (reel.json `"cuts"`, `focalcut reel run --cut <name>`): other reels from the same footage and analysis,

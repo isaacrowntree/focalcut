@@ -74,7 +74,7 @@ PRESETS = [                                        # (effects, palette); "calm" 
 CALM = [(["leaks", "bokeh"], "synthwave"), (["mandala", "bokeh"], "vaporwave"), (["leaks", "flare"], "fire"),
         (["plasma", "bokeh"], "ice")]
 DAY = ("arrival",)
-MILKDROP = [                                       # real MilkDrop presets (Butterchurn's packs), loud ones for the night
+MILKDROP = [                         # real MilkDrop presets (by Butterchurn's pack names), loud ones for the night
     "Cope - The Neverending Explosion of Red Liquid Fire", "ech0 - liquid firesticks I", "martin - ice flames",
     "Rovastar + Geiss - Hyperspace - kaleidoscope", "Rovastar + Geiss - Hyperkaleidoscope Glow 2 motion blur (Jelly)",
     "martin - tunnel race", "martin - cope - laser dome", "Phat+fiShbRaiN+Eo.S_Mandala_Chasers_remix",
@@ -91,9 +91,9 @@ EDGE_LIT = 0.008       # MilkDrop lighting this share of the border (keyed) fill
 EDGE_FILL = 0.35       # how much of a corner MilkDrop's unkeyed ground may cover; the rest keeps the darkened footage
 BARE = 0.5             # how far a bare-edged preset pushes the vignette from its setting towards fully black ("bare")
 DULL = 0.15            # how much of MilkDrop's dull, unkeyed ground stays in the corners (the rest goes to black)
-BUTTERCHURN = ["butterchurn@2.6.7/lib/butterchurn.min.js", "butterchurn-presets@2.4.7/lib/butterchurnPresets.min.js",
-               "butterchurn-presets@2.4.7/lib/butterchurnPresetsExtra.min.js",
-               "butterchurn-presets@2.4.7/lib/butterchurnPresetsExtra2.min.js"]
+# the presets' .milk sources, by the names Butterchurn's packs give them (pinned)
+MILK_SRC = "https://raw.githubusercontent.com/jberg/butterchurn-presets/c10e2616762f262de898e5d4c1f162a3e01340c1" \
+           "/presets/milkdrop/"
 
 
 def options(cfg) -> dict | None:
@@ -662,46 +662,69 @@ def frame(f, k, show, F, G, S, preset, opts, md=None):
     return np.clip(x, 0, 255).astype(np.uint8)
 
 
-def chrome() -> str:
-    """A Chromium for the MilkDrop layer: FOCALCUT_CHROME, else Playwright's download."""
-    import glob
-    c = os.environ.get("FOCALCUT_CHROME") or next(iter(sorted(glob.glob(os.path.expanduser(
-        "~/.cache/ms-playwright/chromium-*/chrome-linux/chrome")), reverse=True)), None)
-    if not c:
-        raise RuntimeError("the MilkDrop layer needs Chromium: set FOCALCUT_CHROME or `playwright install chromium`")
-    return c
+def cache() -> str:
+    return os.environ.get("FOCALCUT_CACHE") or os.path.expanduser("~/.cache/focalcut")
 
 
-def butterchurn() -> str:
-    """Butterchurn (MilkDrop in WebGL) and its preset packs, downloaded once to ~/.cache/focalcut/milkdrop."""
+def mdrender() -> str:
+    """The native MilkDrop renderer (projectM 4 on an off-screen EGL context): FOCALCUT_MDRENDER, else
+    ~/.cache/focalcut/bin/mdrender, built by milkdrop/build.sh the first time."""
+    exe = os.environ.get("FOCALCUT_MDRENDER") or os.path.join(cache(), "bin", "mdrender")
+    if not os.path.exists(exe):
+        print("[reel] overlay: building the MilkDrop renderer (projectM), once")
+        subprocess.run(["bash", os.path.join(os.path.dirname(__file__), "milkdrop", "build.sh")], check=True)
+    return exe
+
+
+def milk(name: str) -> str:
+    """A preset's .milk file, downloaded once to ~/.cache/focalcut/milk."""
+    import urllib.parse
     import urllib.request
-    lib = os.path.expanduser("~/.cache/focalcut/milkdrop")
+    lib = os.path.join(cache(), "milk")
     os.makedirs(lib, exist_ok=True)
-    for f in BUTTERCHURN:
-        dst = os.path.join(lib, os.path.basename(f))
-        if not os.path.exists(dst):
-            urllib.request.urlretrieve("https://cdn.jsdelivr.net/npm/" + f, dst + ".part")
-            os.replace(dst + ".part", dst)
-    return lib
+    dst = os.path.join(lib, name + ".milk")
+    if not os.path.exists(dst):
+        try:
+            urllib.request.urlretrieve(MILK_SRC + urllib.parse.quote(name + ".milk"), dst + ".part")
+        except OSError as e:
+            raise RuntimeError(f"unknown MilkDrop preset {name!r} ({e})") from None
+        os.replace(dst + ".part", dst)
+    return dst
 
 
 def milkdrop_layer(work, song, start, n, fps, w, h, per_frame, beat) -> str:
-    """Render the MilkDrop layer (cached in work/): the presets per frame, each change blended over a beat."""
+    """Render the MilkDrop layer (cached in work/): the presets per frame, each change blended over a beat. projectM
+    renders it on the GPU from the song's own samples at a fixed frame time, so it is frame-exact against the cut."""
     import hashlib
     import json
+
+    from . import hw
     sched = [[k, p, round(beat, 3)] for k, p in enumerate(per_frame) if k == 0 or p != per_frame[k - 1]]
     sched[0][2] = 0
-    key = hashlib.md5(json.dumps([song, os.path.getmtime(song), start, n, fps, w, h, sched]).encode()).hexdigest()[:10]
+    key = hashlib.md5(json.dumps(["projectm", song, os.path.getmtime(song), start, n, fps, w, h, sched])
+                      .encode()).hexdigest()[:10]
     out = os.path.join(work, f"milkdrop_{key}.mp4")
     if os.path.exists(out):
         return out
-    job = dict(song=song, start=start, frames=n, fps=fps, width=w, height=h, out=out + ".part.mp4", schedule=sched,
-               chrome=chrome(), lib=butterchurn())
-    jf = os.path.join(work, f"milkdrop_{key}.json")
-    with open(jf, "w") as f:
-        json.dump(job, f)
-    subprocess.run(["node", os.path.join(os.path.dirname(__file__), "milkdrop", "render.mjs"), jf], check=True)
+    exe = mdrender()
+    pcm, tsv = os.path.join(work, f"milkdrop_{key}.s16"), os.path.join(work, f"milkdrop_{key}.tsv")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", song, "-ac", "2", "-ar", "44100", "-f", "s16le", pcm],
+                   check=True)
+    with open(tsv, "w") as f:
+        f.writelines(f"{k}\t{bl}\t{milk(p)}\n" for k, p, bl in sched)
+    env = {**os.environ, "GALLIUM_DRIVER": "d3d12", "MESA_D3D12_DEFAULT_ADAPTER_NAME": "NVIDIA",
+           "LD_LIBRARY_PATH": ":".join(filter(None, ["/usr/lib/wsl/lib", os.environ.get("LD_LIBRARY_PATH")]))} \
+        if os.path.exists("/usr/lib/wsl/lib") else None          # (WSL: the GPU through Mesa's D3D12 driver)
+    md = subprocess.Popen([exe, str(w), str(h), str(fps), str(n), str(start), pcm, tsv], stdout=subprocess.PIPE, env=env)
+    wr = subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
+                         "-r", str(fps), "-i", "-", *(hw.NVENC if hw.nvenc() else hw.X264), "-pix_fmt", "yuv420p",
+                         out + ".part.mp4"], stdin=md.stdout)
+    md.stdout.close()
+    if md.wait() or wr.returncode:
+        raise RuntimeError("the MilkDrop layer failed to render")
     os.replace(out + ".part.mp4", out)
+    for f in (pcm, tsv):
+        os.remove(f)
     return out
 
 
