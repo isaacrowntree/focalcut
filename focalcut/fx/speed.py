@@ -10,15 +10,27 @@ import numpy as np
 
 from .base import Effect, register
 
+TAIL = 0.5                                          # seconds at 1x at the end of every shot
+
+
+def settle_tail(v, t, out_len, ctx, tail=TAIL):
+    """Whatever a curve does, a shot's last tail seconds play at 1x, eased into over 0.4 beats before them."""
+    ease = max(0.4 * ctx.beat, 1 / ctx.fps)
+    x = np.clip((t - (out_len - tail - ease)) / ease, 0, 1)
+    w = 0.5 - 0.5 * np.cos(np.pi * x)
+    return v + (1 - v) * w
+
 
 class Speed(Effect):
     """A velocity curve the way CapCut's custom curve and a time-remap ramp are built: fast through the move, easing
     down to arrive slow exactly as the dancer lands (the shot's peak: frame dwell detected by the planner), holding
-    there over the rest so the hair and the face play out, then easing back up to speed. Dancing never runs faster than
-    CAP (any faster and people look sped up, not energetic); a close-up holds deeper and longer -- a hair flip in
-    near-still motion."""
+    there over the rest so the hair and the face play out, then easing back to real speed (1x) and staying there. The
+    fast part is only the RUN beats into the move (a long shot plays at 1x before it), and every shot ends on TAIL
+    seconds at 1x however late its landing. Dancing never runs faster than CAP (any faster and people look sped up,
+    not energetic); a close-up holds deeper and longer -- a hair flip in near-still motion."""
     fast, slow, hold, ease = 1.0, 0.35, 1.0, 0.4    # speed through the move, during the hold; hold and ease in beats
     CAP = 1.5
+    RUN = 2.0                                       # beats of fast run-up into the move
 
     def curve(self, t, ctx):
         p = ctx.peak if ctx.peak is not None else 0.0
@@ -30,12 +42,15 @@ class Speed(Effect):
         fast = min(self.fast, ctx.params.get("cap", self.CAP))
         def smooth(x):                                                        # ease in and out, no corners
             return 0.5 - 0.5 * np.cos(np.pi * np.clip(x, 0, 1))
+        run = smooth((t - (p - ease - self.RUN * b)) / ease)                # 0 long before the move, 1 in its run
         down = smooth((t - (p - ease)) / ease)                               # 0 before the ease, 1 at the landing
         up = smooth((t - (p + hold)) / ease)                                 # 0 during the hold, 1 after it
-        return fast + (slow - fast) * down * (1 - up)
+        v = 1 + (fast - 1) * run * (1 - down)                                # 1x, then fast through the move
+        return v + (slow - v) * down * (1 - up)                              # slow on the landing, then 1x
 
     def speed(self, t, out_len, ctx):
-        return np.minimum(self.curve(t, ctx), ctx.params.get("cap", self.CAP))
+        v = np.minimum(self.curve(t, ctx), ctx.params.get("cap", self.CAP))
+        return settle_tail(v, t, out_len, ctx)
 
     def _map(self, out_len, ctx):
         t = np.arange(int(round(out_len * ctx.fps)) + 1) / ctx.fps
@@ -107,7 +122,8 @@ class JumpCut(Speed):
 
     def speed(self, t, out_len, ctx):                         # a quick speed-up just before the peak
         p = ctx.peak if ctx.peak is not None else out_len / 2
-        return np.where((t > p - 0.6 * ctx.beat) & (t < p - 0.1 * ctx.beat), ctx.params.get("cap", 3.5), 1.0)
+        v = np.where((t > p - 0.6 * ctx.beat) & (t < p - 0.1 * ctx.beat), ctx.params.get("cap", 3.5), 1.0)
+        return settle_tail(v, t, out_len, ctx)
 
 
 @register
@@ -115,12 +131,16 @@ class FlashIn(Speed):
     name = "flashin"
 
     def speed(self, t, out_len, ctx):                         # rushes in fast, settles to normal
-        return np.minimum(1 + 2.5 * np.exp(-t / (0.6 * ctx.beat)), ctx.params.get("cap", 3.5))
+        v = np.minimum(1 + 2.5 * np.exp(-t / (0.6 * ctx.beat)), ctx.params.get("cap", 3.5))
+        return settle_tail(v, t, out_len, ctx)
 
 
 @register
 class FlashOut(Speed):
     name = "flashout"
+
+    velocity = True                                           # the one curve that ends fast: the out-half of a velocity
+                                                              # edit, cut mid-rush into its swipe (never a shot's own end)
 
     def speed(self, t, out_len, ctx):                         # normal, then rushes out
         return np.minimum(1 + 2.5 * np.exp(-(out_len - t) / (0.6 * ctx.beat)), ctx.params.get("cap", 3.5))
@@ -136,10 +156,12 @@ class Fit(Speed):
     def shape(self, t, out_len):
         return 1 - self.dip * np.exp(-((t - out_len / 2) / (self.width * out_len)) ** 2)
 
-    def speed(self, t, out_len, ctx):
+    def speed(self, t, out_len, ctx):                        # scaled so the curve, its 1x tail included, reads src_len
         dense = np.linspace(0, out_len, 2001)
-        area = np.trapezoid(self.shape(dense, out_len), dense)
-        return self.shape(t, out_len) * ctx.params.get("src_len", out_len) / max(area, 1e-6)
+        w = settle_tail(np.zeros_like(dense), dense, out_len, ctx)          # the tail's weight
+        k = (ctx.params.get("src_len", out_len) - np.trapezoid(w, dense)) / max(
+            np.trapezoid(self.shape(dense, out_len) * (1 - w), dense), 1e-6)
+        return settle_tail(self.shape(t, out_len) * max(k, 0.05), t, out_len, ctx)
 
     def source_length(self, out_len, ctx):
         return ctx.params.get("src_len", out_len) + 2 / ctx.fps

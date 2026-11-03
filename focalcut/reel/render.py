@@ -15,7 +15,9 @@ import subprocess
 
 import numpy as np
 
-from . import hw
+from . import exposure, hw
+
+SPEED_FX = ("hero", "bullet", "montage", "flashin", "flashout", "jumpcut", "fit")
 
 SIZE = {"landscape": (1920, 1080), "portrait": (1080, 1920)}
 FPS = 50
@@ -79,6 +81,8 @@ def shot_filter(s, fmt, project=None, dur=None):
     if c:
         f.append(f"crop=w=iw*{c['w']}:h=ih*{c['h']}:x=({crop_expr(c['path'], 1)})*iw-ow/2"
                  f":y=({crop_expr(c['path'], 2)})*ih-oh/2")
+    if s.get("pull"):                                       # a blown-out subject: its highlights pulled back
+        f.append(exposure.filt(s["pull"]))
     f += [f"scale={W}:{H}:flags=lanczos", f"fps={FPS}", "setsar=1", "format=yuv420p"]
     return ",".join(f)
 
@@ -88,7 +92,9 @@ def key(s, beat=None):
     u = s["unit"]
     k = json.dumps([u["id"], u["source"], u.get("rotate"), u["role"], s["src_in"], s["frames"], s.get("fx"),
                     s.get("crop"), s["peak"], s.get("logo"), s.get("stab"), s["kind"] == "closeup", beat, 3, hw.enc_tag()]
-                   + ([s["span"]] if s.get("span") else []) + ([s["logo_image"]] if s.get("logo_image") else []),
+                   + ([s["span"]] if s.get("span") else []) + ([s["logo_image"]] if s.get("logo_image") else [])
+                   + ([["pull", s["pull"]]] if s.get("pull") else [])
+                   + (["speed2"] if any(n in SPEED_FX for n in s.get("fx") or ()) else []),   # (1x tails)
                    sort_keys=True)
     return hashlib.md5(k.encode()).hexdigest()[:10]
 
@@ -266,6 +272,13 @@ def run(project, fmt, draft=False, cut=None) -> str:
     W, H = SIZE[fmt]
     outdir, work = project.path("out"), project.path("work", cut)
     os.makedirs(outdir, exist_ok=True); os.makedirs(work, exist_ok=True)
+    pulled = exposure.mark(project, plan)                    # reel.json "exposure": blown-out subjects
+    if pulled:
+        print(f"[reel] {cut}: highlights pulled on {len(pulled)} shots: "
+              + ", ".join(f"{i} {plan['shots'][i]['unit']['id']} {p:.2f}" for i, p in pulled.items()))
+    from .velocity import speed_tails
+    for line in speed_tails(plan):
+        print(f"[reel] {cut}: WARNING speed: {line}")
     files = render_shots(project, plan, fmt, work, draft)
     if not draft:
         files = apply_transitions(plan, files)

@@ -23,6 +23,7 @@ from . import frame as FR
 RAMP = ("hero", "bullet", "montage")                     # the speed curves that hold on a landing
 HOLDS = dict(hero=1.0, bullet=2.0, montage=0.75)         # their holds, in beats (fx.speed); close-ups hold 0.5 more
 PRE = 0.5                                                # seconds of the move kept before its landing
+TAIL = 0.5                                               # every shot's last seconds play at 1x (fx.speed.TAIL)
 
 
 def _motion(project, unit):
@@ -80,9 +81,43 @@ def hold_in(s_in, length, land, hold):
     return land - 0.4 * length, False
 
 
-def landing(beats, ramp, closeup, accents):
+def landing(beats, ramp, closeup, accents, tail_beats=0.0):
     """Beats from the shot's start to the landing: the strongest accent (accents[k]: beat k of the shot) among the
-    beats that leave the hold (and half a beat to ease out) inside the shot."""
-    hold = HOLDS[ramp] + (0.5 if closeup else 0) + 0.5
+    beats that leave the hold, half a beat to ease out and tail_beats at 1x (the speed curve's TAIL) inside the shot."""
+    hold = HOLDS[ramp] + (0.5 if closeup else 0) + 0.5 + tail_beats
     ks = [k for k in range(1, beats) if beats - k >= hold] or [max(1, beats // 2)]
     return max(ks, key=lambda k: accents[k] if k < len(accents) else 0)
+
+
+def end_speed(s, fps=50):
+    """(lowest, highest) speed over a planned shot's last TAIL seconds, the way render.fx_shot times its curve; None
+    for a shot with no speed effect (it plays at 1x)."""
+    from .. import fx
+    from ..fx.speed import Speed
+    sp = [fx.EFFECTS[n]() for n in s.get("fx", []) if n in fx.EFFECTS and issubclass(fx.EFFECTS[n], Speed)]
+    if not sp:
+        return None
+    u, L = s["unit"], s["length"]
+    ctx = fx.Context(fps=fps, beat=s.get("beat") or 0.5, peak=s.get("peak"), seed=0,
+                     params={"group": s.get("group"), "closeup": s.get("kind") == "closeup",
+                             "cap": 3.5 if u.get("role") == "transition" else 1.5})
+    if s.get("span"):
+        ctx.params["src_len"] = s["span"][1] - s["span"][0]
+    t = np.arange(int(round(L * fps)) + 1) / fps
+    v = sp[-1].speed(t, L, ctx)
+    v = v[t >= L - TAIL]
+    return float(v.min()), float(v.max())
+
+
+def speed_tails(plan, tol=0.02):
+    """Shots whose last TAIL seconds are not at 1x, as report lines (an empty list: all good). A velocity edit's
+    out-half (flashout: it rushes into its swipe on purpose) is left out."""
+    from .. import fx
+    out = []
+    for i, s in enumerate(plan["shots"]):
+        if s.get("velocity") and any(getattr(fx.EFFECTS.get(n), "velocity", False) for n in s.get("fx", [])):
+            continue
+        r = end_speed(s)
+        if r and (r[0] < 1 - tol or r[1] > 1 + tol):
+            out.append(f"shot {i} {s['unit']['id']} {'+'.join(s['fx'])}: last {TAIL}s at {r[0]:.2f}-{r[1]:.2f}x")
+    return out

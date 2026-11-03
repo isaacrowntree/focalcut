@@ -1939,10 +1939,9 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
         x0 = r["unit"].get("export_t0", 0.0)                 # the editor's own in-out (a pick of it is this shot)
         s["span"] = [round(x0 + e[1], 3), round(x0 + e[2], 3)]
         s.pop("whole", None)
-    else:
-        s = P.take(*move(("dip", "spin", "trick"), 0.4), beats=rest, act="finale")
-        s["fx"], s["effect"] = ["hero"], "hero"
-    fi.append(s)
+    else:                                                    # the last move to the end, at real speed (a long shot
+        s = P.take(*move(("dip", "spin", "trick"), 0.4), beats=rest, act="finale")   # sped up to its last beat
+    fi.append(s)                                             # looks wrong; the move before it is the slow one)
     seq += fit(fi, budget["finale"], 2)
     sets, allowed = cfg.get("sets"), None
     if sets:                                                 # song sets: each song's own footage, in the day's order
@@ -2059,7 +2058,8 @@ def transitions(seq, music, cfg, direction=None):
             return False                                    # never back to back
         A, B = seq[i - 1], seq[i]
         if velocity and not (any(f in SPEED for f in A["fx"] + B["fx"]) or A["beats"] < 2 or B["beats"] < 2
-                             or A.get("span") or B.get("span")):        # (an editor's pick plays at real speed)
+                             or A.get("span") or B.get("span")          # (an editor's pick plays at real speed,
+                             or i == len(seq) - 1 or B.get("ending")):  #  and so does the last shot)
             A["fx"].append("flashout"); B["fx"].insert(0, "flashin"); A["velocity"] = B["velocity"] = True
         seq[i]["transition"] = name; seq[i]["why"] = why
         room[i - 1] -= h; room[i] -= h
@@ -2689,6 +2689,14 @@ def lands(project, seq, beat, hold):
             seq[j]["beats"] -= 1; s["beats"] += 1
 
 
+def real_speed_close(seq):
+    """The reel's closing shot (the last, the configured ending, finale_reuse's close) plays at 1x: no speed effect."""
+    for k, s in enumerate(seq):
+        if (k == len(seq) - 1 or s.get("ending")) and any(f in SPEED for f in s["fx"]):
+            s["fx"] = [f for f in s["fx"] if f not in SPEED]
+            s["effect"] = s["fx"][-1] if s["fx"] else None
+
+
 def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, acts=None, song=None):
     """Turn a sequence of shots (beats, act, fx; from story() or built by hand with shot()) into a plan that render,
     xml_export and review can use: record positions locked to the beat grid, velocity edits slowed on the dancer's
@@ -2715,6 +2723,7 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
         s["jitter"] = round(j, 5) if j is not None else None
         s["stab"] = bool(j is not None and j > lo and "_stabilized" not in u["source"])   # (not twice)
     hold = max(cfg.get("land_hold", 1.0) * beat, 0.45)
+    real_speed_close(seq)
     lands(project, seq, beat, hold)
     rec = 0
     for s in seq:
@@ -2724,7 +2733,7 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
         ramp = next((f for f in s["fx"] if f in V.RAMP), None)
         if ramp:                                             # velocity edit: slow on the landing, on a strong beat
             s["t"] = V.settle(project, u, s["t"])
-            s["lead_beats"] = V.landing(s["beats"], ramp, s["kind"] == "closeup", acc[rec:])
+            s["lead_beats"] = V.landing(s["beats"], ramp, s["kind"] == "closeup", acc[rec:], V.TAIL / s["beat"])
         src_in = in_point(s, s["beat"])
         if s.get("land") is not None:                        # the move's finish and the rest after it
             src_in, s["land_fits"] = V.hold_in(src_in, L, s["land"], hold)
@@ -2742,6 +2751,7 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
     transitions(seq, music, cfg, direction)
     if look_of(cfg):
         glitch_look(seq, music, look_of(cfg))
+        real_speed_close(seq)                                # (a look's own effects for these: none either)
     for s in seq:                                            # velocity edits changed some shots' speed effects
         if any(f in SPEED for f in s["fx"]) and not s.get("ending"):
             src_in = round(in_point(s, s["beat"]), 3)
@@ -2788,4 +2798,6 @@ def run(project, fmt, stinger_len=0.0) -> dict:
         for line in bad:
             print(f"[reel]     {line}")
     print("[reel]   effects:", {f: fxs.count(f) for f in sorted(set(fxs))})
+    for line in V.speed_tails(plan):                         # every shot ends at real speed
+        print(f"[reel]   WARNING speed: {line}")
     return plan

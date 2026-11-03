@@ -46,13 +46,13 @@ def test_hero_is_a_velocity_edit_fast_then_held_slow_on_the_landing_and_keeps_le
     ctx = fx.Context(fps=50, beat=0.6, peak=1.2)
     hero = fx.EFFECTS["hero"]()
     assert isinstance(hero, Speed)
-    t = np.linspace(0, 2.4, 241)
-    v = hero.speed(t, 2.4, ctx)
+    t = np.linspace(0, 3.4, 341)
+    v = hero.speed(t, 3.4, ctx)
     assert v.max() <= 1.5 + 1e-9                  # dancing never past 1.5x
-    assert v[0] > 1.2                             # fast through the move
+    assert v[0] > 1.2                             # fast through the move (its run-up: 2 beats before the ease)
     hold = (t >= 1.2) & (t <= 1.2 + 0.6)          # arrives slow on the landing and holds a beat
     assert np.allclose(v[hold], hero.slow)
-    assert v[-1] > 1.2                            # eases back up to speed
+    assert np.allclose(v[t >= 2.1], 1.0)          # then back to real speed, to the end of the shot
     assert hero.source_peak(1.2, ctx) > 0
     src = hero.source_length(2.4, ctx)
     ctx.out_frames = 120
