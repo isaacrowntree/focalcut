@@ -160,3 +160,19 @@ def test_coverage_never_forces_in_a_unit_whose_best_window_is_weak(fakes):
     shots = [placed("A", 1.0), placed("A", 5.0), placed("B", 2.0), placed("A", 9.0), placed("B", 6.0)]
     W = {"D": [dict(win(20.0, 21.2, True), score=0.1)], "E": [dict(win(20.0, 21.2, True), score=0.9)]}
     assert plan.ensure_units(None, "portrait", shots, [rec("D", [20.5]), rec("E", [20.5])], CFG, W) == ["E"]
+
+
+def test_the_last_shot_ends_before_its_subject_leaves_and_the_band_takes_the_rest(fakes):
+    W = {"A": grid(0.3, 40.0, bad=[(13.6, 40.0)]),                    # the camera pans off from 13.6 s
+         "BAND": grid(0.3, 40.0)}
+    last = placed("A", 10.0)
+    last.update(beats=12, length=12 * 0.45, beat=0.45, rec_in=100.0, frames=270)
+    shots = [placed("B", 2.0), last]
+    band = rec("BAND", [8.0])
+    band.update(role="transition")
+    band["unit"].update(role="transition", tag="band")
+    fill = plan.end_clean(None, "portrait", shots, [rec("C", [5.0]), band], CFG, W)
+    assert fill is shots[-1] and fill["unit"]["id"] == "BAND" and fill["end_fill"]
+    assert last["beats"] + fill["beats"] == 12 and last["beats"] >= 2
+    assert plan.span_ok(W["A"], last["src_in"], last["src_in"] + last["length"]) is not False
+    assert last["frames"] + fill["frames"] == 270 and fill["rec_in"] == pytest.approx(100.0 + last["beats"] * 0.45)

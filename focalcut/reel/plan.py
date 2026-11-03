@@ -1962,7 +1962,9 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
     # the biggest visual on the drop: the reel's best move, held in bullet time, burns with fire -- the one subject
     # effect of the climax, built up to by the slow-motion holds before it
     if cl:                                                   # (empty when the picks will fill it, include_adds)
-        cl[-1]["fx"], cl[-1]["effect"] = ["bullet", "aura"], "aura"
+        cl[-1]["fx"], cl[-1]["effect"] = (["bullet", "aura"] if cfg.get("drop_slowmo", True) else ["aura"]), "aura"
+        # (reel.json plan.<fmt> "drop_slowmo": false -- a look whose drop effect plays at real speed, e.g. a
+        # sandstorm that settles round sharp dancers)
     seq += cl
 
     # finale: faces, the packed floor, and one last slow-motion move
@@ -2835,6 +2837,7 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     snap_windows(project, fmt, plan["shots"], fm, cfg)        # last: whichever pass placed it, on passing windows
     ensure_units(project, fmt, plan["shots"], fm, cfg)        # (a unit whose only shot that recast moves away)
     pace_shots(plan["shots"], cfg)
+    end_clean(project, fmt, plan["shots"], fm, cfg)
     mo = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
     plan["units_total"] = len({r["id"] for r in mo})
     plan["music_length"] = music["length"]
@@ -3125,13 +3128,19 @@ def load_windows(project, fmt):
 
 def span_ok(wins, a, b, tol=SNAP_TOL):
     """Does the source stretch a..b sit on passing windows? True / False, None when the scrub didn't judge it (no
-    windows there: scenery, an unscrubbed unit). The windows that cover it (start within tol after a, end within tol
+    windows there: scenery, an unscrubbed unit). Its end decides first: the last of the shortest windows inside it
+    must pass (the camera panning off the subject, the subject leaving, fails however well longer windows over it
+    average out). Then the windows that cover it (start within tol after a, end within tol
     before b) decide: any passing one passes it. A shot longer than every window passes when passing windows inside
     it tile it end to end."""
     if not wins:
         return None
     tol += 1e-3                                              # (in-points are kept to the millisecond)
-    cover = [w for w in wins if w["t0"] <= a + tol and w["t1"] >= b - tol]
+    short = min(w["t1"] - w["t0"] for w in wins)
+    tail = [w for w in wins if w["t1"] - w["t0"] <= short + 1e-3 and w["t0"] >= a - tol and w["t1"] <= b + tol]
+    if tail and short < b - a - tol and not max(tail, key=lambda w: w["t1"])["ok"]:
+        return False                                         # it ends as the subject leaves: a long window passing
+    cover = [w for w in wins if w["t0"] <= a + tol and w["t1"] >= b - tol]   # over it averages the pan-off away
     if cover:
         return any(w["ok"] for w in cover)
     if not any(w["t1"] > a and w["t0"] < b for w in wins):
@@ -3150,6 +3159,64 @@ def window_exempt(s):
     the planner chose.)"""
     return bool(s.get("span") or (s.get("add") and not s.get("person")) or s.get("ending") or s.get("open") or s.get("logo")
                 or s.get("logo_image") or s.get("title"))
+
+
+END_FILL = ("band", "singer", "stage", "dj", "crowd")   # what follows a last shot cut short, in that order
+
+
+def end_clean(project, fmt, shots, moments, cfg, W=None):
+    """The reel's last shot ends before its subject leaves (the camera panning off onto nothing ends nothing): when
+    its end fails the scrub, it is cut back to the longest stretch that ends well (two beats or more; an editor's
+    chosen ending too, its moment kept), and the beats it gives up go to a shot after it -- the band, the stage, the
+    DJ or the crowd (END_FILL), else any footage passing there. Changes shots in place; returns the filler or None."""
+    W = load_windows(project, fmt) if W is None and project is not None else W
+    if not shots or not W:
+        return None
+    s = shots[-1]
+    u, p = s["unit"], s.get("speed") or 1.0
+    wins = W.get(u["id"])
+    if any(f in SPEED and f != "fit" for f in s["fx"]) or span_ok(wins, s["src_in"], s["src_in"] + s["length"] * p) is not False:
+        return None
+    beat = s["beat"]
+    n = next((n for n in range(s["beats"] - 1, 1, -1)
+              if span_ok(wins, s["src_in"], s["src_in"] + n * beat * p) is not False), None)
+    if n is None:
+        print(f"[reel] {fmt}: WARNING the last shot {u['id']} leaves its subject and no 2 beats of it end well")
+        return None
+    k, rec0 = s["beats"] - n, s["rec_in"]
+    edge = lambda t: round(t * FPS)
+    L2, at = k * beat, rec0 + n * beat
+    rank_tag = lambda r: next((i for i, t in enumerate(END_FILL) if t in (r["unit"].get("tag") or "")), len(END_FILL))
+    cands = sorted((r for r in moments if r["moments"] and r["unit"]["clip"] != u["clip"]
+                    and (fmt == "portrait" or r["orient"] == "landscape")),
+                   key=lambda r: (r["role"] != "transition", rank_tag(r), -max(rk(m, fmt) for m in r["moments"])))
+    fill = None
+    for r in cands:
+        ru = r["unit"]
+        for m in sorted(r["moments"], key=lambda m: -rk(m, fmt)):
+            a = round(min(max(m["t"] - L2 / 2, ru["t0"]), max(ru["t1"] - L2, ru["t0"])), 3)
+            if span_ok(W.get(r["id"]), a, a + L2) is False:
+                continue
+            fill = {key: v for key, v in s.items() if key not in (
+                "span", "ending", "close", "open", "logo", "logo_image", "title", "speed", "pull", "snapped",
+                "recast_window", "transition", "land", "land_fits", "reaction", "add", "person", "reuse")}
+            fill.update(unit=ru, t=m["t"], kind=m.get("kind", "crowd"), rank=rk(m, fmt), src_in=a, peak=round(m["t"] - a, 3),
+                        beats=k, length=round(L2, 4), rec_in=round(at, 3), frames=edge(rec0 + s["length"]) - edge(at),
+                        fx=[], effect=None, face=m.get("face", 0.0), end_fill=True)
+            fill["crop"] = reframe(project, ru, a, L2, fmt) if project is not None and fmt == "portrait" else None
+            break
+        if fill:
+            break
+    if fill is None:
+        print(f"[reel] {fmt}: WARNING the last shot {u['id']} leaves its subject and nothing passes to follow it")
+        return None
+    s["beats"], s["length"], s["frames"] = n, round(n * beat, 4), edge(at) - edge(rec0)
+    if s.get("crop") and project is not None:
+        s["crop"] = reframe(project, u, s["src_in"], s["length"] * p, fmt) or s["crop"]
+    shots.append(fill)
+    print(f"[reel] {fmt}: the last shot {u['id']} cut to {n} beats before its subject leaves; "
+          f"{fill['unit']['id']} ends the reel ({k} beats)")
+    return fill
 
 
 def pace_shots(shots, cfg):
