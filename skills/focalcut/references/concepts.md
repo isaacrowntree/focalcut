@@ -338,6 +338,9 @@ check yet is a bug in the scrub, not a reason to let the shot through.
 A shot is never:
 - **A back.** No subject seen from behind for the shot (the back of a head, a back-turned dancer hiding the
   partner, a singer facing away). Slide along the clip to where the face or the partner shows. (`head`, `body`)
+- **A band from behind.** A band shot is about a player's face: the front man, the guitarist, the keyboard player
+  facing the camera mid-song. A front man's bare back, even with arms up, never stands in for that while the
+  set has stretches with his face in full view. Take the band's best faces first.
 - **A group that isn't together.** When half the group has turned away or they've drifted apart instead of
   dancing with each other, it isn't a group shot. Pick the stretch where they're together and facing the camera.
 - **The crowd.** A pan off the dancers onto an audience sitting or standing still, or a single bored onlooker as
