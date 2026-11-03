@@ -49,11 +49,17 @@ reel.json keys (all optional except song):
     cuts               {"<cut>": {"formats": ["portrait"], "footage": ["@portrait", "band"], ...}}  other reels from the
                                          same footage and analysis (`reel run --cut <cut>`): "footage" keeps the
                                          footage that fits (plan.fits: category/tag substrings, "!x" rules x out,
-                                         "@portrait" / "@landscape" the way it was shot), "formats" the formats it is
+                                         "@portrait" / "@landscape" the way it was shot), "ban" export files, unit
+                                         ids or camera clips kept out whatever they match, "formats" the formats it is
                                          made in, and any other key replaces the project's for this cut ("plan" is
                                          merged per format; a song of its own -- "song", "start_hint", ... --
                                          makes its own music_<cut>.json: run its music step). Out as
                                          <name>_<cut>_<fmt>; the editor's picks of other footage are left out of it
+    profiles           {"<name>": {...}}  named rule sets, any keys a cut takes (and "use" of other profiles), e.g.
+                                         "no-night": {"footage": ["!night"]}, "short": {"length": 90}
+    use                ["<profile>", ...]  profiles applied in order, then this level's own keys: at the top level
+                                         for the main reel, inside a cut for that cut. "footage" and "ban" add up
+                                         across profiles, "plan" merges per format, any other key: the last wins
 """
 from __future__ import annotations
 
@@ -68,6 +74,35 @@ VIDEO_EXT = (".mp4", ".mov", ".mxf", ".m4v", ".mkv")
 MUSIC_KEYS = ("song", "songs", "start", "start_hint", "length", "mix", "to_end")   # a cut with any of these: own music
 
 
+ADDS_UP = ("footage", "ban")     # rule lists that add up across profiles instead of replacing
+
+
+def merge(base: dict, over: dict) -> dict:
+    """over laid on base: "footage" and "ban" add up, "plan" merges per format, any other key replaces base's."""
+    out = copy.deepcopy(base)
+    for k, v in copy.deepcopy(over).items():
+        if k in ADDS_UP and out.get(k):
+            out[k] = out[k] + [r for r in v if r not in out[k]]
+        elif k == "plan":
+            plan = out.get("plan") or {}
+            out[k] = {**plan, **{fmt: {**plan.get(fmt, {}), **o} for fmt, o in v.items()}}
+        else:
+            out[k] = v
+    return out
+
+
+def with_profiles(level: dict, profiles: dict, seen: tuple = ()) -> dict:
+    """A config level (reel.json, a cut, a profile) with its "use" profiles applied in order, then its own keys."""
+    out = {}
+    for name in level.get("use") or []:
+        if name in seen:
+            raise ValueError(f"reel.json profile {name!r} uses itself ({' -> '.join(seen + (name,))})")
+        if name not in profiles:
+            raise KeyError(f"reel.json has no profile {name!r} (profiles: {sorted(profiles)})")
+        out = merge(out, with_profiles(profiles[name], profiles, seen + (name,)))
+    return merge(out, {k: v for k, v in level.items() if k != "use"})
+
+
 class Project:
     def __init__(self, folder: str, cut: str | None = None):
         self.folder = os.path.abspath(folder)
@@ -76,18 +111,20 @@ class Project:
         self.export_dir = os.path.join(self.folder, "export")
         self.library = os.path.join(self.focalcut_dir, "library.json")
         self.config_path = os.path.join(self.reel_dir, "reel.json")
-        self.config = json.load(open(self.config_path)) if os.path.exists(self.config_path) else {}
-        self.cut, self.footage, self.formats, self.own_music = cut, None, None, False
+        config = json.load(open(self.config_path)) if os.path.exists(self.config_path) else {}
+        self.profiles, self.uses = config.pop("profiles", None) or {}, bool(config.get("use"))
+        profiles = self.profiles
+        self.config = with_profiles(config, profiles)
+        self.cut, self.footage, self.formats, self.own_music, self.ban = cut, None, None, False, set()
         if cut:                                                  # another reel from the same footage (reel.json "cuts")
-            c = copy.deepcopy((self.config.get("cuts") or {}).get(cut))
+            c = (self.config.get("cuts") or {}).get(cut)
             if c is None:
                 raise KeyError(f"reel.json has no cut {cut!r} (cuts: {sorted(self.config.get('cuts') or {})})")
+            c = with_profiles(c, profiles)
             self.footage, self.formats = c.pop("footage", None), c.pop("formats", None)
+            self.ban = set(c.pop("ban", ()))
             self.own_music = any(k in c for k in MUSIC_KEYS)
-            plan = copy.deepcopy(self.config.get("plan") or {})
-            for fmt, over in (c.pop("plan", None) or {}).items():
-                plan[fmt] = {**plan.get(fmt, {}), **over}
-            self.config = {**{k: v for k, v in self.config.items() if k != "cuts"}, **c, "plan": plan}
+            self.config = merge({k: v for k, v in self.config.items() if k != "cuts"}, c)
 
     # paths -------------------------------------------------------------------------------------
     def path(self, *parts: str) -> str:
@@ -107,8 +144,10 @@ class Project:
         return f"music_{self.cut}.json" if self.own_music else "music.json"
 
     def in_cut(self, unit: dict) -> bool:
-        """Is this footage (a unit) in the cut? Everything is, outside one."""
+        """Is this footage (a unit) in the cut (its "ban" first, then its "footage")? Everything is, outside one."""
         from .plan import fits
+        if self.ban & {unit.get("id"), unit.get("clip"), unit.get("id", "").split("#")[0]}:
+            return False
         return not self.footage or fits(unit, self.footage)
 
     def role(self, category: str) -> str:
@@ -199,8 +238,10 @@ class Project:
         os.makedirs(self.reel_dir, exist_ok=True)
         if self.cut:
             raise RuntimeError("save_config on a cut would write its merged settings over reel.json")
+        if self.uses:
+            raise RuntimeError("save_config would write the profiles reel.json uses into it")
         with open(self.config_path, "w") as f:
-            json.dump(self.config, f, indent=1)
+            json.dump({**self.config, **({"profiles": self.profiles} if self.profiles else {})}, f, indent=1)
         return self.config_path
 
     # json helpers ------------------------------------------------------------------------------

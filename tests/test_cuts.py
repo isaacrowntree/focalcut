@@ -48,5 +48,35 @@ def test_a_cut_keeps_its_own_footage_settings_and_picks(tmp_path):
     main = Project(folder)
     assert main.cut_name("portrait") == "portrait" and set(main.picks()) == {"C1-01_couple", "C3", "_note"}
     assert Project(project(tmp_path / "b", dict(night=dict(song="b.mp3"))), "night").music_file == "music_night.json"
+    q = Project(project(tmp_path / "c", dict(day=dict(footage=["@landscape"], ban=["C2_band"]))), "day")
+    assert q.in_cut(unit("C3", "demos", "demos", "landscape")) and not q.in_cut(unit("C2_band", "broll", "band", "landscape"))
+    assert not Project(q.folder, None).ban and Project(project(tmp_path / "d", dict(day=dict(ban=["C9"]))), "day") \
+        .in_cut(dict(id="C9-01_couple", clip="C9", category="segments", tag="couple", orient="portrait")) is False
     with pytest.raises(KeyError):
         Project(folder, "nope")
+
+
+def test_profiles_mix_into_cuts_and_the_main_reel(tmp_path):
+    folder = project(tmp_path, dict(day=dict(use=["no-night", "short"], formats=["landscape", "portrait"]),
+                                    night=dict(use=["no-day", "short"], length=180, footage=["@portrait"])))
+    raw = json.load(open(tmp_path / "focalcut" / "reel" / "reel.json"))
+    raw["profiles"] = {"no-night": {"footage": ["!band"], "ban": ["C2_band"]},
+                       "no-day": {"footage": ["!demos"], "plan": {"portrait": {"heroes": 1}}},
+                       "short": {"length": 90, "plan": {"portrait": {"heroes": 2}}},
+                       "loop": {"use": ["loop"]}}
+    raw["use"] = ["short"]
+    json.dump(raw, open(tmp_path / "focalcut" / "reel" / "reel.json", "w"))
+    day = Project(folder, "day")
+    assert day.footage == ["!band"] and day.ban == {"C2_band"} and day.config["length"] == 90
+    assert not day.in_cut(unit("C2_band", "broll", "band", "landscape")) and day.in_cut(unit("C3", "demos", "demos", "landscape"))
+    night = Project(folder, "night")
+    assert night.footage == ["!demos", "@portrait"] and night.config["length"] == 180   # rules add up, own keys win
+    assert night.config["plan"]["portrait"]["heroes"] == 2 and night.own_music          # later profile wins
+    main = Project(folder)
+    assert main.config["length"] == 90 and "profiles" not in main.config and "use" not in main.config
+    with pytest.raises(RuntimeError):
+        main.save_config()                                   # would flatten the profiles into reel.json
+    raw["cuts"]["bad"] = dict(use=["loop"])
+    json.dump(raw, open(tmp_path / "focalcut" / "reel" / "reel.json", "w"))
+    with pytest.raises(ValueError):
+        Project(folder, "bad")
