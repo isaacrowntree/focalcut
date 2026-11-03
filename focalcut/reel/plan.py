@@ -2826,6 +2826,7 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     fm = [r for r in moments if fmt == "portrait" or r["orient"] == "landscape"]
     ensure_units(project, fmt, plan["shots"], fm, cfg)
     snap_windows(project, fmt, plan["shots"], fm, cfg)        # last: whichever pass placed it, on passing windows
+    ensure_units(project, fmt, plan["shots"], fm, cfg)        # (a unit whose only shot that recast moves away)
     mo = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
     plan["units_total"] = len({r["id"] for r in mo})
     plan["music_length"] = music["length"]
@@ -3093,7 +3094,7 @@ def ensure_units(project, fmt, shots, moments, cfg, W=None):
 
 
 SNAP_TOL = 0.3           # a window "covers" a shot that starts or ends this close inside it (windows.grid's edge)
-SNAP_GAP = 1.0           # a shot moved onto passing windows keeps this far (s) from the unit's other shots
+SNAP_GAP = 0.5           # a shot moved onto passing windows keeps this far (s) from the unit's other shots
 
 
 def load_windows(project, fmt):
@@ -3168,7 +3169,8 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None):
     the scrub in this format, whichever pass put it there (band inserts, people, quick cuts, landings, slides): one
     on failing windows moves along its own clip, as little as it can, onto passing ones (the move and its beat move
     with it); else it takes a passing moment of another unit of the same kind (a unit not in the reel yet first,
-    never beside its own clip, day footage in the day), keeping its effect; else it is logged. Returns
+    never beside its own clip, day footage in the day; with song sets its own set's first), keeping its effect;
+    else it is logged. Returns
     (slid, recast, stuck)."""
     from . import shake
     W = load_windows(project, fmt) if W is None else W
@@ -3237,9 +3239,8 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None):
                 continue
             if any(n["unit"]["clip"] == ru["clip"] for n in nb):
                 continue
-            if cfg.get("sets") and ru.get("category") != u.get("category"):
-                continue
-            d = bool(day_cats) and fits(ru, day_cats)
+            own_set = not cfg.get("sets") or ru.get("category") == u.get("category")   # (another set's only
+            d = bool(day_cats) and fits(ru, day_cats)                                  # when its own has none)
             if d != (s["act"] in DAY_ACTS) and (d or s["act"] == "arrival"):
                 continue
             ms = passing(r) or r["moments"]                  # none left: footage the config keeps out
@@ -3248,7 +3249,7 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None):
                     continue
                 mid = a + dt + L / 2                         # the shot's moment: the passing one nearest it
                 m = min(ms, key=lambda m, mid=mid: abs(m["t"] - mid))
-                key = (have[r["id"]] == 0, ru.get("category") == u.get("category"), rk(m, fmt))
+                key = (own_set, have[r["id"]] == 0, ru.get("category") == u.get("category"), rk(m, fmt))
                 if best is None or key > best[0]:
                     best = (key, r, m, dt)
         if best:

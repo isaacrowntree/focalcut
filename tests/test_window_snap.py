@@ -140,3 +140,17 @@ def test_a_missing_unit_takes_a_slot_short_enough_for_its_passing_windows(fakes)
     assert plan.ensure_units(None, "portrait", shots, [rec("D", [20.5])], CFG, W) == ["D"]
     d = next(s for s in shots if s["unit"]["id"] == "D")
     assert d is short and plan.span_ok(W["D"], d["src_in"], d["src_in"] + d["length"])
+
+
+def test_with_song_sets_a_recast_takes_its_own_set_first_and_another_only_when_it_must(fakes):
+    W = {"A": grid(0.3, 40.0, bad=[(0.0, 40.0)]), "C": grid(0.3, 40.0), "D": grid(0.3, 40.0), "E": grid(0.3, 40.0)}
+    shots = [placed("C", 2.0), placed("A", 10.0), placed("C", 20.0)]
+    for x in shots:
+        x["unit"]["category"] = "headline"
+    moments = [rec("A", [10.7], ok=False, cat="headline"), rec("D", [15.0], cat="headline"), rec("E", [15.0], cat="other")]
+    plan.snap_windows(None, "portrait", shots, moments, dict(CFG, sets=True), W)
+    assert shots[1]["unit"]["id"] == "D"
+    shots[1] = placed("A", 10.0)
+    shots[1]["unit"]["category"] = "headline"
+    _, recast, _ = plan.snap_windows(None, "portrait", shots, moments[:1] + moments[2:], dict(CFG, sets=True), W)
+    assert recast == 1 and shots[1]["unit"]["id"] == "E"
