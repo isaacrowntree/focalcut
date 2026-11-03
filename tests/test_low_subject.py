@@ -92,7 +92,10 @@ def test_a_performers_head_cut_off_by_the_crop_top():
     nb = people([[0.40, 0.05, 0.60, 0.95]])
     _, head, _, _ = show(nb, kp_faces(10, 1, 0.9), np.ones((10, 1)), by=0.6, ch=0.7)   # crop top at 0.25
     assert head == 0.0 and plan.unusable(dict(head=head), "show") == "head"
-    assert plan.unusable(dict(head=head), "dance") is None                             # (dancers: body / face rules)
+    assert plan.unusable(dict(head=head), "dance") == "head"                           # dancers too
+    nb[:, 0, 1] = 0.0                                                                  # cut by the camera's own top
+    assert show(nb, kp_faces(10, 1, 0.9), np.ones((10, 1)))[1] == 0.0
+    assert plan.unusable(dict(present=0.6), "dance") == "exit"                         # walks out during the shot
 
 
 def test_a_partner_half_in_the_strip_or_in_and_out_is_torn():
@@ -137,3 +140,32 @@ def test_the_picker_passes_over_unusable_moments_while_it_has_others():
     assert P.best([r])[1]["t"] == 9.0
     r["moments"] = r["moments"][:1]
     assert P.best([r])[1]["t"] == 1.0                     # nothing else: still covered
+
+
+def test_look_room_moves_the_strip_toward_a_profiles_gaze():
+    F, aw, ah = 10, 640.0, 360.0
+    boxes = np.full((F, 1, 5), np.nan, np.float32)
+    boxes[:, 0, :4] = [0.45 * aw, 0.1 * ah, 0.55 * aw, 0.95 * ah]
+    kp = np.zeros((F, 1, 17, 3), np.float32)
+    kp[:, 0, 0] = [0.54 * aw, 0.15 * ah, 0.9]                  # nose to the right of the one visible ear: faces right
+    kp[:, 0, 3] = [0.50 * aw, 0.15 * ah, 0.9]
+    d = dict(boxes=boxes, kp=kp, aw=aw, ah=ah, pose_t=np.arange(F) * 0.2)
+    union = np.tile([0.45, 0.1, 0.55, 0.95], (F, 1))
+    g = plan.gaze(d, d["pose_t"], union, 1 / 6)
+    assert np.allclose(g, 1 / 6, atol=0.02)                     # the face a third of the way in, space ahead
+    kp[:, 0, 0, 0] = 0.46 * aw                                 # facing left
+    assert (plan.gaze(d, d["pose_t"], union, 1 / 6) < -0.1).all()
+    kp[:, 0, 4] = [0.54 * aw, 0.15 * ah, 0.9]; kp[:, 0, 0, 0] = 0.52 * aw   # both ears, nose between: to camera
+    assert np.allclose(plan.gaze(d, d["pose_t"], union, 1 / 6), 0)
+
+
+def test_band_broll_from_behind_is_framed_and_rejected_in_portrait_scenery_is_not():
+    singer = {"id": "C2007_band-singer", "tag": "band-singer", "role": "transition"}
+    assert plan.people_broll(singer)
+    assert not plan.people_broll({"id": "C2160_venue-night", "tag": "venue-night", "role": "transition"})
+    assert not plan.people_broll({"id": "C2148", "tag": "day", "role": "show"})      # (a subject already)
+    nb = people([[0.45, 0.1, 0.70, 0.95], [0.10, 0.3, 0.20, 0.7]])                   # his back; a fan filming
+    _, _, back, _ = show(nb, kp_faces(10, 2, 0.0), np.tile([False, True], (10, 1)))
+    assert plan.unusable(dict(back=back, w=0.32), "transition") == "back"
+    r = {"id": "C2007_band-singer", "role": "transition", "unit": singer, "moments": [dict(t=1.0, plays_p=0.05)]}
+    assert not plan.framable(r, "portrait") and plan.framable(r, "landscape")

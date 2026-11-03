@@ -168,7 +168,7 @@ class Picker:
 
     def pool(self, recs, kinds=None, min_frame=0.0, usable=False):
         out = [(r, m) for r in recs for m in r["moments"] if self.free(r, m) and (kinds is None or m["kind"] in kinds)
-               and (r["role"] == "transition" or fr(m, self.fmt) >= min_frame)
+               and ((r["role"] == "transition" and not people_broll(r["unit"])) or fr(m, self.fmt) >= min_frame)
                and not (usable and m.get("unusable"))]
         return sorted(out, key=lambda x: -self.share(*x))
 
@@ -183,13 +183,26 @@ class Picker:
 
 
 UNFRAMED = 0.15          # portrait: a clip none of whose moments plays above this (assess) need not appear
+PERFORMERS = ("band", "singer", "dj", "mc", "violin", "drum", "piano", "keys", "player", "member", "headline")
+MEMBERS = []             # reel.json plan.<fmt>.members (portrait_rules() sets it): more performer tags
+
+
+def people_broll(u):
+    """B-roll whose subject is a person -- a band member, singer, DJ, MC (its tag or id names one) -- not scenery: in
+    portrait it is framed like any other subject (who the strip is on, faces, backs, a head cut off, sitting low),
+    where venue, lights and crowd wides keep their free pass."""
+    if u.get("role") != "transition":
+        return False
+    words = f"{u.get('tag', '')} {u.get('id', '')}".lower()
+    return any(k in words for k in PERFORMERS + tuple(MEMBERS))
 
 
 def framable(r, fmt):
     """Must this record appear in the reel? Always in landscape; in portrait not when no moment of it frames: the
     subject lost from the strip, a back, a couple cut in half or only a head throughout (assess's plays_p), unless the
     editor picked from it. A clip that won't crop to 9:16 is better left out than shown badly."""
-    if fmt != "portrait" or r["role"] == "transition" or any(m.get("pick") or m.get("add") for m in r["moments"]):
+    if fmt != "portrait" or (r["role"] == "transition" and not people_broll(r.get("unit") or r)) \
+            or any(m.get("pick") or m.get("add") for m in r["moments"]):
         return True
     return max((m.get("plays_p", 1.0) for m in r["moments"]), default=1.0) >= UNFRAMED
 
@@ -2228,7 +2241,8 @@ def _reframe(project, unit, t0, length, fmt):
     union, touch, _ = FR.track(d, pt[sel])
     narrow = cw0 < 0.5                                      # a 9:16 strip out of a 16:9 frame: little room for lag
     face = np.zeros(len(union), bool)
-    if unit["role"] != "transition":                        # a couple shares the frame; a group too wide for a
+    person = unit["role"] != "transition" or people_broll(unit)   # (scenery B-roll: no one to follow)
+    if person:                                              # a couple shares the frame; a group too wide for a
         union, face, one = FR.follow(d, pt[sel], union, cw0)  # strip: follow one of them
         if one:                                             # the group's edge contact no longer applies: the
             touch = None                                    # dancer's own box is checked against the frame below
@@ -2236,7 +2250,7 @@ def _reframe(project, unit, t0, length, fmt):
     ok = ~np.isnan(union[:, 0])
     if not ok.any():
         return centre
-    zz = 1.0 if unit["role"] == "transition" else float(np.median(z[ok]))   # one zoom for the whole shot
+    zz = float(np.median(z[ok])) if person else 1.0         # one zoom for the whole shot
     cw, ch = cw0 / zz, ch0 / zz
     sx = (union[ok, 0] + union[ok, 2]) / 2
     sy = union[ok, 1] + 0.45 * (union[ok, 3] - union[ok, 1])
@@ -2247,15 +2261,18 @@ def _reframe(project, unit, t0, length, fmt):
         x = np.interp(grid, ts, v)
         k = np.exp(-0.5 * (np.arange(-3 * sig, 3 * sig + 1) / sig) ** 2); k /= k.sum()
         return np.convolve(np.pad(x, 3 * sig, mode="edge"), k, mode="valid")
-    if narrow and unit["role"] != "transition":            # never through someone the subject's size beside them
+    if narrow and person:                                   # never through someone the subject's size beside them
         zz, sx = clean_centre(d, pt[sel][ok], union[ok], sx, zz, cw0, ch0)
         cw, ch = cw0 / zz, ch0 / zz
     if narrow:                                              # a subject sitting low in the strip (a band under a
         zz = lift(union[ok], zz, cw0, ch0, FR.zmax(src_w, src_h, W, H))   # tall rig): zoom so the crop moves down
         cw, ch = cw0 / zz, ch0 / zz
+    if narrow:                                              # look room: a profile gets space ahead of their gaze
+        sx = sx + cw * gaze(d, pt[sel][ok], union[ok], R["look_player"] if unit["role"] != "dance" else R["look"])
     uh_ = union[ok, 3] - union[ok, 1]                       # a subject taller than the crop keeps their head in it
     sy = union[ok, 1] + 0.45 * np.minimum(uh_, 0.95 * ch)   # (not a torso, hands and a mic stand)
     x = np.clip(smooth(sx, 3 if narrow else 6), cw / 2, 1 - cw / 2)   # ~0.3 / 0.6 s: like a camera operator
+    # (the gaze shift is smoothed again on its own over ~1 s inside gaze(): a head turn doesn't whip the strip)
     y = np.clip(smooth(sy, 10), ch / 2, 1 - ch / 2)
     # how well the crop holds the subject over the shot itself: present (mostly in the crop), inside (wholly in it,
     # not cut by the crop or the camera's own edge) and face (a face to the camera, in the crop), as fractions
@@ -2313,9 +2330,12 @@ def _reframe(project, unit, t0, length, fmt):
 RULES = dict(            # portrait rules: reel.json plan.<fmt>.portrait_rules (a profile can set them)
     low=0.66,            # the subject's centre this far down the crop (0 top, 1 bottom): sits low
     low_zmax=1.5,        # lift() may zoom this far to move the crop down (past the lossless ~1.12x of a 4K strip)
+    stay=0.85,           # the subject in the strip in at least this share of the shot's frames
     hide=0.4,            # share of frames a faceless back covers most of a partner, neither face seen
     head=0.5,            # a performer's head in the crop in at least this share of frames
     back=0.6,            # share of frames the subject is seen from behind, no face of theirs or their partner's
+    look=1 / 6,          # look room: a profile dancer's strip moves this far (of its width) toward their gaze
+    look_player=0.25,    # ... a performer's further: their drums, keys, the crowd they sing to
     torn=0.3,            # share of the shot the dance partner is half in the strip, or in and out of it
     sliver=0.4,          # someone the frame edge slices, this tall (of the subject) or more, half in the strip: split
     rank=0.15)           # how far an unusable moment ranks down (another part of the clip, or recast, wins)
@@ -2325,10 +2345,46 @@ R = dict(RULES)          # the rules in force (build() sets them from the config
 def portrait_rules(cfg):
     """Set the portrait rules from plan.<fmt>.portrait_rules over the defaults (RULES)."""
     R.clear(); R.update(RULES)
+    MEMBERS[:] = list((cfg or {}).get("members") or [])
     R.update({k: float(v) for k, v in ((cfg or {}).get("portrait_rules") or {}).items() if k in RULES})
 
 
 LOW_AIM = 0.56           # where lift() aims to bring a low subject (R["low"]: what sits low, 0 top .. 1 bottom)
+
+
+def facing(kp, box_w):
+    """Which way a head faces from its COCO keypoints (F,): -1 (to the frame's left) .. 1 (right), 0 to the camera
+    or unknown -- the nose's offset from the visible ears' (else eyes') midpoint, over a quarter of the box width."""
+    nose_ok = kp[:, 0, 2] > 0.3
+    ears = kp[:, 3:5]
+    eyes = kp[:, 1:3]
+    def mid(pts):
+        w = (pts[..., 2] > 0.3).astype(float)
+        return (pts[..., 0] * w).sum(1) / np.maximum(w.sum(1), 1e-6), w.sum(1) > 0
+    ex, eok = mid(ears)
+    yx, yok = mid(eyes)
+    ref = np.where(eok, ex, yx)
+    f = np.clip((kp[:, 0, 0] - ref) / np.maximum(0.25 * box_w, 1e-3), -1, 1)
+    return np.where(nose_ok & (eok | yok), f, 0.0)
+
+
+def gaze(d, times, union, k):
+    """Look room, per time: the strip-centre shift (in strip widths) toward where the subject faces -- k of a strip
+    for a full profile (1/6 puts the face a third of the way in from the far side), eased by how side-on the head
+    is, smoothed over ~1 s so a head turn doesn't whip the strip."""
+    if k <= 0 or len(times) == 0:
+        return np.zeros(len(times))
+    pt = d["pose_t"]
+    ii = np.clip(np.searchsorted(pt, times), 0, len(pt) - 1)
+    _, main, _ = _people(d, ii, union)
+    f = np.arange(len(ii))
+    kp = d["kp"][ii, np.maximum(main, 0)]
+    bw = np.nan_to_num(d["boxes"][ii, np.maximum(main, 0), 2] - d["boxes"][ii, np.maximum(main, 0), 0])
+    look = np.where(main >= 0, facing(kp, bw), 0.0)
+    look = np.where(np.abs(look) >= 0.35, look, 0.0)        # a three-quarter view or less: no shift
+    n = max(1, min(len(f), 5))                              # pose at 5 fps: ~1 s
+    look = np.convolve(np.pad(look, n, mode="edge"), np.ones(2 * n + 1) / (2 * n + 1), mode="same")[n:-n]
+    return k * look
 
 
 def lift(union, zz, cw0, ch0, zm):
@@ -2460,7 +2516,7 @@ def shown(nb, kp, fseen, who, has, bx, by, cw, ch):
                 & ~fseen[:, i] & ~fseen[:, j]
     f = np.arange(F)
     top = y0[f, who]
-    head = top >= by - ch / 2 - 0.02
+    head = (top >= by - ch / 2 - 0.02) & (top > 0.01)       # (cut by the strip's top, or the camera's own)
     # the subject's own partner: anyone whose box overlaps the subject's by a third of its own -- their faces count,
     # bystanders' faces elsewhere in the strip don't
     sx0, sy0, sx1, sy1 = x0[f, who][:, None], y0[f, who][:, None], x1[f, who][:, None], y1[f, who][:, None]
@@ -2518,8 +2574,8 @@ def plays(c, role, portrait=None):
 
 def unusable(c, role):
     """A portrait stretch no subject plays in, whatever its kind (a hair flip, a hit): the subject down at the bottom
-    under the rig (low), a back-turned dancer hiding the partner (hide), a performer's head cut off by the crop's top
-    (head), or the subject seen from behind with no face of theirs or their partner's (back: a bystander's face
+    under the rig (low), the subject walking out of the strip (exit), a back-turned dancer hiding the partner (hide), a
+    head cut off by the crop's or the camera's top (head), or the subject seen from behind with no face of theirs or their partner's (back: a bystander's face
     elsewhere in the strip doesn't rescue it). Returns the reason, or None."""
     if c.get("w", 1.0) < 0.5 and c.get("low", 0.5) > R["low"]:
         return "low"
@@ -2527,7 +2583,9 @@ def unusable(c, role):
         return "hide"
     if role == "dance" and c.get("torn", 0.0) > R["torn"]:   # the follow half out of the strip, half the time
         return "torn"
-    if role != "dance" and c.get("head", 1.0) < R["head"]:
+    if c.get("present", 1.0) < R["stay"]:                   # walks out of the strip during the shot
+        return "exit"
+    if c.get("head", 1.0) < R["head"]:                       # a head cut off at the top: no face, dancer or player
         return "head"
     if c.get("back", 0.0) > R["back"]:                       # seen from behind, no face of theirs or their partner's
         return "back"
@@ -2542,7 +2600,8 @@ def spot_rater(project, fmt):
     def rate(r, t):
         k = (r["id"], round(t, 1))
         if k not in seen:
-            c = reframe(project, r["unit"], t - 0.8, 2.4, fmt) if r["role"] != "transition" else None
+            c = reframe(project, r["unit"], t - 0.8, 2.4, fmt) if r["role"] != "transition" or people_broll(r["unit"]) \
+                else None
             seen[k] = plays(c, r["role"], fmt == "portrait") if c else 1.0
         return seen[k]
     return rate
@@ -2604,12 +2663,15 @@ def assess(project, recs, fmt, cfg):
                         sc *= 0.03
                     else:
                         sc *= 0.3 + p * min(sh / role.SHARP_FULL, 1.0)
-            if r["role"] != "transition":
+            perf = people_broll(u)                           # a performer: framed like a subject (not the dance
+            if r["role"] != "transition" or (perf and fmt == "portrait"):   # floor's idle / crossing rules)
                 m["present"], m["inside"], m["face_vis"] = present, inside, face
                 m["action"] = action
                 social = r["role"] == "dance"
-                g = 1.0 if m.get("pick") else plays(dict(st, low=0.5, hide=0.0, head=1.0, back=0.0, torn=0.0), r["role"],
-                                                    fmt == "portrait")   # (the rest ranked above, for every role)
+                rs = dict(st, low=0.5, hide=0.0, head=1.0, back=0.0, torn=0.0)
+                if perf:
+                    rs.update(action=None, churn=0.0)
+                g = 1.0 if m.get("pick") else plays(rs, r["role"], fmt == "portrait")   # (the rest: ranked above)
                 g *= (0.3 + 0.7 * inside) if social else (0.45 + 0.55 * inside)
                 if fmt == "portrait":
                     g *= ((0.3 + 1.4 * face) * (0.25 if face < 0.3 else 1)) if social else (0.5 + 1.0 * face)
@@ -2756,7 +2818,7 @@ def recast(project, fmt, seq, moments, beat):
 
 
 def _recastable(s):
-    return s["unit"]["role"] != "transition" and not s.get("span") and not s.get("person") and not s.get("reuse") \
+    return (s["unit"]["role"] != "transition" or people_broll(s["unit"])) and not s.get("span") and not s.get("person") and not s.get("reuse") \
         and not any(s.get(k) for k in ("reaction", "ending", "band", "logo", "add", "featured"))
 
 
@@ -2772,17 +2834,40 @@ def _alternatives(seq, i, moments, fmt):
     return cands[:RECAST_TRY]
 
 
+SLIDE = (-0.5, 0.5, -1.0, 1.0, -0.25, 0.25)   # recast_placed: in-point moves tried first (of the shot's length)
+
+
 def recast_placed(project, fmt, shots, moments, cfg):
     """recast once more on the placed shots, over exactly what each plays (place() moves in-points and lengthens
     shots for their landings): a shot still framing badly takes the best-framing alternative at the same length,
     reframed and re-measured for shake. Speed-effect shots keep theirs (their landing is timed to the moment)."""
     from . import shake
-    lo, n = cfg["shake"][0], 0
+    lo, n, n_slid = cfg["shake"][0], 0, 0
     for i, s in enumerate(shots):
         if not _recastable(s) or not s.get("crop") or any(f in SPEED for f in s["fx"]):
             continue
         g = framed(s["crop"], s["unit"]["role"])
         if g >= RECAST:
+            continue
+        u, L = s["unit"], s["length"]                        # a good shot gone wrong (she walks out halfway, the
+        slid = None                                          # partner turns away): first the same scene, a little
+        for dt in SLIDE:                                     # earlier or later, before another clip
+            src = clear_of_bans(min(max(s["src_in"] + dt * L, u["t0"]), max(u["t1"] - L, u["t0"])), L, u)
+            if abs(src - s["src_in"]) < 0.1:
+                continue
+            c = reframe(project, u, src, L, fmt)
+            gx = framed(c, u["role"])
+            if gx >= RECAST and (slid is None or gx > slid[0]):
+                slid = (gx, src, c)
+        if slid:
+            _, src, c = slid
+            s.update(src_in=round(src, 3), peak=round(s["t"] - src, 3), crop=c, slid=True)
+            s.pop("land", None); s.pop("land_fits", None)
+            j = shake.jitter(project, u, src, src + L)
+            j = j / max(c.get("w", 1.0) if c else 1.0, 0.2) if j is not None else None
+            s["jitter"] = round(j, 5) if j is not None else None
+            s["stab"] = bool(j is not None and j > lo and "_stabilized" not in u["source"])
+            n_slid += 1
             continue
         best = None
         for r, m in _alternatives(shots, i, moments, fmt):
@@ -2802,8 +2887,8 @@ def recast_placed(project, fmt, shots, moments, cfg):
             s["jitter"] = round(j, 5) if j is not None else None
             s["stab"] = bool(j is not None and j > lo and "_stabilized" not in s["unit"]["source"])
             n += 1
-    if n:
-        print(f"[reel] {fmt}: {n} placed shots recast over what they play")
+    if n or n_slid:
+        print(f"[reel] {fmt}: {n} placed shots recast over what they play, {n_slid} slid along their own clip")
 
 
 def shot(r, m, fmt, beats, act="shows", fx=(), **kw):
