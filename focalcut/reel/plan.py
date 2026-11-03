@@ -2775,6 +2775,8 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     plan = place(project, fmt, seq, music, cfg, direction, stinger_len, acts)
     if fmt == "portrait" and assess_shots:
         recast_placed(project, fmt, plan["shots"], moments, cfg)
+    ensure_units(project, fmt, plan["shots"], [r for r in moments if fmt == "portrait" or r["orient"] == "landscape"],
+                 cfg)
     mo = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
     plan["units_total"] = len({r["id"] for r in mo})
     plan["music_length"] = music["length"]
@@ -2948,6 +2950,71 @@ def recast_placed(project, fmt, shots, moments, cfg):
             n += 1
     if n or n_slid:
         print(f"[reel] {fmt}: {n} placed shots recast over what they play, {n_slid} slid along their own clip")
+
+
+def _swappable(s):
+    """A placed shot that can give its slot to a unit with none: plain (no effect timed to it), not an editor's pick,
+    an ending, a logo, a band insert, a title, a featured person's or a reaction shot."""
+    return not s["fx"] and not s.get("span") and not s.get("reuse") and not s.get("velocity") and \
+        not any(s.get(k) for k in ("ending", "logo", "logo_image", "band", "add", "featured", "person", "reaction",
+                                   "title", "open"))
+
+
+def ensure_units(project, fmt, shots, moments, cfg):
+    """Every unit with a moment that passes in this format (the scrub's fmt_ok, nothing marked unusable) is in the
+    reel at least once: after everything else has placed, recast and covered people, a unit still missing takes the
+    slot of a plain repeat -- a shot of a unit with two or more, never beside its own clip, B-roll never beside
+    B-roll; with song sets, only a slot of its own category -- reframed and measured for shake over what it plays.
+    More distinct dancers beat a second shot of the same couple. Units that can't be placed are logged."""
+    from . import shake
+    lo = cfg["shake"][0]
+    have = Counter(s["unit"]["id"] for s in shots)
+    def passing(r):
+        return [m for m in r["moments"] if (m.get("fmt_ok") or {}).get(fmt, True) and not m.get("unusable")
+                and not (fmt == "portrait" and m.get("plays_p", 1.0) < UNFRAMED)]
+    miss = [r for r in moments if r["id"] not in have and passing(r)
+            and (r["role"] != "transition" or people_broll(r["unit"]))]
+    miss.sort(key=lambda r: -max(rk(m, fmt) for m in passing(r)))
+    placed, stuck = [], []
+    for r in miss:
+        m = max(passing(r), key=lambda m: rk(m, fmt))
+        clip = r["unit"]["clip"]
+
+        def ok(i, r=r, clip=clip):
+            x = shots[i]
+            if have[x["unit"]["id"]] < 2 or not _swappable(x):
+                return False
+            if cfg.get("sets") and x["unit"].get("category") != r["unit"].get("category"):
+                return False
+            nb = [shots[k] for k in (i - 1, i + 1) if 0 <= k < len(shots)]
+            return all(n["unit"]["clip"] != clip for n in nb) and \
+                not (r["role"] == "transition" and any(n["unit"]["role"] == "transition" for n in nb))
+        idx = [i for i in range(1, len(shots) - 1) if ok(i)]
+        if not idx:
+            stuck.append(r["id"])
+            continue
+        cat = r["unit"].get("category")
+        i = max(idx, key=lambda i: (shots[i]["unit"].get("category") == cat, have[shots[i]["unit"]["id"]],
+                                    -shots[i]["rank"]))
+        s = shots[i]
+        x = shot(r, m, fmt, s["beats"], act=s["act"])
+        u, L = r["unit"], s["length"]
+        src = clear_of_bans(min(max(in_point(x, s["beat"]), u["t0"]), max(u["t1"] - L, u["t0"])), L, u)
+        c = reframe(project, u, src, L, fmt)
+        have[s["unit"]["id"]] -= 1
+        have[u["id"]] += 1
+        s.update({k: x[k] for k in ("unit", "t", "kind", "rank", "face", "framing", "thumb") if k in x},
+                 src_in=round(src, 3), peak=round(x["t"] - src, 3), crop=c, covered=True)
+        s.pop("land", None); s.pop("land_fits", None)
+        j = shake.jitter(project, u, src, src + L)
+        j = j / max(c.get("w", 1.0) if c else 1.0, 0.2) if j is not None else None
+        s["jitter"] = round(j, 5) if j is not None else None
+        s["stab"] = bool(j is not None and j > lo and "_stabilized" not in u["source"])
+        placed.append(r["id"])
+    if placed or stuck:
+        print(f"[reel] {fmt}: {len(placed)} units with passing windows given a shot (a repeat's slot)"
+              + (f"; no slot for {stuck}" if stuck else ""))
+    return placed
 
 
 def shot(r, m, fmt, beats, act="shows", fx=(), **kw):

@@ -197,3 +197,23 @@ def test_the_planner_takes_only_scrubbed_windows_that_pass_in_its_format():
     assert plan.Picker("landscape", [r]).best([r])[1]["t"] == 1.0
     r["moments"] = [bad_p]
     assert not plan.framable(r, "portrait") and plan.framable(r, "landscape")
+
+
+def test_every_unit_with_a_passing_window_gets_a_shot_from_a_repeats_slot(monkeypatch):
+    from focalcut.reel import shake
+    monkeypatch.setattr(plan, "reframe", lambda pr, u, t0, L, fmt: dict(w=0.32, h=1, z=1, path=[[0, 0.5, 0.5]]))
+    monkeypatch.setattr(shake, "jitter", lambda pr, u, a, b: 0.0001)
+    def unit(i):
+        return {"id": i, "clip": i, "role": "dance", "category": "night", "t0": 0.0, "t1": 60.0, "source": i + ".MP4"}
+    def placed(i, k):
+        return dict(unit=unit(i), fx=[], beats=4, length=1.8, beat=0.45, rank=0.5 - 0.01 * k, t=10.0 + k, kind="spin",
+                    act="night", src_in=9.0 + k)
+    shots = [placed("A", 0), placed("A", 1), placed("B", 2), placed("A", 3), placed("C", 4), placed("B", 5)]
+    rec = lambda i, ok: {"id": i, "role": "dance", "orient": "landscape", "unit": unit(i), "moments": [   # noqa: E731
+        dict(t=20.0, kind="spin", score=0.4, score_p=0.4, fmt_ok={"portrait": ok, "landscape": True})]}
+    got = plan.ensure_units(None, "portrait", shots, [rec("D", True), rec("E", False)], dict(shake=[0.0012, 0.006]))
+    assert got == ["D"]
+    ids = [s["unit"]["id"] for s in shots]
+    assert ids.count("D") == 1 and "E" not in ids and ids.count("C") == 1     # the sole C shot stays
+    i = ids.index("D")
+    assert ids[i - 1] != "D" and ids[i + 1] != "D" and shots[i]["covered"]
