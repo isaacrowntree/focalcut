@@ -709,15 +709,18 @@ QUICK_DROP = ("beats", "act", "fx", "effect", "logo", "logo_image", "band", "rea
 def quick_cuts(seq, n, act, beat, at=None, size=1):
     """n beats of quick cuts, size beats each, from the editor's picks, put into act at at (default: spread through
     it, never at its ends): first the ends that pick_beat trimmed off them (footage not seen yet), then the openings
-    of picks two acts or more away (never footage seen moments ago); picks from the act's own time of day first (day
-    picks into the day, DAY_ACTS), crowd and B-roll picks first, never the same clip twice in a row. A cut is plain footage: no logo, title, effect or ending from the pick it comes from."""
+    of picks two acts or more away (never footage seen moments ago); daytime footage (unit "day") never into a night
+    act, and the day's own picks first in the day (DAY_ACTS); crowd and B-roll picks first, never the same clip twice in a row. A cut is plain footage: no logo, title, effect or ending from the pick it comes from."""
     picks = [s for s in seq if s.get("span") and not s.get("reuse")]
     if not n or not picks:
         return
     used = {(s["unit"]["id"], round(s["span"][0], 2)) for s in seq if s.get("reuse")}
     names = [a for a in ACT_NAMES if any(x["act"] == a for x in seq)]
     near = set(names[max(0, names.index(act) - 1):names.index(act) + 1]) if act in names else {act}
-    order = sorted(picks, key=lambda s: ((s["act"] in DAY_ACTS) != (act in DAY_ACTS),   # day into the day first
+    is_day = lambda s: s["unit"].get("day", s["act"] in DAY_ACTS)
+    if act not in DAY_ACTS:                                  # daytime footage never cuts into the night
+        picks = [s for s in picks if not is_day(s)]
+    order = sorted(picks, key=lambda s: (is_day(s) != (act in DAY_ACTS),              # day into the day first
                                          s["unit"]["role"] != "transition", s["act"] != act,
                                          -(s["span"][1] - s["span"][0])))
     tails = [(s, [s["span"][0] + s["beats"] * beat, s["span"][1]]) for s in order]
@@ -1795,6 +1798,10 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
     demos = [r for r in shows if any(k in cat(r) for k in cfg["day_shows"])]
     anim = [r for r in shows if any(k in cat(r) for k in cfg["night_shows"]) and r not in demos]
     stage = [r for r in shows if r not in demos and r not in anim] or shows or socials
+    day_cats = [*(cfg.get("day") or ()), *(cfg.get("day_shows") or ())]
+    for r in recs:                                           # daytime footage, for every later pass: it never
+        r["unit"]["day"] = r in demos or r in day or bool(day_cats and fits(r["unit"], day_cats))   # plays at night
+    after_dark = lambda rs: [r for r in rs if not r["unit"]["day"]] or rs   # the night acts' footage
     home = {**{r["id"]: "arrival" for r in demos + day}, **{r["id"]: "shows" for r in stage},
             **{r["id"]: "night" for r in anim + socials + night},
             **{r["id"]: "finale" if r["role"] == "transition" else "climax" for r in late}}
@@ -1896,11 +1903,11 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
         x = min((2, 1, 1)[k % 3], left)
         slots.append(x); left -= x; k += 1
     slots.append("B")
-    pool = dance if fmt == "portrait" else shows or dance
+    pool = after_dark(dance if fmt == "portrait" else shows or dance)
     if cfg.get("climax_from"):
         pool = [r for r in pool if any(k in cat(r) for k in cfg["climax_from"])] or pool
     if late_dance:                                          # the headliner's set first, the rest of the day after
-        pool = late_dance if len(late_dance) >= 4 else late_dance + pool
+        pool = late_dance if len(late_dance) >= 4 else after_dark(late_dance + pool)
     crowd = [r for r in late_crowd if "crowd" in tag(r)] + crowd
     heroes = P.pool(pool, ("spin", "dip", "trick"), 0.45)
     if not heroes and cfg.get("climax_from"):               # the climax's own footage has no spins or dips: its
@@ -1923,7 +1930,7 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
     for k, sl in enumerate(slots):
         if sl == "B" or (sl == "H" and h_i < len(hero_moments)):
             if sl == "B":
-                s = P.take(*(peak or pick(pool, MOVES, 0.4)), beats=6, act="climax"); s["fx"] = ["bullet"]
+                s = P.take(*(peak or P.best(pool, MOVES, 0.4) or P.best(after_dark(dance))), beats=6, act="climax"); s["fx"] = ["bullet"]
             else:
                 s = P.take(*hero_moments[h_i], beats=4, act="climax"); h_i += 1; s["fx"] = ["hero"]
             s["effect"] = s["fx"][0]
@@ -1940,7 +1947,7 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
                 [x for x in P.pool(src) if not clash(x)] or P.pool(src) or \
                 (cfg.get("climax_from") and (cl or seq)[-1]["unit"]["role"] != "transition"     # the night's own
                  and [x for x in P.pool(late_crowd + night) if x[0]["unit"]["clip"] != last_clip]) or \
-                P.pool(dance)                                # B-roll before footage the climax was kept from
+                P.pool(after_dark(dance))                    # B-roll before footage the climax was kept from
             prev = cl[-1] if cl else seq[-1]                 # cut on the action: carry the last shot's movement on
             if not cand:                                     # nothing left to fill it with (the editor's picks
                 break                                        # will, include_adds); the grid is evened at the end
@@ -1960,7 +1967,7 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
 
     # finale: faces, the packed floor, and one last slow-motion move
     fi = []
-    dance = late_dance + dance if late_dance else dance
+    dance = after_dark(late_dance + dance if late_dance else dance)
     closeups = P.pool(dance, ("closeup",), 0.3) or P.pool(dance, ("closeup",))
     faces = sorted(closeups, key=lambda x: -(x[1].get("face", 0) + 0.5 * rk(x[1], fmt)))
 
@@ -3025,7 +3032,7 @@ def ensure_units(project, fmt, shots, moments, cfg, W=None):
     day_cats = [*(cfg.get("day") or ()), *(cfg.get("day_shows") or ())]
 
     def day(r):
-        return bool(day_cats) and fits(r["unit"], day_cats)
+        return bool(r["unit"].get("day")) or (bool(day_cats) and fits(r["unit"], day_cats))
 
     def passing(r):                                          # the scrub's verdict where there is one (it judged
         return [m for m in r["moments"] if (m.get("fmt_ok") or {}).get(fmt) is True or (   # the windows themselves)
@@ -3240,7 +3247,7 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None):
             if any(n["unit"]["clip"] == ru["clip"] for n in nb):
                 continue
             own_set = not cfg.get("sets") or ru.get("category") == u.get("category")   # (another set's only
-            d = bool(day_cats) and fits(ru, day_cats)                                  # when its own has none)
+            d = bool(ru.get("day")) or (bool(day_cats) and fits(ru, day_cats))         # when its own has none)
             if d != (s["act"] in DAY_ACTS) and (d or s["act"] == "arrival"):
                 continue
             ms = passing(r) or r["moments"]                  # none left: footage the config keeps out

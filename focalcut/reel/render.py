@@ -127,6 +127,7 @@ def fx_shot(project, s, fmt, beat, out):
     W, H = SIZE[fmt]
     u, L = s["unit"], s["length"]
     ctx = fx.Context(fps=FPS, beat=beat, peak=s["peak"], seed=int(key(s)[:4], 16), params={"group": s.get("group"), "closeup": s["kind"] == "closeup",
+                                     "face": s["kind"] == "closeup" or (s.get("crop") or {}).get("face", 0) >= 0.5,
                                      "cap": 3.5 if u["role"] == "transition" else 1.5})   # dancing never past 1.5x
     if s.get("span"):                              # an editor's selection: all of it, from their in-point
         ctx.params["src_len"] = s["span"][1] - s["span"][0]

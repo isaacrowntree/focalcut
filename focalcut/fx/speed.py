@@ -13,6 +13,9 @@ from .base import Effect, register
 TAIL = 0.5                                          # seconds at 1x at the end of every shot
 
 
+GHOST = 0.02             # flow beyond this share of the frame width (90th percentile) ghosts when warped
+
+
 def settle_tail(v, t, out_len, ctx, tail=TAIL):
     """Whatever a curve does, a shot's last tail seconds play at 1x, eased into over 0.4 beats before them."""
     ease = max(0.4 * ctx.beat, 1 / ctx.fps)
@@ -78,8 +81,11 @@ class Speed(Effect):
         out, flow_cache = [], {}
         dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_FAST)
         last = len(frames) - 1
-        for k in range(n_out):
+        face = bool(ctx.params.get("face"))        # a face in the shot stays sharp: no frame averaging over it,
+        for k in range(n_out):                     # and no flow-warp where the motion is too big to warp cleanly
             x = min(idx[k], last)
+            if face and s[k] > 1.3:
+                out.append(frames[int(round(x))] if round(x) <= last else frames[last]); continue
             if s[k] > 1.3 and k > 0:              # fast: blend the frames this output frame spans (motion blur)
                 a, b = int(idx[k - 1]), int(min(x, last))
                 out.append(np.mean(np.stack(frames[a:b + 1]).astype(np.float32), 0).astype(np.uint8)
@@ -93,6 +99,8 @@ class Speed(Effect):
                 flow_cache = {i: (dis.calc(g0, g1, None), dis.calc(g1, g0, None))}
             f01, f10 = flow_cache[i]
             h, w = f01.shape[:2]
+            if face and float(np.percentile(np.hypot(f01[..., 0], f01[..., 1]), 90)) > GHOST * w:
+                out.append(frames[i] if a < 0.5 else frames[i + 1]); continue   # warping it would ghost the face
             gx, gy = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
             w0 = cv2.remap(frames[i], gx + f10[..., 0] * a, gy + f10[..., 1] * a, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
             w1 = cv2.remap(frames[i + 1], gx + f01[..., 0] * (1 - a), gy + f01[..., 1] * (1 - a), cv2.INTER_LINEAR,
