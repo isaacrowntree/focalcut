@@ -93,6 +93,7 @@ Read `references/concepts.md` for the rule, the reason, the numbers and the code
 | EDM light show | MilkDrop-style presets (tunnels, mandala, kaleidoscope, lasers, particles, plasma, flame) in changing palettes every 8 bars, beat blinks, drop bursts; ≤1 full flash per beat | `overlay.py` | top-level `overlay` |
 | Everyone in it | every person found by face (YuNet + SFace, grouped across clips) and every kiss (SigLIP 2) gets a shot; the moment showing the most missing people goes in first, splitting long shots when needed | `people.py`, `plan.cover_people` | — (the `people` step) |
 | Clean masks | BiRefNet matte inside the SAM 3 mask, never raw upscaled SAM | `fx/masks.py` | — |
+| Pick rules | never a back, a split-up group, the crowd, a blurry or bored face, or a weaker moment of the same person; effects take in everyone or no one (references/concepts.md §19) | `windows.py`, `plan.snap_windows`, `window_report` | — |
 
 ## Before rendering, check the plan against the rules
 

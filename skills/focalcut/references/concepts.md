@@ -326,3 +326,36 @@ with picks: `ban` a range or a whole clip, `prefer` a range. If nothing was dete
 moment is made there.
 **Code:** `xml_export.py` (rendered shots on V1, sources disabled on V2, song on A1, stinger on A2; no animated
 position keyframes), `review.py`, `plan.apply_picks`.
+
+## 19. Pick rules: what never makes the cut
+
+Isaac's rules for which stretch of footage may become a shot. They are for every planner path, every agent and
+every event: the planner's own picks, cover and people shots, recasts, band inserts and openings alike (only the
+editor's own picks are exempt). The scrub (`windows.py`) checks each one over the whole span a shot plays, and
+`plan.snap_windows` / `plan.window_report` keep every planner shot on passing windows. A rule the scrub cannot
+check yet is a bug in the scrub, not a reason to let the shot through.
+
+A shot is never:
+- **A back.** No subject seen from behind for the shot (the back of a head, a back-turned dancer hiding the
+  partner, a singer facing away). Slide along the clip to where the face or the partner shows. (`head`, `body`)
+- **A group that isn't together.** When half the group has turned away or they've drifted apart instead of
+  dancing with each other, it isn't a group shot. Pick the stretch where they're together and facing the camera.
+- **The crowd.** A pan off the dancers onto an audience sitting or standing still, or a single bored onlooker as
+  the only face, is never a subject shot. Someone has to be dancing or performing for the whole shot. (`idle`)
+- **Blurry.** The subject's face must be sharp. Missed focus, a face smeared by camera motion, or a face pressed
+  up against the lens all fail. The floor is absolute, not relative to the clip, and it applies after speed
+  effects too: frame-blending on a fast stretch must not smear a close face. (`soft`, `blocked`)
+- **Shaky, leaving, sliced or low.** Wild camera swings, the subject leaving the frame, a couple split by the
+  strip edge, or the subject far down the frame all fail. (`shake`, `exit`, `split`, `low`, `lost`)
+- **Bored, blinking or grimacing.** Engaged expressions only: smiling, eyes open, in the moment. This is about
+  expression, never appearance. (`expr`)
+- **A weaker moment of the same person.** If the same clip shows that person smiling and letting loose
+  somewhere else, use that stretch. Rank a clip's passing windows and take its best, not the first that passes.
+- **A repeat that's worse.** A person or group coming back for a second shot needs a moment as good as the
+  first, from a different stretch.
+
+Effects follow the same rule: a subject effect (glow, outline, matte) takes in every person in the action or
+none of them. Never cut through a person, leaving them half in and half out of the effect.
+
+Selection order: scrub every clip densely for windows that pass all of these, then choose moments and coverage
+from those. Don't pick by energy and reject afterwards.
