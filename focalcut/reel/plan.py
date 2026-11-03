@@ -3086,6 +3086,7 @@ def span_ok(wins, a, b, tol=SNAP_TOL):
     it tile it end to end."""
     if not wins:
         return None
+    tol += 1e-3                                              # (in-points are kept to the millisecond)
     cover = [w for w in wins if w["t0"] <= a + tol and w["t1"] >= b - tol]
     if cover:
         return any(w["ok"] for w in cover)
@@ -3093,10 +3094,10 @@ def span_ok(wins, a, b, tol=SNAP_TOL):
         return None
     reach = a + tol
     for w in sorted((w for w in wins if w["ok"] and w["t0"] >= a - tol and w["t1"] <= b + tol), key=lambda w: w["t0"]):
-        if w["t0"] > reach + 1e-6:
+        if w["t0"] > reach:
             break
         reach = max(reach, w["t1"])
-    return reach >= b - tol - 1e-6
+    return reach >= b - tol
 
 
 def window_exempt(s):
@@ -3163,7 +3164,7 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None):
         return True
 
     def fits_at(s, u, dt, a, L):                             # the shot moved by dt: inside the unit, clear, passing
-        na = a + dt
+        na = round(a + dt, 3)                                # as it will be stored
         return (u["t0"] - 1e-6 <= na and na + L <= u["t1"] + 1e-6 and clear_of_bans(na, L, u) == na
                 and span_ok(W.get(u["id"]), na, na + L) is True and free(u["id"], na, na + L, s))
 
@@ -3181,6 +3182,14 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None):
         s["stab"] = bool(j is not None and j > lo and "_stabilized" not in u["source"])
         s.pop("land", None); s.pop("land_fits", None)
 
+    def offsets(s, r, uid, a, L, speedy):                    # moves to try, smallest first: onto a passing
+        dts = [m["t"] - s["t"] for m in (passing(r) if r else [])]   # moment (its move on the shot's beat)
+        if not speedy:                                       # a plain shot can start anywhere: on a window's edges
+            for w in W.get(uid) or ():
+                if w["ok"]:
+                    dts += [w["t0"] - a, w["t1"] - L - a, w["t0"] - SNAP_TOL - a, w["t1"] - L + SNAP_TOL - a]
+        return sorted({round(d, 3) for d in dts}, key=abs)
+
     slid = recast_n = 0
     stuck = []
     for i, s, why in window_fails(shots, W):
@@ -3190,13 +3199,7 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None):
         a, L = played(s)
         speedy = any(f in SPEED for f in s["fx"])
         rec = next((r for r in moments if r["id"] == u["id"]), None)
-        dts = [m["t"] - s["t"] for m in (passing(rec) if rec else [])]
-        if not speedy:                                       # a plain shot can start anywhere: on a window's edges
-            for w in W.get(u["id"]) or ():
-                if w["ok"]:
-                    dts += [w["t0"] - a, w["t1"] - L - a, w["t0"] - SNAP_TOL - a, w["t1"] - L + SNAP_TOL - a]
-        dts = sorted({round(d, 3) for d in dts}, key=abs)
-        dt = next((d for d in dts if fits_at(s, u, d, a, L)), None)
+        dt = next((d for d in offsets(s, rec, u["id"], a, L, speedy) if fits_at(s, u, d, a, L)), None)
         if dt is not None:
             s.update(t=round(s["t"] + dt, 3), src_in=round(s["src_in"] + dt, 3), snapped=round(dt, 2))
             measure(s)
@@ -3216,10 +3219,12 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None):
             d = bool(day_cats) and fits(ru, day_cats)
             if d != (s["act"] in DAY_ACTS) and (d or s["act"] == "arrival"):
                 continue
-            for m in passing(r):
-                dt = m["t"] - s["t"]
-                if not fits_at(s, ru, dt, a, L):
+            ms = passing(r)
+            for dt in offsets(s, r, r["id"], a, L, speedy):
+                if not ms or not fits_at(s, ru, dt, a, L):
                     continue
+                mid = a + dt + L / 2                         # the shot's moment: the passing one nearest it
+                m = min(ms, key=lambda m, mid=mid: abs(m["t"] - mid))
                 key = (have[r["id"]] == 0, ru.get("category") == u.get("category"), rk(m, fmt))
                 if best is None or key > best[0]:
                     best = (key, r, m, dt)

@@ -108,3 +108,8 @@ def test_the_plan_log_warns_about_a_planner_shot_left_on_failing_windows(fakes, 
     assert len(lines) == 1 and "shot 0 A" in lines[0]
     out = capsys.readouterr().out
     assert "WARNING windows" in out and "1/3 shots on passing windows (1 pick on failing ones" in out
+
+
+def test_an_in_point_rounded_to_the_millisecond_still_sits_on_its_window():
+    W = [win(57.3, 60.9, True), win(57.8, 61.4, False)]
+    assert plan.span_ok(W, 57.996, 57.996 + 3.204) is True    # b - tol is 60.900000000000006
