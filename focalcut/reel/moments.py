@@ -9,7 +9,8 @@ SAM 3 masks, else the in-focus people), so background dancers spinning don't mak
   shake  hips working: the semantic pass's hips score on the subject's crop, backed by the hips wobbling against a
          steady torso in the poses
 Flow gives energy (subject motion with the camera's motion removed). Quality gates every moment: subject sharpness,
-exposure, camera shake and subject size. Each moment also carries how well it frames after reframing the 4K source
+exposure, camera shake and subject size -- and a stretch where nothing is in focus (the frame and its sharpest person
+under absolute floors, SOFT) is never a moment at all. Each moment also carries how well it frames after reframing the 4K source
 (per output format), and an expressive face lifts it. The opening of each unit is marked down: routines rarely
 show their best in the walk-on. Writes moments.json: the top non-overlapping moments per clip, with a clip-level
 "interest" score used to share out screen time.
@@ -32,6 +33,21 @@ HZ = 5                                           # pose rate
 W = dict(spin=1.0, dip=1.1, trick=0.9, pattern=1.0, shake=1.0, closeup=0.95, travel=0.6, style=0.45, energy=0.55)  # kind weights
 SHAKE0, SHAKE1 = 0.2, 0.15                       # hip wobble (torso lengths) where a shake starts, and its range
 PER_CLIP, GAP = 20, 1.6                          # moments kept per clip; minimum spacing (s)
+# nothing in focus: the sharpest person in frame (the focus pass) under FOCUS -- 1.5 x that while the camera moves
+# faster than CAM (moving and soft) -- and the frame's own sharpness under FRAME, or under DROP of its clip's median
+# (a whip or a focus hunt in an otherwise sharp clip), over most of a second: never a moment, in any format, however
+# good the move (quality above is relative to the clip; these floors are not) -- nor any moment with NEAR of the
+# 2.4 s around it soft (a shot plays a second or so either side of its moment).
+# reel.json "soft_frame", "soft_drop", "soft_focus", "soft_cam", "soft_near"
+SOFT = dict(frame=60.0, drop=0.35, focus=8.0, cam=8.0, near=0.25)
+_SOFT0 = dict(SOFT)
+
+
+def configure(cfg):
+    """Set the soft-focus floors from a project's config (reel.json "soft_frame" / "soft_focus" / "soft_cam"; a profile
+    can set them). Every caller of clip_series then uses them."""
+    for k in SOFT:
+        SOFT[k] = float((cfg or {}).get(f"soft_{k}", _SOFT0[k]))
 
 L_SHO, R_SHO, L_HIP, R_HIP = 5, 6, 11, 12
 NOSE, L_EYE, R_EYE = 0, 1, 2
@@ -159,8 +175,24 @@ def smooth(x, k=3):
     return same(x, np.ones(k) / k)
 
 
+def soft(sharp, top, cam, typical=None):
+    """Per frame: is nothing in focus (under the SOFT floors)? sharp: the frame's sharpness, top: the sharpest
+    person's (NaN: nobody measured -- the frame alone decides), cam: camera motion, typical: the clip's median frame
+    sharpness (default: of sharp). Soft over ~1 s (most of it), and every frame with NEAR of the 2.4 s around it
+    soft."""
+    c = SOFT
+    sharp = np.nan_to_num(sharp)
+    typical = np.median(sharp[sharp > 0]) if typical is None and (sharp > 0).any() else (typical or 0.0)
+    floor = c["focus"] * np.where(cam > c["cam"], 1.5, 1.0)
+    dull = (sharp < c["frame"]) | (sharp < c["drop"] * typical)
+    raw = dull & (np.isnan(top) | (np.nan_to_num(top) < floor))
+    sof = same(raw.astype(float), np.ones(HZ) / HZ) > 0.5
+    k = int(2.4 * HZ) | 1
+    return same(sof.astype(float), np.ones(k) / k) >= c["near"]
+
+
 def clip_series(path):
-    """Per pose-frame series for a whole clip: move evidence, energy, quality."""
+    """Per pose-frame series for a whole clip: move evidence, energy, quality, and where nothing is in focus (soft)."""
     d = FR.load(path)
     pt_ = d["pose_t"]
     if len(pt_) < 4:
@@ -233,8 +265,10 @@ def clip_series(path):
     # a travelling shot shouldn't be marked down as camera shake
     quality = np.where(parts["travel"] > 0.4, quality / steady * 0.95, quality)
     act = activity(pt_, t10, d["subj"], ~np.isnan(union[:, 0]))
+    top = np.nanmax(np.where(~np.isnan(d["boxes"][..., 0]), d["focus"], np.nan), axis=1)
+    measured = d["sharp"][d["sharp"] > 0]                       # (10 Hz series, measured at 5 Hz: zeros between)
     return dict(t=pt_, parts=parts, quality=quality, steady=steady, framing=frm, activity=act,
-                face=np.clip((face_sem - 0.5) / 0.4, 0, 1))
+                face=np.clip((face_sem - 0.5) / 0.4, 0, 1), soft=soft(sharp, top, cam, float(np.median(measured)) if len(measured) else 0.0))
 
 
 def activity(pt_, t10, subj, present):
@@ -259,12 +293,16 @@ def curve(u, S):
         # steadiness alone, below a well-shot frame with people, rather than dropping the file
         q = np.where(S["quality"] > 0, S["quality"], 0.35 * S["steady"])
         total = q * (0.6 + 0.4 * S["steady"]) * (0.7 + 0.3 * S["parts"]["energy"])
+        if "soft" in S:
+            total = np.where(S["soft"], 0.0, total)               # nothing in focus: never a shot
         return {"landscape": total, "portrait": total}, total
     w = dict(W, shake=0.6) if u["role"] == "dance" else W       # socials: shakes, but spins and faces too
     # dancing the whole shot long; a close-up may hold still -- the face carries it
     act = np.fmax(S["activity"], 0.5 * S["parts"]["closeup"]) if "activity" in S else 1.0
     base = (sum(w[k] * S["parts"][k] for k in W) * S["quality"] * prior * (1 + 0.3 * S["face"])
             * (0.12 + 0.88 * act))
+    if "soft" in S:
+        base = np.where(S["soft"], 0.0, base)                    # nothing in focus: never a shot
     per = {f: base * (0.15 + 0.85 * S["framing"][f]) for f in S["framing"]}   # a centred subject first
     return per, np.fmax(per["landscape"], per["portrait"])
 
@@ -303,6 +341,7 @@ def unit_moments(u, S):
 
 
 def run(project) -> list[dict]:
+    configure(project.config)
     units = project.load("units.json")
     cache, res, missing = {}, [], set()
     for u in units:

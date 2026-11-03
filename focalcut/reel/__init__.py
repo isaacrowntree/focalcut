@@ -50,6 +50,9 @@ def run(folder: str, steps=None, formats=None, workers: int = 2, draft: bool = F
     """cut: one of reel.json's "cuts" (another reel from the same footage) in place of the main reel; the analysis
     steps are the project's own, so a cut runs from music on."""
     project = Project(folder, cut)
+    from . import frame, moments
+    frame.configure(project.config)                 # the focus rule's thresholds (reel.json "focus_*")
+    moments.configure(project.config)               # and the soft-focus floors ("soft_*")
     steps = steps or STEPS
     formats = formats or project.formats or FORMATS
     sl = stinger_length(project, formats)
@@ -65,6 +68,11 @@ def run(folder: str, steps=None, formats=None, workers: int = 2, draft: bool = F
         elif step == "plan":
             for f in formats:
                 mod.run(project, f, stinger_len=sl)
+                if cut:                                     # a cut's footage is a hard filter: prove it held
+                    out = [s["unit"]["id"] for s in project.load(f"plan_{project.cut_name(f)}.json")["shots"]
+                           if not project.in_cut(s["unit"])]
+                    if out:
+                        raise SystemExit(f"{project.cut_name(f)}: shots from footage outside the cut: {sorted(set(out))}")
         elif step == "render":
             for f in formats:
                 mod.run(project, f, draft=draft, cut=project.cut_name(f))

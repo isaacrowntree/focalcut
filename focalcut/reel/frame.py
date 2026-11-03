@@ -2,7 +2,9 @@
 
 Subject: from the subject pass's track (SAM 3 masks scored by saliency and depth, ~1 a second) when it exists: the
 union of the subject's masks and whether they touch the frame edges. Without it, the fallback is the sharpest
-person box (the focus pass, else the largest) plus everyone close to it who is nearly as sharp.
+person box (the focus pass, else the largest) plus everyone close to it who is nearly as sharp. Either way, someone
+well out of focus -- close to the lens in front of the shot -- is never the subject when the camera's focus is
+clearly on someone else (in_focus).
 Framing: 4K sources in a 1080p reel can be cropped up to ZMAX x without losing resolution. The crop follows the
 subject; a shot frames well when the subject ends up centred, a good size, and not cut off by the camera's own
 frame edge.
@@ -17,6 +19,22 @@ import numpy as np
 ZMAX = 1.6                                        # 3840 / 1.6 = 2400 px across: still above 1080p
 FILL = 0.62                                       # target subject height, fraction of the output frame
 SHARP_REL = 0.55                                  # a person counts as in focus at this fraction of the sharpest
+# the camera's focus (the focus pass): someone under BLUR of the sharpest person in frame and NEAR x their size or
+# more -- closer to the lens, in front of the one the camera focused on (a dancer as near as the sharp one and soft
+# is motion blur) -- is out of focus and never the subject; the sharp one takes over when at least MIN_H of the frame
+# tall, in at least SHARE of the shot's frames with focus data (one soft frame is not the camera's choice).
+# reel.json "focus_blur", "focus_near", "focus_min_h", "focus_share" (configure)
+FOCUS = dict(blur=0.4, near=1.5, min_h=0.5, share=0.4)
+
+
+def configure(cfg):
+    """Set the focus rule's thresholds from a project's config (reel.json "focus_blur" / "focus_min_h" /
+    "focus_share"; a profile can set them)."""
+    for k in FOCUS:
+        FOCUS[k] = float(cfg.get(f"focus_{k}", _FOCUS0[k]))
+
+
+_FOCUS0 = dict(FOCUS)
 
 
 def load(path):
@@ -48,11 +66,81 @@ def track(d, times):
         j = near.argmin(1)
         far = (near[np.arange(len(times)), j] > 1.2) | ~ok[j]    # no subject seen near this time
         union[far] = np.nan
-        return refine(d, times, union), d["sub_touch"][j], "sam"
+        union, touch = in_focus(d, times, refine(d, times, union), d["sub_touch"][j])
+        return union, touch, "sam"
     pt = d["pose_t"]
     idx = np.clip(np.searchsorted(pt, times), 0, len(pt) - 1)
     union, _, _ = subject(d["boxes"][idx], d["focus"][idx], d["aw"], d["ah"])
-    return union, None, "focus"
+    return in_focus(d, times, union, None)[0], None, "focus"
+
+
+def blurry(d, idx):
+    """(F, P): who is out of focus in each pose frame: under FOCUS["blur"] of the sharpest person there and at least
+    FOCUS["near"] x their area (in front of them, nearer the lens). Needs two people with focus data."""
+    b, foc = d["boxes"][idx], d["focus"][idx]
+    have = ~np.isnan(b[..., 0]) & ~np.isnan(foc)
+    out = np.zeros(have.shape, bool)
+    area = (b[..., 2] - b[..., 0]) * (b[..., 3] - b[..., 1])
+    for f in np.nonzero(have.sum(1) >= 2)[0]:
+        k = int(np.nanargmax(np.where(have[f], foc[f], np.nan)))
+        out[f] = have[f] & (foc[f] < FOCUS["blur"] * foc[f, k]) & (area[f] >= FOCUS["near"] * area[f, k])
+    return out
+
+
+def in_focus(d, times, union, touch):
+    """The subject held to the camera's focus. Where the focus pass shows a person well out of focus (blurry) inside
+    the subject -- typically someone close to the lens in front of the shot -- they leave it: the subject is the
+    members still in focus, or, with none, the sharpest person in frame, and those beside them nearly as sharp (either
+    way, people at least MIN_H tall: with nobody that size in focus, the subject stays). Only when that holds for SHARE of the frames with focus data; frames without data between two
+    changed ones follow them. Returns (union, touch) -- touch recomputed where the union changed."""
+    if "pose_t" not in d or not len(d["pose_t"]) or np.isnan(d["focus"]).all():
+        return union, touch
+    pt = d["pose_t"]
+    times = np.asarray(times, float)
+    idx = np.clip(np.searchsorted(pt, times), 0, len(pt) - 1)
+    close = np.abs(pt[idx] - times) <= 0.15
+    aw, ah = d["aw"], d["ah"]
+    boxes, foc = d["boxes"][idx], d["focus"][idx]
+    nb = boxes[..., :4] / [aw, ah, aw, ah]
+    w, h = union[:, 2] - union[:, 0], union[:, 3] - union[:, 1]
+    grown = np.c_[union[:, 0] - 0.15 * w, union[:, 1] - 0.1 * h, union[:, 2] + 0.15 * w, union[:, 3] + 0.1 * h]
+    m = members(boxes, grown, aw, ah) & close[:, None]
+    soft = blurry(d, idx) & close[:, None]
+    have = ~np.isnan(nb[..., 0]) & ~np.isnan(foc) & close[:, None]
+    seen = have.sum(1) >= 2                                   # frames the focus pass can judge
+    out, hit = union.copy(), np.zeros(len(times), bool)
+    for f in np.nonzero(seen & soft.any(1))[0]:
+        if not (m[f] & soft[f]).any():
+            continue                                          # nobody out of focus in the subject
+        top = np.nanmax(np.where(have[f], foc[f], np.nan))
+        rel = np.where(have[f], foc[f] / max(top, 1e-6), 0.0)
+        tall = (nb[f, :, 3] - nb[f, :, 1]) >= FOCUS["min_h"]
+        keep = m[f] & have[f] & ~soft[f] & tall              # (never shrunk to a small figure far behind)
+        if not keep.any():                                    # the subject was all blur: the sharp person instead
+            sharp = have[f] & tall & (rel >= SHARP_REL)
+            if not sharp.any():
+                continue
+            k0 = int(np.argmax(np.where(sharp, rel, -1)))
+            keep = np.zeros_like(sharp); keep[k0] = True
+            for k in np.nonzero(sharp)[0]:                    # with whoever stands beside them, nearly as sharp
+                if _gap(nb[f, k], nb[f, k0]) < 0.6 * (nb[f, k0, 2] - nb[f, k0, 0]):
+                    keep[k] = True
+        b = nb[f, keep]
+        out[f] = [b[:, 0].min(), b[:, 1].min(), b[:, 2].max(), b[:, 3].max()]
+        hit[f] = True
+    if hit.sum() < FOCUS["share"] * max(seen.sum(), 1):
+        return union, touch
+    ev = np.nonzero(seen)[0]                                  # frames without focus data: between two changed ones,
+    for f in np.nonzero(~seen)[0]:                            # follow them
+        a, b_ = ev[ev < f], ev[ev > f]
+        if len(a) and len(b_) and hit[a[-1]] and hit[b_[0]] and times[b_[0]] - times[a[-1]] <= 1.5:
+            u = (times[f] - times[a[-1]]) / max(times[b_[0]] - times[a[-1]], 1e-6)
+            out[f] = (1 - u) * out[a[-1]] + u * out[b_[0]]
+            hit[f] = True
+    if touch is not None:
+        touch = np.array(touch, copy=True)
+        touch[hit] = np.c_[out[hit, 0] < 0.01, out[hit, 1] < 0.01, out[hit, 2] > 0.99, out[hit, 3] > 0.99]
+    return out, touch
 
 
 def refine(d, times, union):
@@ -330,6 +418,9 @@ def couple(d, times, boxes, m, close, cw, fv, act=None, union=None):
     F = len(times)
     nb = boxes[..., :4] / [d["aw"], d["ah"], d["aw"], d["ah"]]
     ok = ~np.isnan(nb[..., 0]) & close[:, None]
+    pt = d["pose_t"]                              # out of focus: never one of the pair
+    soft = blurry(d, np.clip(np.searchsorted(pt, times), 0, len(pt) - 1)) if "focus" in d else np.zeros_like(ok)
+    ok &= ~soft
     found = {}
     for f in range(F):
         mem = [k for k in np.nonzero(m[f])[0]]
@@ -338,7 +429,7 @@ def couple(d, times, boxes, m, close, cw, fv, act=None, union=None):
         size = lambda k: (nb[f, k, 2] - nb[f, k, 0]) * (nb[f, k, 3] - nb[f, k, 1])      # noqa: B023
         mem.sort(key=lambda k: -(act[f, k] + 0.02 * size(k) ** 0.5) if act is not None else -size(k))
         a = mem[0]                                # the one doing the move (the biggest, all else equal)
-        cand = [k for k in np.nonzero(ok[f])[0] if k != a and _partners(nb[f, a], nb[f, k])]
+        cand = [k for k in np.nonzero(ok[f] & ~soft[f])[0] if k != a and _partners(nb[f, a], nb[f, k])]
         if act is not None:                       # a partner dances too: not someone standing by
             cand = [k for k in cand if act[f, k] >= 0.2 * act[f, a] or act[f, a] < 0.05]   # (a lead posing too)
         if cand:                                  # a fellow member first, else the nearest person beside them
