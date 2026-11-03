@@ -187,3 +187,13 @@ def test_window_ok_reports_every_failing_rule(monkeypatch):
     assert plan.R == plan.RULES                                 # (rules apply to the one call only)
     scenery = {"unit": {"id": "x", "role": "transition", "tag": "venue-night"}, "role": "transition"}
     assert plan.window_ok(None, scenery, 0, 2, "portrait")["ok"]
+
+
+def test_the_planner_takes_only_scrubbed_windows_that_pass_in_its_format():
+    ok_p = dict(t=5.0, kind="spin", score=0.3, score_p=0.3, fmt_ok={"portrait": True, "landscape": True})
+    bad_p = dict(t=1.0, kind="spin", score=0.9, score_p=0.9, fmt_ok={"portrait": False, "landscape": True})
+    r = {"id": "U1", "role": "dance", "unit": {"clip": "C1", "role": "dance"}, "moments": [bad_p, ok_p]}
+    assert plan.Picker("portrait", [r]).best([r])[1]["t"] == 5.0
+    assert plan.Picker("landscape", [r]).best([r])[1]["t"] == 1.0
+    r["moments"] = [bad_p]
+    assert not plan.framable(r, "portrait") and plan.framable(r, "landscape")

@@ -169,7 +169,7 @@ class Picker:
     def pool(self, recs, kinds=None, min_frame=0.0, usable=False):
         out = [(r, m) for r in recs for m in r["moments"] if self.free(r, m) and (kinds is None or m["kind"] in kinds)
                and ((r["role"] == "transition" and not people_broll(r["unit"])) or fr(m, self.fmt) >= min_frame)
-               and not (usable and m.get("unusable"))]
+               and not (usable and (m.get("unusable") or (m.get("fmt_ok") or {}).get(self.fmt) is False))]
         return sorted(out, key=lambda x: -self.share(*x))
 
     def best(self, recs, kinds=None, min_frame=0.35, strict=False):
@@ -201,8 +201,11 @@ def framable(r, fmt):
     """Must this record appear in the reel? Always in landscape; in portrait not when no moment of it frames: the
     subject lost from the strip, a back, a couple cut in half or only a head throughout (assess's plays_p), unless the
     editor picked from it. A clip that won't crop to 9:16 is better left out than shown badly."""
-    if fmt != "portrait" or (r["role"] == "transition" and not people_broll(r.get("unit") or r)) \
-            or any(m.get("pick") or m.get("add") for m in r["moments"]):
+    if any(m.get("pick") or m.get("add") for m in r["moments"]):
+        return True
+    if any("fmt_ok" in m for m in r["moments"]):              # the scrub: windows that pass every rule (windows.py)
+        return any((m.get("fmt_ok") or {}).get(fmt, True) for m in r["moments"])
+    if fmt != "portrait" or (r["role"] == "transition" and not people_broll(r.get("unit") or r)):
         return True
     return max((m.get("plays_p", 1.0) for m in r["moments"]), default=1.0) >= UNFRAMED
 
@@ -3062,6 +3065,22 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
     return plan
 
 
+def coverage_report(project, fmt, plan):
+    """The plan log's coverage: dance units in the cut / all dance units, people in it / found (people.json), and
+    each unit left out with why (the scrub's fail counts on its record, else 'never frames' / 'no moments')."""
+    mo = [r for r in project.load("moments.json") if project.in_cut(r["unit"])]
+    seq = plan["shots"]
+    used = {s["unit"]["id"] for s in seq}
+    dance = [r for r in mo if r["role"] == "dance"]
+    print(f"[reel]   coverage: dance units {sum(r['id'] in used for r in dance)}/{len(dance)}")
+    out = [r for r in mo if r["id"] not in used and (r["role"] != "transition" or people_broll(r["unit"]))]
+    for r in out:
+        fails = r.get("fails") or {}
+        why = ", ".join(f"{k} {v}" for k, v in sorted(fails.items(), key=lambda kv: -kv[1])[:4]) if fails else (
+            "no moments" if not r["moments"] else "never frames" if not framable(r, fmt) else "no room")
+        print(f"[reel]     left out {r['id']}: {why}")
+
+
 def run(project, fmt, stinger_len=0.0) -> dict:
     from .flow import Flow
     fl = Flow(project)
@@ -3091,6 +3110,7 @@ def run(project, fmt, stinger_len=0.0) -> dict:
         for line in bad:
             print(f"[reel]     {line}")
     print("[reel]   effects:", {f: fxs.count(f) for f in sorted(set(fxs))})
+    coverage_report(project, fmt, plan)
     for line in V.speed_tails(plan):                         # every shot ends at real speed
         print(f"[reel]   WARNING speed: {line}")
     return plan
