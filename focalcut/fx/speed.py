@@ -55,9 +55,14 @@ class Speed(Effect):
         v = np.minimum(self.curve(t, ctx), ctx.params.get("cap", self.CAP))
         return settle_tail(v, t, out_len, ctx)
 
+    paced = True                                    # the shot's base pace (params "pace") scales the curve
+
     def _map(self, out_len, ctx):
         t = np.arange(int(round(out_len * ctx.fps)) + 1) / ctx.fps
         s = self.speed(t, out_len, ctx)
+        p = ctx.params.get("pace", 1.0) if self.paced else 1.0
+        if p != 1.0:                                # dancing a touch quicker throughout, never past the cap
+            s = np.minimum(s * p, max(ctx.params.get("cap", self.CAP), p))
         src = np.concatenate([[0], np.cumsum((s[1:] + s[:-1]) / 2 / ctx.fps)])
         return t, src, s
 
@@ -159,6 +164,7 @@ class Fit(Speed):
     """The editor's whole selection in its slot: quicker at the ends, easing to its slowest over the middle (a bell
     across the shot), scaled so the selection's every frame plays -- params "src_len": the selection's length."""
     name = "fit"
+    paced = False                                             # the editor's selection plays whole, as chosen
     dip, width = 0.5, 0.35                                    # how much slower the middle is; the bell's width (of L)
 
     def shape(self, t, out_len):

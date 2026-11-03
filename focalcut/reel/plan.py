@@ -2834,6 +2834,7 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     ensure_units(project, fmt, plan["shots"], fm, cfg)
     snap_windows(project, fmt, plan["shots"], fm, cfg)        # last: whichever pass placed it, on passing windows
     ensure_units(project, fmt, plan["shots"], fm, cfg)        # (a unit whose only shot that recast moves away)
+    pace_shots(plan["shots"], cfg)
     mo = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
     plan["units_total"] = len({r["id"] for r in mo})
     plan["music_length"] = music["length"]
@@ -3017,6 +3018,9 @@ def _swappable(s):
                                    "title", "open"))
 
 
+COVER_FLOOR = 0.15       # a unit coverage would force in needs a passing window framing at least this well
+
+
 def ensure_units(project, fmt, shots, moments, cfg, W=None):
     """Every unit with a moment that passes in this format (the scrub's fmt_ok, nothing marked unusable) is in the
     reel at least once: after everything else has placed, recast and covered people, a unit still missing takes the
@@ -3037,8 +3041,17 @@ def ensure_units(project, fmt, shots, moments, cfg, W=None):
     def passing(r):                                          # the scrub's verdict where there is one (it judged
         return [m for m in r["moments"] if (m.get("fmt_ok") or {}).get(fmt) is True or (   # the windows themselves)
                 "fmt_ok" not in m and not m.get("unusable") and not (fmt == "portrait" and m.get("plays_p", 1.0) < UNFRAMED))]
+    floor = cfg.get("cover_floor", COVER_FLOOR)
+
+    def best(r):                                             # how well its best passing window frames
+        ws = [w["score"] for w in (W or {}).get(r["id"]) or () if w["ok"]]
+        return max(ws) if ws else None
     miss = [r for r in moments if r["id"] not in have and passing(r)
             and (r["role"] != "transition" or people_broll(r["unit"]))]
+    weak = [r["id"] for r in miss if (b := best(r)) is not None and b < floor]
+    if weak:                                                 # coverage never forces in a shot not worth seeing
+        print(f"[reel] {fmt}: not forced in, their best window too weak (< {floor}): {weak}")
+        miss = [r for r in miss if r["id"] not in weak]
     miss.sort(key=lambda r: -max(rk(m, fmt) for m in passing(r)))
     placed, stuck = [], []
     for r in miss:
@@ -3139,18 +3152,36 @@ def window_exempt(s):
                 or s.get("logo_image") or s.get("title"))
 
 
+def pace_shots(shots, cfg):
+    """A base speed under each shot (reel.json plan.<fmt> "pace": {"<footage match>": 1.15, ...}, fits() keys, the
+    first that matches): footage danced slower than the track plays that much quicker throughout, its speed ramps
+    on top of it, still never past the 1.5x cap. A plain shot reads its peak's moment as before (the source shifts
+    so the move lands where it did); an editor's whole selection ("fit") plays as chosen."""
+    rules = cfg.get("pace") or {}
+    for s in shots:
+        s.pop("speed", None)
+        p = next((float(v) for k, v in rules.items() if fits(s["unit"], [k])), 1.0)
+        if p == 1.0 or "fit" in s["fx"]:
+            continue
+        s["speed"] = round(min(p, 1.5), 3)
+        if not s.get("span") and not any(f in SPEED for f in s["fx"]):
+            u = s["unit"]
+            src = s["t"] - s["peak"] * s["speed"]                   # the peak's moment stays on the beat
+            s["src_in"] = round(min(max(src, u["t0"]), max(u["t1"] - s["length"] * s["speed"], u["t0"])), 3)
+
+
 def played(s):
     """(source in, source length) render reads for a shot: a speed effect reads more or less source than the shot's
     length, around its peak (render.fx_shot)."""
     sp = [f for f in s["fx"] if f in SPEED and f != "fit"]
     if not sp or s.get("span"):
-        return s["src_in"], s["length"]
+        return s["src_in"], s["length"] * (1.0 if "fit" in s["fx"] else s.get("speed") or 1.0)
     from .. import fx
     from ..fx.speed import Speed
     u, L = s["unit"], s["length"]
     ctx = fx.Context(fps=FPS, beat=s["beat"], peak=s["peak"], seed=0,
                      params={"group": s.get("group"), "closeup": s.get("kind") == "closeup",
-                             "cap": 3.5 if u["role"] == "transition" else 1.5})
+                             "cap": 3.5 if u["role"] == "transition" else 1.5, "pace": s.get("speed") or 1.0})
     src_len, src_peak = L, s["peak"]
     for n in s["fx"]:
         e = fx.EFFECTS[n]()

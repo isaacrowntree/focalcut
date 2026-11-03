@@ -154,3 +154,9 @@ def test_with_song_sets_a_recast_takes_its_own_set_first_and_another_only_when_i
     shots[1]["unit"]["category"] = "headline"
     _, recast, _ = plan.snap_windows(None, "portrait", shots, moments[:1] + moments[2:], dict(CFG, sets=True), W)
     assert recast == 1 and shots[1]["unit"]["id"] == "E"
+
+
+def test_coverage_never_forces_in_a_unit_whose_best_window_is_weak(fakes):
+    shots = [placed("A", 1.0), placed("A", 5.0), placed("B", 2.0), placed("A", 9.0), placed("B", 6.0)]
+    W = {"D": [dict(win(20.0, 21.2, True), score=0.1)], "E": [dict(win(20.0, 21.2, True), score=0.9)]}
+    assert plan.ensure_units(None, "portrait", shots, [rec("D", [20.5]), rec("E", [20.5])], CFG, W) == ["E"]

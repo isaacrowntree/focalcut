@@ -83,6 +83,9 @@ def shot_filter(s, fmt, project=None, dur=None):
                  f":y=({crop_expr(c['path'], 2)})*ih-oh/2")
     if s.get("pull"):                                       # a blown-out subject: its highlights pulled back
         f.append(exposure.filt(s["pull"]))
+    p = s.get("speed") or 1.0                               # the shot's pace (plan "pace"): source read p times
+    if p != 1.0 and not s.get("fx"):                        # as fast, the nearest frame each (a speed effect
+        f.append(f"setpts=PTS/{p:.4f}")                     # applies it inside its curve instead)
     f += [f"scale={W}:{H}:flags=lanczos", f"fps={FPS}", "setsar=1", "format=yuv420p"]
     return ",".join(f)
 
@@ -94,7 +97,8 @@ def key(s, beat=None):
                     s.get("crop"), s["peak"], s.get("logo"), s.get("stab"), s["kind"] == "closeup", beat, 3, hw.enc_tag()]
                    + ([s["span"]] if s.get("span") else []) + ([s["logo_image"]] if s.get("logo_image") else [])
                    + ([["pull", s["pull"]]] if s.get("pull") else [])
-                   + (["speed2"] if any(n in SPEED_FX for n in s.get("fx") or ()) else []),   # (1x tails)
+                   + (["speed2"] if any(n in SPEED_FX for n in s.get("fx") or ()) else [])   # (1x tails)
+                   + ([["pace", s["speed"]]] if (s.get("speed") or 1.0) != 1.0 else []),
                    sort_keys=True)
     return hashlib.md5(k.encode()).hexdigest()[:10]
 
@@ -102,9 +106,14 @@ def key(s, beat=None):
 def cut_shot(project, s, fmt, out, qsv=False):
     """A plain shot straight from the camera file: decoded on the Intel iGPU when qsv (and hw.ffmpeg can; a
     stabilised shot reads its motion file on the Linux side, so it stays on the CPU), encoded by hw.enc."""
+    p = s.get("speed") or 1.0
+    read = s["length"] * p + 0.1                            # the source it plays (more of it when paced)
+    if p != 1.0 and s.get("crop"):                          # follow the subject over all of it
+        from .plan import reframe
+        s = dict(s, crop=reframe(project, s["unit"], s["src_in"], s["length"] * p, fmt) or s["crop"])
     src, t = project.decode_from(s["unit"]["source"], s["src_in"])
     exe, dec, P, pre = hw.ffmpeg(src, qsv and not s.get("stab"))
-    chain = pre + shot_filter(s, fmt, project, s["length"] + 0.1)
+    chain = pre + shot_filter(s, fmt, project, read)
     vf = ["-vf", chain]
     logo = project.logo(s.get("logo_image"))
     if s.get("logo") and logo:                              # the event's logo over the opening, or an act's title
@@ -114,7 +123,7 @@ def cut_shot(project, s, fmt, out, qsv=False):
               f"[0:v]{chain},vignette=angle=PI/5,eq=brightness=-0.05[v];"
               f"[1:v]scale={int(W * (0.5 if W > H else 0.8))}:-1,format=rgba,loop=-1:1,fps={FPS}{fade}[l];"
               f"[v][l]overlay=(W-w)/2:(H-h)/2:shortest=1,format=yuv420p"]
-    subprocess.run([exe, "-v", "error", "-y", *dec, "-ss", f"{t:.3f}", "-t", f"{s['length'] + 0.1:.3f}",
+    subprocess.run([exe, "-v", "error", "-y", *dec, "-ss", f"{t:.3f}", "-t", f"{read:.3f}",
                     "-i", P(src), "-an", *vf, *hw.enc(), "-frames:v", str(s["frames"]), P(out)],
                    check=True)
 
@@ -128,7 +137,8 @@ def fx_shot(project, s, fmt, beat, out):
     u, L = s["unit"], s["length"]
     ctx = fx.Context(fps=FPS, beat=beat, peak=s["peak"], seed=int(key(s)[:4], 16), params={"group": s.get("group"), "closeup": s["kind"] == "closeup",
                                      "face": s["kind"] == "closeup" or (s.get("crop") or {}).get("face", 0) >= 0.5,
-                                     "cap": 3.5 if u["role"] == "transition" else 1.5})   # dancing never past 1.5x
+                                     "cap": 3.5 if u["role"] == "transition" else 1.5,   # dancing never past 1.5x
+                                     "pace": s.get("speed") or 1.0})
     if s.get("span"):                              # an editor's selection: all of it, from their in-point
         ctx.params["src_len"] = s["span"][1] - s["span"][0]
     src_len, src_peak = L, s["peak"]
