@@ -48,7 +48,7 @@ def labelled(project, seed=0):
     """This project's labelled frames: X (n, D) float16, y (n,) 1 = picked, kind (n,) "add" / "ban" / "random",
     group (n,) the camera clip (for cross-validation)."""
     rng = np.random.default_rng(seed)
-    picks = {k: v for k, v in project.picks().items() if not k.startswith("_") and isinstance(v, dict)}
+    picks = {k: v for k, v in project.picks(rejects=False).items() if not k.startswith("_") and isinstance(v, dict)}
     X, y, kind, grp = [], [], [], []
     for u in project.load("units.json"):
         tr = track(project, u)

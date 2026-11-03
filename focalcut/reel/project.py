@@ -33,6 +33,9 @@ reel.json keys (all optional except song):
                                          "more": 2}}  the editor's
                                          calls, times in that export file's own timeline; merged over picks.json
                                          in this folder (the review step's page gives a copyable line per shot)
+    reject             {"<export file name>": ["0:41-0:46", ...]}  stretches a review turned down (a back, a crowd,
+                                         blur): banned for the planner on top of the editor's picks, without
+                                         touching them, and never taken as the editor's taste (taste.py)
     picks_only         ["<category>", ...]  export categories used only where the editor added a pick (e.g. a dance
                                          class to dip into); left out of "use everything"
     close_only         {"match": ["day"], "face": 0.2}  export files whose category or tag contains a match keep only
@@ -182,9 +185,14 @@ class Project:
         shifts = px[1] if px and len(px) > 1 else []
         return t - sum(d for at, d in shifts if t + d >= at)
 
-    def picks(self) -> dict:
-        """The editor's picks: focalcut/reel/picks.json, with reel.json's "picks" merged over it."""
+    def picks(self, rejects=True) -> dict:
+        """The editor's picks: focalcut/reel/picks.json, with reel.json's "picks" merged over it, and its "reject"
+        stretches added to their files' bans (rejects=False: the editor's own calls only)."""
         out = {**self._picks_file(), **(self.config.get("picks") or {})}
+        for k, spans in (self.config.get("reject") or {}).items() if rejects else ():
+            e = dict(out.get(k) or {})
+            e["ban"] = [*e.get("ban", []), *spans]
+            out[k] = e
         if self.footage:                                         # a cut: only picks of its own footage
             ids = self._cut_ids()
             out = {k: v for k, v in out.items() if k.startswith("_") or k in ids}

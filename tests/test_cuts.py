@@ -56,6 +56,21 @@ def test_a_cut_keeps_its_own_footage_settings_and_picks(tmp_path):
         Project(folder, "nope")
 
 
+def test_rejects_ban_for_the_planner_but_leave_the_editors_picks_and_taste_alone(tmp_path):
+    folder = project(tmp_path, {})
+    d = tmp_path / "focalcut" / "reel"
+    json.dump({"C1": {"add": ["0:05-0:06"], "ban": ["0:01-0:02"]}}, open(d / "picks.json", "w"))
+    raw = json.load(open(d / "reel.json"))
+    raw["profiles"] = {"qc": {"reject": {"C1": ["0:10-0:12"], "C2": ["0:03-0:04"]}}}
+    raw["use"] = ["qc"]
+    json.dump(raw, open(d / "reel.json", "w"))
+    pr = Project(folder)
+    assert pr.picks()["C1"] == {"add": ["0:05-0:06"], "ban": ["0:01-0:02", "0:10-0:12"]}
+    assert pr.picks()["C2"] == {"ban": ["0:03-0:04"]}
+    assert pr.picks(rejects=False)["C1"] == {"add": ["0:05-0:06"], "ban": ["0:01-0:02"]} and "C2" not in pr.picks(False)
+    assert json.load(open(d / "picks.json"))["C1"]["ban"] == ["0:01-0:02"]
+
+
 def test_profiles_mix_into_cuts_and_the_main_reel(tmp_path):
     folder = project(tmp_path, dict(day=dict(use=["no-night", "short"], formats=["landscape", "portrait"]),
                                     night=dict(use=["no-day", "short"], length=180, footage=["@portrait"])))
