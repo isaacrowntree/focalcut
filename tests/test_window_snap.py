@@ -176,3 +176,16 @@ def test_the_last_shot_ends_before_its_subject_leaves_and_the_band_takes_the_res
     assert last["beats"] + fill["beats"] == 12 and last["beats"] >= 2
     assert plan.span_ok(W["A"], last["src_in"], last["src_in"] + last["length"]) is not False
     assert last["frames"] + fill["frames"] == 270 and fill["rec_in"] == pytest.approx(100.0 + last["beats"] * 0.45)
+
+
+def test_a_steady_crop_rides_out_a_one_frame_slice_but_follows_a_lasting_one():
+    import numpy as np
+    cand = np.linspace(0.15, 0.85, 15)
+    cost = np.abs(cand[:, None] - 0.5) / 0.3 + np.zeros((1, 10))
+    blip = cost.copy()
+    blip[7, 9] += 2.5                                      # the centre slices someone for one frame
+    assert np.abs(cand[plan.steady(blip, cand, 0.3)] - 0.5).max() <= 0.05 + 1e-9   # a nudge at most, not a jump
+    lasting = cost.copy()
+    lasting[7, 4:] += 2.5                                  # from frame 4 on: it moves off
+    k = plan.steady(lasting, cand, 0.3)
+    assert cand[k[-1]] != 0.5 and len(set(k)) <= 2         # off it, in one move at most

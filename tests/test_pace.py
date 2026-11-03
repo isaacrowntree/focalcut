@@ -34,3 +34,12 @@ def test_the_pace_sits_under_a_ramp_and_the_cap_still_holds():
     assert np.all(s2 <= 1.5 + 1e-9)
     assert np.isclose(s2[-1], 1.15)                                  # it ends at the base pace, not 1x
     assert np.isclose(s2.min(), s1.min() * 1.15)                     # the slow landing is relative to the base
+
+
+def test_one_clip_can_be_paced_by_its_id():
+    a, b, c = shot("matinee"), shot("matinee"), shot("matinee")
+    a["unit"].update(id="C1991_matinee", clip="C1991")
+    b["unit"].update(id="C19910_matinee", clip="C19910")
+    c["unit"].update(id="C1994-02", clip="C1994")
+    P.pace_shots([a, b, c], {"pace": {"C1991": 1.2, "C1994": 1.2}})
+    assert a["speed"] == 1.2 and "speed" not in b and c["speed"] == 1.2

@@ -2326,7 +2326,9 @@ def _reframe(project, unit, t0, length, fmt):
         zz = lift(union[ok], zz, cw0, ch0, FR.zmax(src_w, src_h, W, H))   # tall rig): zoom so the crop moves down
         cw, ch = cw0 / zz, ch0 / zz
     if narrow and not pan:                                  # look room: a profile gets space ahead of their gaze
-        sx = sx + cw * gaze(d, pt[sel][ok], union[ok], R["look_player"] if unit["role"] != "dance" else R["look"])
+        room = np.clip((cw - (union[ok, 2] - union[ok, 0])) / 2, 0, None)   # never so far it cuts them (a
+        sx = sx + np.clip(cw * gaze(d, pt[sel][ok], union[ok], R["look_player"] if unit["role"] != "dance" else R["look"]),
+                          -room, room)                      # couple filling the strip gets none)
     uh_ = union[ok, 3] - union[ok, 1]                       # a subject taller than the crop keeps their head in it
     sy = union[ok, 1] + 0.45 * np.minimum(uh_, 0.95 * ch)   # (not a torso, hands and a mic stand)
     x = np.clip(smooth(sx, 3 if narrow else 6), cw / 2, 1 - cw / 2)   # ~0.3 / 0.6 s: like a camera operator
@@ -2477,6 +2479,25 @@ def lift(union, zz, cw0, ch0, zm):
 
 PEER_H = 0.75            # someone at least this tall (of the subject) beside them counts as the subject's size
 SLICE_COST = 2.5         # a crop centre's cost per such person cut through (vs. a crop width off the subject)
+MOVE_COST = 6.0          # ... and per strip width it moves between pose frames: a framing that's good holds, a
+                         # moment's slice (an arm thrown out) doesn't jerk it away; a lasting one (2+ frames) does
+
+
+def steady(cost, cand, cw, move=MOVE_COST):
+    """The cheapest path of crop centres through a shot (Viterbi over cost (C, F), centres cand (C,)): each frame's
+    own cost plus move per strip width moved from the frame before. Returns the candidate index per frame."""
+    C, F = cost.shape
+    step = move * np.abs(cand[:, None] - cand[None, :]) / cw          # (to, from)
+    acc, back = cost[:, 0].copy(), np.zeros((F, C), int)
+    for f in range(1, F):
+        tot = acc[None, :] + step
+        back[f] = tot.argmin(1)
+        acc = cost[:, f] + tot[np.arange(C), back[f]]
+    k = np.zeros(F, int)
+    k[-1] = int(acc.argmin())
+    for f in range(F - 1, 0, -1):
+        k[f - 1] = back[f, k[f]]
+    return k
 
 
 def _people(d, ii, union):
@@ -2519,7 +2540,7 @@ def clean_centre(d, times, union, sx, zz, cw0, ch0):
         _, sv = _cut(sub[None], cand - cw / 2, cand + cw / 2)
         cost = np.abs(cand - sx[None]) / cw + SLICE_COST * others + 6 * np.clip(0.95 - sv, 0, None)
         cost = np.where((main >= 0)[None], cost, np.abs(cand - sx[None]) / cw)
-        k = cost.argmin(0)
+        k = steady(cost, cand[:, 0], cw)
         return cand[k, 0], cost[k, np.arange(F)].sum(), others[k, np.arange(F)].sum()
     c, cost, n = best(zz)
     if zz > 1.0:
@@ -3219,15 +3240,21 @@ def end_clean(project, fmt, shots, moments, cfg, W=None):
     return fill
 
 
+def named(unit, k):
+    """Is k this unit's id or its clip's (an export cut from clip C1991 is "C1991-02_couple", "C1991_matinee")?"""
+    i = unit.get("id") or ""
+    return k in (i, unit.get("clip")) or (i.startswith(k) and not i[len(k):len(k) + 1].isalnum())
+
+
 def pace_shots(shots, cfg):
-    """A base speed under each shot (reel.json plan.<fmt> "pace": {"<footage match>": 1.15, ...}, fits() keys, the
-    first that matches): footage danced slower than the track plays that much quicker throughout, its speed ramps
+    """A base speed under each shot (reel.json plan.<fmt> "pace": {"<footage match>": 1.15, ...}: a unit or clip
+    id ("C1991", every unit cut from it) or a fits() match, the first that matches): footage danced slower than the track plays that much quicker throughout, its speed ramps
     on top of it, still never past the 1.5x cap. A plain shot reads its peak's moment as before (the source shifts
     so the move lands where it did); an editor's whole selection ("fit") plays as chosen."""
     rules = cfg.get("pace") or {}
     for s in shots:
         s.pop("speed", None)
-        p = next((float(v) for k, v in rules.items() if fits(s["unit"], [k])), 1.0)
+        p = next((float(v) for k, v in rules.items() if named(s["unit"], k) or fits(s["unit"], [k])), 1.0)
         if p == 1.0 or "fit" in s["fx"]:
             continue
         s["speed"] = round(min(p, 1.5), 3)
