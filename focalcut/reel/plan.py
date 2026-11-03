@@ -64,6 +64,7 @@ MOVES = ("spin", "dip", "trick", "pattern", "shake")
 SPEED = ("hero", "bullet", "montage", "flashin", "flashout", "jumpcut", "fit")
 FAST = ("flashin", "flashout", "jumpcut", "fit")       # the ones that speed footage up (an editor's pick never is)
 ACT_NAMES = ("teaser", "arrival", "shows", "night", "climax", "finale")
+DAY_ACTS = ("arrival", "shows")
 SIGNATURE = G.SIGNATURE                           # the change of act gets its own transition (grammar.py)
 _COMMON = dict(
     acts=None,                                    # [[name, first bar, end bar], ...] (bar = 4 beats), None: the split
@@ -723,7 +724,8 @@ def quick_cuts(seq, n, act, beat, at=None, size=1):
 def spread_picks(seq, recs, home, beat, budget, full=0.9):
     """Where the editor's selections would overfill their act (more of their beats than the act has, so each would
     be cut to a beat) and a later act has room -- above all an act the planner left empty, its footage all picks --
-    the act's last selections (by source time) move there: {(record id, moment time): act}. B-roll stays home.
+    the act's last selections (by source time) move there: {(record id, moment time): act}. B-roll stays home,
+    and a day act's picks (DAY_ACTS) never move into the night.
     full: the share of an act's beats its picks may fill (less, for picks cut to pieces: room for other footage)."""
     if not beat or not budget:
         return {}
@@ -746,7 +748,8 @@ def spread_picks(seq, recs, home, beat, budget, full=0.9):
         for r, m in mine:
             if load[a] <= budget.get(a, 0) * full:
                 break
-            later = [b for b in order[order.index(a) + 1:] if load[b] + want(m) <= budget.get(b, 0) * full]
+            later = [b for b in order[order.index(a) + 1:] if load[b] + want(m) <= budget.get(b, 0) * full
+                     and not (a in DAY_ACTS and b not in DAY_ACTS)]      # day footage never into the night
             if not later:
                 break
             b = min(later, key=lambda b: load[b] / max(budget[b], 1))
@@ -1137,7 +1140,7 @@ PIECE_FULL = 0.55        # picks cut to pieces fill at most this share of an act
 PIECE_KEEP = 0.7         # a pick's second piece goes in only if it plays at least this well against its best one
 
 
-def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None):
+def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None, close=None):
     """Long picks cut down to their best part (reel.json plan.<fmt> "pick_hold": beats): each in-out longer than
     hold beats becomes its best hold-beat window, scored on the moment curve (moments.curve: moves, quality, framing
     in this format, activity, face) -- the editor chose the stretch, the planner the best of it. Then the picks are
@@ -1145,16 +1148,29 @@ def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None)
     keeps its best ones up to its share (at least one; 1.5x the even share, at least two pieces' worth), and a long
     pick earns a second piece of itself when there is room and it plays nearly as well (PIECE_KEEP). Each piece is a
     shot of its own (include_adds spreads them through the act, between the rest of the footage). The ending (cfg
-    "ending": [file, from, to, ...]) is left whole and isn't counted. Returns the picks
+    "ending": [file, from, to, ...]) and the close (cfg "close": [unit id, time]) are left whole and aren't counted.
+    With a scrub (windows_<fmt>.json), the parts are scored on its windows instead (rank x score; a window that fails
+    a rule at half weight): what the editor picks for, not the move curve. Returns the picks
     left out ([export file, from, to] in source seconds, for pick_report). Changes recs in place."""
     from . import moments as MO
     series, cands = {}, []
     w = hold * beat
+    wpath = project.path(f"windows_{fmt}.json")
+    scrub = json.load(open(wpath)) if os.path.exists(wpath) else None
+
+    def scrubbed(uid, x, y):                                 # best scrub window mostly inside [x, y]
+        best = 0.0
+        for z in scrub.get(uid) or ():
+            if min(y, z["t1"]) - max(x, z["t0"]) >= 0.6 * min(y - x, z["t1"] - z["t0"]):
+                best = max(best, z["rank"] * z["score"] * (1.0 if z["ok"] else 0.5))
+        return best
     for r in recs:
         for m in [m for m in r["moments"] if m.get("add") and m.get("span") and not m.get("open")]:
             a, b = m["span"]
             u = r["unit"]
             if ending and ending[0] in (r["id"], u["id"]) and abs(u.get("export_t0", 0.0) + ending[1] - a) < 0.05:
+                continue
+            if close and u["id"].startswith(close[0]) and a - 0.5 <= close[1] <= b:
                 continue
             path = project.path("scores", u.get("score", u["id"]) + ".npz")
             if path not in series:
@@ -1163,6 +1179,8 @@ def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None)
             t, c = (S["t"], MO.curve(u, S)[0][fmt]) if S is not None else (None, None)
             win = lambda x, y, t=t, c=c, S=S: (0.5 * c[k].mean() + 0.5 * c[k].max()) if S is not None and \
                 (k := (t >= x) & (t <= y)).any() else 0.0
+            if scrub is not None:
+                win = lambda x, y, uid=u["id"]: scrubbed(uid, x, y)
             if b - a <= w + 0.5 * beat:
                 wins = [(win(a, b), a, b)]
             else:                                            # every hold-beat window, best first, none overlapping
@@ -2750,7 +2768,7 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     if cfg.get("pick_hold") and picks:                       # long picks: their best part; many: condensed
         b = music.get("beat") or float(np.median(np.diff(music["beats"])))
         condensed = pick_pieces(project, moments, fmt, b, cfg["pick_hold"], music["length"] / b, cfg.get("pick_share"),
-                                 cfg.get("ending"))
+                                 cfg.get("ending"), cfg.get("close"))
     kp = project.config.get("keep")
     kp = "plan_{fmt}_rendered.json" if kp is True else kp    # true: the last cut rendered (render.run saves it)
     kp = kp and kp.format(fmt=project.cut_name(fmt))

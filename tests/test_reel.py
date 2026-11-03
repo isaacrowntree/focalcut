@@ -1596,3 +1596,15 @@ def test_the_editor_can_choose_the_opening_shot_and_a_short_ending(tmp_path):
     assert sum(s["unit"]["id"] == "U03" and s.get("span") == [30.0, 33.0] for s in shots) == 1
     assert last.get("ending") and last["beats"] == 3                               # 1.5 s at 0.6 s a beat
     assert abs(last["src_in"] - 20.0) < 0.05                                       # all of it, from its start
+
+
+def test_day_picks_never_spread_into_the_night():
+    from focalcut.reel.plan import spread_picks
+    def rec(i, cat):
+        return dict(id=i, role="show", unit=dict(id=i, clip=i, category=cat, role="show"),
+                    moments=[dict(t=float(k), add=True, span=[float(k), k + 4.0]) for k in range(0, 40, 5)])
+    day, night = rec("D1", "day"), rec("N1", "night")
+    home = {"D1": "arrival", "N1": "night"}
+    budget = {"arrival": 4, "shows": 4, "night": 40, "climax": 40}
+    out = spread_picks([], [day, night], home, 0.5, budget)
+    assert out and all(a in ("arrival", "shows") for (rid, _), a in out.items() if rid == "D1")
