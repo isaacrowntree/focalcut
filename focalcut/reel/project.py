@@ -71,7 +71,7 @@ import time
 
 DEFAULT_ROLES = {"segments": "dance", "broll": "transition"}      # anything else is a "show"
 VIDEO_EXT = (".mp4", ".mov", ".mxf", ".m4v", ".mkv")
-MUSIC_KEYS = ("song", "songs", "start", "start_hint", "length", "mix", "to_end")   # a cut with any of these: own music
+MUSIC_KEYS = ("song", "songs", "start", "start_hint", "length", "mix", "to_end", "phrase_end")   # a cut with any of these: own music
 
 
 ADDS_UP = ("footage", "ban")     # rule lists that add up across profiles instead of replacing

@@ -18,15 +18,15 @@ import os
 import numpy as np
 
 
-def window(bars: np.ndarray, start_idx: int, max_len: float) -> int:
-    """Index of the bar that ends the window: an 8-bar phrase boundary within max_len if one is close, else the last
-    bar that fits."""
+def window(bars: np.ndarray, start_idx: int, max_len: float, phrase: bool = True) -> int:
+    """Index of the bar that ends the window: an 8-bar phrase boundary within max_len if one is close (phrase), else
+    the last bar that fits."""
     start = bars[start_idx]
     cands = [i for i in range(start_idx + 1, len(bars)) if bars[i] - start <= max_len]
     if not cands:
         return len(bars) - 1
     phr = [i for i in cands if (i - start_idx) % 8 == 0]
-    return phr[-1] if phr and bars[phr[-1]] - start > max_len - 8 else cands[-1]
+    return phr[-1] if phrase and phr and bars[phr[-1]] - start > max_len - 8 else cands[-1]
 
 
 def auto_start(bars: np.ndarray, rms: np.ndarray, rms_t: np.ndarray) -> int:
@@ -58,7 +58,7 @@ def accents(onset: np.ndarray, onset_t: np.ndarray, beats: np.ndarray) -> np.nda
     return (hit / (local + 1e-6)).round(3)
 
 
-def analyse(song: str, start="auto", start_hint=None, max_len: float = 180.0) -> dict:
+def analyse(song: str, start="auto", start_hint=None, max_len: float = 180.0, phrase: bool = True) -> dict:
     import librosa
     y, sr = librosa.load(song, sr=22050, mono=True)
     onset = librosa.onset.onset_strength(y=y, sr=sr)
@@ -79,7 +79,7 @@ def analyse(song: str, start="auto", start_hint=None, max_len: float = 180.0) ->
     accent = accents(onset, librosa.frames_to_time(np.arange(len(onset)), sr=sr), bt)
     hint = start if isinstance(start, (int, float)) else start_hint
     s_idx = int(np.argmin(np.abs(bars - float(hint)))) if hint is not None else auto_start(bars, rms, rms_t)
-    e_idx = window(bars, s_idx, max_len)
+    e_idx = window(bars, s_idx, max_len, phrase)
     return dict(song=song, tempo=tempo, beat=float(period), beats=bt.tolist(), bars=bars.tolist(), beat_energy=beat_energy,
                 start=float(bars[s_idx]), end=float(bars[e_idx]), length=float(bars[e_idx] - bars[s_idx]),
                 bar_phase=phase, beat_accent=accent.tolist())
@@ -363,7 +363,9 @@ def run(project, stinger_len: float = 0.0, overlap: float = 1.2) -> dict:
     start = cfg.get("start", "auto")
     if isinstance(start, str) and start != "auto":
         start = float(start)
-    m = analyse(cfg["song"], start=start, start_hint=cfg.get("start_hint"), max_len=max_music)
+    m = analyse(cfg["song"], start=start, start_hint=cfg.get("start_hint"), max_len=max_music,
+                phrase=cfg.get("phrase_end", True))   # false: the last whole bar that fits (a reel that must
+                                                        # run its full length), not the last phrase
     if cfg.get("to_end"):
         m = to_end(m, max_music)
     project.dump(project.music_file, m)
