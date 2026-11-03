@@ -1347,9 +1347,10 @@ def test_heavy_picks_fill_the_reel_and_mark_its_ends(tmp_path):
 
 def test_pick_hold_cuts_picks_to_pieces_between_the_rest_of_the_footage(tmp_path):
     # "pick_hold": long picks play only their best few beats, a clip with many is condensed, and the picks take turns
-    # with the rest of the footage (the rest of a picked clip included) instead of filling the acts
+    # with the rest of the footage instead of filling the acts; a picked clip gives only its picks (the editor chose
+    # its best part) unless "only_picks": false
     pr, music, moments = fake_reel(tmp_path)
-    picks = {f"U{i:02d}": {"add": [f"0:{t:02d}-0:{t + 6}" for t in (10, 30, 50)]} for i in range(12)}
+    picks = {f"U{i:02d}": {"add": [f"0:{t:02d}-0:{t + 6}" for t in (10, 30, 50)]} for i in range(8)}
     picks["U00"]["add"] += ["0:01-0:04", "0:05-0:08", "0:20-0:23", "0:24-0:27", "0:36-0:39", "0:40-0:43",
                             "0:44-0:47"]                          # one clip with far more than its share
     picks["U00"]["open"] = "0:10-0:12.40"
@@ -1365,8 +1366,11 @@ def test_pick_hold_cuts_picks_to_pieces_between_the_rest_of_the_footage(tmp_path
         assert all(s["whole"][0] <= s["span"][0] and s["span"][1] <= s["whole"][1] for s in mine)
         assert sum(s["length"] for s in shots if s.get("span")) <= 0.6 * plan["video_length"]
         assert shots[0]["span"] == [10.0, 12.4] and shots[-1].get("ending") and shots[-1]["span"] == [58.0, 60.4]
-        assert any(not s.get("span") and s["unit"]["id"] in picks for s in shots)   # the rest of a picked clip
+        assert not any(not s.get("span") and s["unit"]["id"] in picks for s in shots)   # nothing else of it
         assert sum(s["beats"] for s in shots) == round(plan["video_length"] / plan["beat"])
+        pr.config["plan"] = {fmt: {"pick_hold": 3, "only_picks": False}}
+        plan = P.build(pr, fmt, music, moments, stinger_len=0.0, picks=picks, assess_shots=False)
+        assert any(not s.get("span") and s["unit"]["id"] in picks for s in plan["shots"])   # the rest of it too
 
 
 def test_marking_a_pick_as_the_ending_overrides_reel_json(tmp_path):

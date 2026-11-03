@@ -1093,9 +1093,10 @@ def apply_picks(recs, picks, only=True):
     ask for more shots from this clip -- its fair-share discount is divided by 1 + more and its moments rank up.
     "open": the in-out ("1:18.6-1:22.8") the reel opens on, under the event's logo, in place of the opening B-roll;
     "end": the in-out it ends on (pick_ending: it becomes the plan's "ending"). Either may also be in "add".
-    A clip with in-out picks gives the reel those and nothing else: its other moments go, and the rest of it is
-    banned (single-time adds keep 1.5 s either side) -- unless not only (picks cut to pieces, pick_pieces: the rest of
-    the clip stays in play, between the picks). Keys starting with "_" are notes. Changes recs in place."""
+    A clip with picks gives the reel those and nothing else -- the editor chose its best part, so the planner takes
+    nothing more from it: its other moments go, and the rest of it is banned (single-time adds keep 1.5 s either
+    side). The planner may still cut a pick down (pick_pieces). not only (reel.json plan.<fmt> "only_picks": false):
+    the rest of the clip stays in play, between the picks. Keys starting with "_" are notes. Changes recs in place."""
     picks = {k: v for k, v in (picks or {}).items() if not k.startswith("_")}
     for r in recs:
         p = picks.get(r["id"]) or picks.get(r["unit"]["id"])
@@ -2860,7 +2861,7 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
         cfg["people"] = project.load("people.json")
     moments = [r for r in copy.deepcopy(moments) if project.in_cut(r["unit"])]   # a cut: its own footage
     if picks:
-        apply_picks(moments, picks, only=not cfg.get("pick_hold"))
+        apply_picks(moments, picks, only=cfg.get("only_picks", True))   # a picked clip: the editor's picks alone
     picks_only(moments, project.config.get("picks_only", ()))
     condensed = []
     if cfg.get("pick_hold") and picks:                       # long picks: their best part; many: condensed

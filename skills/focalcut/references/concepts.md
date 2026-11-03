@@ -335,8 +335,10 @@ editor's own picks are exempt). The scrub (`windows.py`) checks each one over th
 `plan.snap_windows` / `plan.window_report` keep every planner shot on passing windows. A rule the scrub cannot
 check yet is a bug in the scrub, not a reason to let the shot through.
 
-The editor's picks always win, in every format: no rule overrides a pick, and where a clip is "picks only" the
-planner adds nothing between them.
+The editor's picks always win, in every format: no rule overrides a pick. A clip with picks is the editor's call
+on its best part, so the planner takes nothing else from it, in either format (`apply_picks`, on by default;
+plan.<fmt> `"only_picks": false` lets the rest back in). The planner may still change a pick itself: cut it to its
+best beats, take a second piece of it, condense a clip's many picks (`pick_hold`, `pick_share`).
 
 The face that counts is the subject's own: the person the shot is about, and for a couple, duo or group, every
 person in the action. A face somewhere else in the frame (a cheering crowd behind, a friend at the edge) never
