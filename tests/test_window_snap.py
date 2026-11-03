@@ -129,3 +129,14 @@ def test_a_unit_whose_scrubbed_moment_passes_is_covered_whatever_assess_guessed(
     d = rec("D", [20.0])
     d["moments"][0].update(unusable="shake", plays_p=0.05)
     assert plan.ensure_units(None, "portrait", shots, [d], CFG) == ["D"]
+
+
+def test_a_missing_unit_takes_a_slot_short_enough_for_its_passing_windows(fakes):
+    long_, short = placed("A", 9.0), placed("A", 30.0)
+    long_.update(length=2.7, beats=6)
+    short.update(length=0.9, beats=2)
+    shots = [placed("A", 1.0), long_, placed("B", 2.0), short, placed("B", 6.0)]
+    W = {"D": [win(20.0, 21.2, True), win(19.0, 22.6, False)]}   # it passes only over 1.2 s
+    assert plan.ensure_units(None, "portrait", shots, [rec("D", [20.5])], CFG, W) == ["D"]
+    d = next(s for s in shots if s["unit"]["id"] == "D")
+    assert d is short and plan.span_ok(W["D"], d["src_in"], d["src_in"] + d["length"])

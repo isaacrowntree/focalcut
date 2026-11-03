@@ -3005,14 +3005,17 @@ def _swappable(s):
                                    "title", "open"))
 
 
-def ensure_units(project, fmt, shots, moments, cfg):
+def ensure_units(project, fmt, shots, moments, cfg, W=None):
     """Every unit with a moment that passes in this format (the scrub's fmt_ok, nothing marked unusable) is in the
     reel at least once: after everything else has placed, recast and covered people, a unit still missing takes the
     slot of a plain repeat -- a shot of a unit with two or more, never beside its own clip, B-roll never beside
     B-roll; with song sets, only a slot of its own category -- reframed and measured for shake over what it plays.
-    More distinct dancers beat a second shot of the same couple. Units that can't be placed are logged."""
+    More distinct dancers beat a second shot of the same couple. With the scrub (W: windows_<fmt>.json) it starts on
+    the unit's passing windows, so only a slot short enough for one of them will do. Units that can't be placed are
+    logged."""
     from . import shake
     lo = cfg["shake"][0]
+    W = load_windows(project, fmt) if W is None and project is not None else W
     have = Counter(s["unit"]["id"] for s in shots)
     day_cats = [*(cfg.get("day") or ()), *(cfg.get("day_shows") or ())]
 
@@ -3042,16 +3045,32 @@ def ensure_units(project, fmt, shots, moments, cfg):
             return all(n["unit"]["clip"] != clip for n in nb) and \
                 not (r["role"] == "transition" and any(n["unit"]["role"] == "transition" for n in nb))
         idx = [i for i in range(1, len(shots) - 1) if ok(i)]
+        u = r["unit"]
+
+        def start(i, r=r, m=m, u=u):                         # its in-point for slot i: on passing windows when
+            s = shots[i]                                     # the scrub has them (a slot too long for every
+            L = s["length"]                                  # passing stretch of the unit doesn't take it)
+            src = clear_of_bans(min(max(in_point(shot(r, m, fmt, s["beats"], act=s["act"]), s["beat"]), u["t0"]),
+                                    max(u["t1"] - L, u["t0"])), L, u)
+            wins = (W or {}).get(u["id"])
+            if not wins or any(s["fx"]) or span_ok(wins, src, src + L) is not False:
+                return src
+            cands = [x for w in wins if w["ok"] for x in (w["t0"], w["t1"] - L, w["t0"] - SNAP_TOL,
+                                                           w["t1"] - L + SNAP_TOL)]
+            cands = [round(x, 3) for x in cands if u["t0"] <= x <= u["t1"] - L]
+            cands = [x for x in cands if clear_of_bans(x, L, u) == x and span_ok(wins, x, x + L) is True]
+            return min(cands, key=lambda x: abs(x - src)) if cands else None
+        at = {i: start(i) for i in idx}
+        idx = [i for i in idx if at[i] is not None]
         if not idx:
             stuck.append(r["id"])
             continue
-        cat = r["unit"].get("category")
+        cat = u.get("category")
         i = max(idx, key=lambda i: (shots[i]["unit"].get("category") == cat, have[shots[i]["unit"]["id"]],
                                     -shots[i]["rank"]))
         s = shots[i]
         x = shot(r, m, fmt, s["beats"], act=s["act"])
-        u, L = r["unit"], s["length"]
-        src = clear_of_bans(min(max(in_point(x, s["beat"]), u["t0"]), max(u["t1"] - L, u["t0"])), L, u)
+        L, src = s["length"], at[i]
         c = reframe(project, u, src, L, fmt)
         have[s["unit"]["id"]] -= 1
         have[u["id"]] += 1
