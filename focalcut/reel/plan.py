@@ -180,11 +180,24 @@ class Picker:
         return p[0] if p else None
 
 
+UNFRAMED = 0.15          # portrait: a clip none of whose moments plays above this (assess) need not appear
+
+
+def framable(r, fmt):
+    """Must this record appear in the reel? Always in landscape; in portrait not when no moment of it frames: the
+    subject lost from the strip, a back, a couple cut in half or only a head throughout (assess's plays_p), unless the
+    editor picked from it. A clip that won't crop to 9:16 is better left out than shown badly."""
+    if fmt != "portrait" or r["role"] == "transition" or any(m.get("pick") or m.get("add") for m in r["moments"]):
+        return True
+    return max((m.get("plays_p", 1.0) for m in r["moments"]), default=1.0) >= UNFRAMED
+
+
 def cover(P, recs, n, beats, act, cap=4, kinds_pref=None):
     """n shots from recs: every unit once (clips with no shot yet first, then by their best moment as it plays in this
-    format -- framing, face and shake are already in its rank), then extra shots by fair share, up to cap each."""
+    format -- framing, face and shake are already in its rank; in portrait, not a clip that won't frame: framable),
+    then extra shots by fair share, up to cap each."""
     shots, count = [], {}
-    order = sorted(recs, key=lambda r: (P.count.get(r["unit"]["clip"], 0),
+    order = sorted([r for r in recs if framable(r, P.fmt)], key=lambda r: (P.count.get(r["unit"]["clip"], 0),
                                         -max((rk(m, P.fmt) for m in r["moments"]), default=0)))
     for r in order:
         if len(shots) >= n:
@@ -386,12 +399,12 @@ PLAIN = ("reaction", "ending", "band", "logo", "featured")              # shots 
 
 def cover_all(P, seq, recs, home, confined=False):
     """Every export file in the reel -- a unit, not just its camera clip: a clip the editor split into five social
-    segments is five files, and each one appears. A unit with no shot takes the place of the weakest plain shot of a
+    segments is five files, and each one appears (in portrait, each one that frames: framable). A unit with no shot takes the place of the weakest plain shot of a
     unit that has several, in the act where it belongs (home: record id -> act; the social floor may also go in the
     climax, unless confined: song sets keep footage to its own songs); with no such shot, a long plain shot there is
     split to make room (more cuts, the grid unchanged). Never beside its own clip, never B-roll beside B-roll."""
     have = {s["unit"]["id"] for s in seq}
-    for r in sorted([r for r in recs if r["unit"]["id"] not in have],
+    for r in sorted([r for r in recs if r["unit"]["id"] not in have and framable(r, P.fmt)],
                     key=lambda r: -max((rk(m, P.fmt) for m in r["moments"]), default=0)):
         x = P.best([r])
         if not x:
@@ -2451,6 +2464,7 @@ def assess(project, recs, fmt, cfg):
                     g *= ((0.3 + 1.4 * face) * (0.25 if face < 0.3 else 1)) if social else (0.5 + 1.0 * face)
                 else:
                     g *= 0.85 + 0.3 * face
+                m["plays_" + fmt[0]] = round(g, 3)
                 sc *= g
             m[key] = sc
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -2535,13 +2549,109 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     cfg["sets"] = song_sets(project, music)
     video_beats = total_beats - (round(STINGER_OVERLAP / beat) if stinger_len else 0)   # the stinger covers the end
     seq, acts = story(fmt, cfg, music, moments, video_beats, total_beats, direction, spot_rater(project, fmt))
+    if fmt == "portrait" and assess_shots:
+        recast(project, fmt, seq, moments, beat)
     act_logos(seq, project.config.get("act_logos"))
     plan = place(project, fmt, seq, music, cfg, direction, stinger_len, acts)
+    if fmt == "portrait" and assess_shots:
+        recast_placed(project, fmt, plan["shots"], moments, cfg)
     mo = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
     plan["units_total"] = len({r["id"] for r in mo})
     plan["music_length"] = music["length"]
     plan["picks_condensed"], plan["pick_hold"] = condensed, cfg.get("pick_hold")
     return plan
+
+
+RECAST = 0.25            # portrait: a planner's shot framing worse than this over the stretch it plays is recast
+RECAST_TRY = 20          # candidates reframed per recast shot (the best-ranked first)
+
+
+def framed(c, role):
+    """How a crop plays in portrait (0..~1.7), as assess weighs a moment: plays(), the subject whole, a face."""
+    if not c:
+        return 1.0
+    social, face, inside = role == "dance", c.get("face", 0.0), c.get("inside", 1.0)
+    g = plays(c, role) * ((0.3 + 0.7 * inside) if social else (0.45 + 0.55 * inside))
+    return g * (((0.3 + 1.4 * face) * (0.25 if face < 0.3 else 1)) if social else (0.5 + 1.0 * face))
+
+
+def recast(project, fmt, seq, moments, beat):
+    """assess judges a moment over a fixed stretch around it; the shot plays its own length from its own in-point.
+    A planner's portrait shot that frames badly over what it actually shows (the subject lost from the strip,
+    a back, someone cut in half -- framed() under RECAST) takes the best-framing unused moment of the same kind of
+    footage (its category, else its role) that isn't beside its own clip, keeping any effect. The editor's picks,
+    featured people, quick cuts, band and ending shots and B-roll stay."""
+    n = 0
+    for i, s in enumerate(seq):
+        u = s["unit"]
+        if not _recastable(s):
+            continue
+        L = s["beats"] * beat
+        g = framed(reframe(project, u, in_point(s, beat), L, fmt), u["role"])
+        if g >= RECAST:
+            continue
+        best = None
+        for r, m in _alternatives(seq, i, moments, fmt):
+            x = shot(r, m, fmt, s["beats"], act=s["act"], fx=s["fx"])      # (an effect shot keeps its effect)
+            gx = framed(reframe(project, r["unit"], in_point(x, beat), L, fmt), r["role"])
+            if gx > max(2 * g, RECAST) and (best is None or gx > best[0]):
+                best = (gx, x)
+        if best:
+            seq[i] = best[1]
+            n += 1
+    if n:
+        print(f"[reel] {fmt}: {n} shots recast that framed badly over what they show")
+
+
+def _recastable(s):
+    return s["unit"]["role"] != "transition" and not s.get("span") and not s.get("person") and not s.get("reuse") \
+        and not any(s.get(k) for k in ("reaction", "ending", "band", "logo", "add", "featured"))
+
+
+def _alternatives(seq, i, moments, fmt):
+    """Unused moments of the same kind of footage as seq[i] (its category first, then by rank) not beside its clip."""
+    u = seq[i]["unit"]
+    used = [(x["unit"]["id"], x["t"]) for x in seq]
+    near = {seq[k]["unit"]["clip"] for k in (i - 1, i + 1) if 0 <= k < len(seq)}
+    cands = [(r, m) for r in moments if r["role"] == u["role"] and r["unit"]["clip"] not in near
+             for m in r["moments"] if not m.get("pick") and m.get("plays_p", 1.0) >= RECAST
+             and all(not (uid == r["id"] and abs(t - m["t"]) < 4.0) for uid, t in used)]
+    cands.sort(key=lambda rm: (rm[0]["unit"].get("category") != u.get("category"), -rk(rm[1], fmt)))
+    return cands[:RECAST_TRY]
+
+
+def recast_placed(project, fmt, shots, moments, cfg):
+    """recast once more on the placed shots, over exactly what each plays (place() moves in-points and lengthens
+    shots for their landings): a shot still framing badly takes the best-framing alternative at the same length,
+    reframed and re-measured for shake. Speed-effect shots keep theirs (their landing is timed to the moment)."""
+    from . import shake
+    lo, n = cfg["shake"][0], 0
+    for i, s in enumerate(shots):
+        if not _recastable(s) or not s.get("crop") or any(f in SPEED for f in s["fx"]):
+            continue
+        g = framed(s["crop"], s["unit"]["role"])
+        if g >= RECAST:
+            continue
+        best = None
+        for r, m in _alternatives(shots, i, moments, fmt):
+            x = shot(r, m, fmt, s["beats"], act=s["act"])
+            u, L = r["unit"], s["length"]
+            src = clear_of_bans(min(max(in_point(x, s["beat"]), u["t0"]), max(u["t1"] - L, u["t0"])), L, u)
+            c = reframe(project, u, src, L, fmt)
+            gx = framed(c, u["role"])
+            if gx > max(2 * g, RECAST) and (best is None or gx > best[0]):
+                best = (gx, x, src, c)
+        if best:
+            _, x, src, c = best
+            s.update({k: x[k] for k in ("unit", "t", "kind", "rank", "face", "framing", "thumb") if k in x}, src_in=src, crop=c)
+            s.pop("land", None); s.pop("land_fits", None)
+            j = shake.jitter(project, s["unit"], src, src + s["length"])
+            j = j / max(c.get("w", 1.0) if c else 1.0, 0.2) if j is not None else None
+            s["jitter"] = round(j, 5) if j is not None else None
+            s["stab"] = bool(j is not None and j > lo and "_stabilized" not in s["unit"]["source"])
+            n += 1
+    if n:
+        print(f"[reel] {fmt}: {n} placed shots recast over what they play")
 
 
 def shot(r, m, fmt, beats, act="shows", fx=(), **kw):

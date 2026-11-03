@@ -800,6 +800,14 @@ def test_portrait_strip_never_cuts_through_the_partner_and_body_shots_rank_over_
     assert P.plays(dict(w=1.0, body=0.0, split=1.0), "dance") == 1.0           # landscape: unchanged
 
 
+def test_portrait_leaves_out_a_clip_that_never_frames_unless_it_was_picked():
+    r = dict(role="dance", moments=[dict(t=1.0, plays_p=0.05), dict(t=5.0, plays_p=0.1)])
+    assert not P.framable(r, "portrait") and P.framable(r, "landscape")
+    assert P.framable(dict(r, moments=[*r["moments"], dict(t=9.0, plays_p=0.6)]), "portrait")
+    assert P.framable(dict(r, moments=[*r["moments"], dict(t=9.0, plays_p=0.01, pick=True)]), "portrait")
+    assert P.framable(dict(r, role="transition"), "portrait")
+
+
 def test_band_members_cut_in_and_the_reel_ends_on_the_chosen_shot(tmp_path):
     pr, music, moments = fake_reel(tmp_path, n_units=20)
     moments[19]["unit"]["tag"] = "violin"                       # a band player's B-roll
