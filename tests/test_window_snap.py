@@ -189,3 +189,29 @@ def test_a_steady_crop_rides_out_a_one_frame_slice_but_follows_a_lasting_one():
     lasting[7, 4:] += 2.5                                  # from frame 4 on: it moves off
     k = plan.steady(lasting, cand, 0.3)
     assert cand[k[-1]] != 0.5 and len(set(k)) <= 2         # off it, in one move at most
+
+
+def test_a_panel_frames_the_speaker_facing_the_room_not_the_gap_between_them():
+    import numpy as np
+    F = 6
+    kp = np.zeros((F, 2, 17, 3))
+    boxes = np.zeros((F, 2, 5))
+    for p, (x0, nose_dx) in enumerate(((100, 0.0), (400, -40.0))):   # 0 faces the room; 1 turns to them
+        boxes[:, p, :4] = (x0, 50, x0 + 200, 350)
+        cx = x0 + 100
+        kp[:, p, 3:5, :] = [[cx - 30, 100, 0.9], [cx + 30, 100, 0.9]]   # ears
+        kp[:, p, 1:3, :] = [[cx - 15, 95, 0.9], [cx + 15, 95, 0.9]]     # eyes
+        kp[:, p, 0, :] = [cx + nose_dx, 105, 0.9]
+    d = dict(pose_t=np.arange(F) / 5.0, kp=kp, boxes=boxes, aw=640, ah=360)
+    box = plan.speaker(d, d["pose_t"])
+    assert np.allclose(box[:, 0], 100 / 640) and np.allclose(box[:, 2], 300 / 640)
+
+
+def test_daytime_footage_in_a_night_act_is_recast_with_night_footage(fakes):
+    W = {"A": grid(0.3, 40.0), "C": grid(0.3, 40.0), "D": grid(0.3, 40.0)}
+    shots = [placed("C", 2.0), placed("A", 10.0), placed("C", 20.0)]
+    shots[1]["unit"]["day"] = True                           # passing windows, wrong time of day
+    shots[1]["act"] = "climax"
+    _, recast, _ = plan.snap_windows(None, "portrait", shots, [rec("A", [10.7]), rec("C", [30.0]), rec("D", [15.0])],
+                                     CFG, W)
+    assert recast == 1 and shots[1]["unit"]["id"] == "D"

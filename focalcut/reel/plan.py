@@ -2303,6 +2303,10 @@ def _reframe(project, unit, t0, length, fmt):
         union, face, one = FR.follow(d, pt[sel], union, cw0)  # strip: follow one of them
         if one:                                             # the group's edge contact no longer applies: the
             touch = None                                    # dancer's own box is checked against the frame below
+    if narrow and any(k in (unit.get("tag") or "") for k in SPEAKER_TAGS):
+        sp = speaker(d, pt[sel])                            # a panel: the one speaking, never the gap between
+        if sp is not None:
+            union, one, touch, person = sp, True, None, True
     _, z, _, _ = FR.framing(union, src_w, src_h, W, H, touch=touch)
     ok = ~np.isnan(union[:, 0])
     if not ok.any():
@@ -2431,6 +2435,40 @@ def facing(kp, box_w):
     ref = np.where(eok, ex, yx)
     f = np.clip((kp[:, 0, 0] - ref) / np.maximum(0.25 * box_w, 1e-3), -1, 1)
     return np.where(nose_ok & (eok | yok), f, 0.0)
+
+
+SPEAKER_TAGS = ("panel", "talk", "interview", "speech")   # footage of people talking: frame the speaker
+
+
+def speaker(d, times):
+    """Of the people on a panel, the one speaking, held for the shot: the one most face-on to the room (whoever they
+    talk to turns to them), a hand at the mouth (the mic) breaking a tie. Their box per time as frame fractions
+    (x0, y0, x1, y1), or None with fewer than two people the size of the largest."""
+    pt = d["pose_t"]
+    ii = np.clip(np.searchsorted(pt, times), 0, len(pt) - 1)
+    bx, kp = d["boxes"][ii, :, :4].astype(float), d["kp"][ii]
+    h = np.nan_to_num(bx[..., 3] - bx[..., 1])
+    big = h >= 0.75 * h.max(1, keepdims=True)
+    if (big.sum(1) < 2).mean() > 0.5:
+        return None
+    bw = np.nan_to_num(bx[..., 2] - bx[..., 0])
+    turn = np.stack([np.abs(facing(kp[:, p], bw[:, p])) for p in range(kp.shape[1])], 1)
+    nose = kp[..., 0, :2]
+    hand = np.min([np.hypot(*(kp[..., w, :2] - nose).transpose(2, 0, 1)) / np.maximum(h, 1) for w in (9, 10)], 0)
+    hand = np.where((kp[..., [9, 10], 2].max(-1) > 0.3) & (kp[..., 0, 2] > 0.3), hand, 9)
+    score = np.where(big, turn + 0.3 * (hand > 0.35), 9).mean(0)
+    who = int(score.argmin())
+    cx = np.nanmedian((bx[:, who, 0] + bx[:, who, 2]) / 2)
+    out = np.full((len(ii), 4), np.nan)
+    for f in range(len(ii)):                                # the same person each frame: nearest to them
+        c = (bx[f, :, 0] + bx[f, :, 2]) / 2
+        p = int(np.nanargmin(np.where(big[f], np.abs(c - cx), np.inf))) if big[f].any() else -1
+        if p >= 0:
+            out[f] = bx[f, p]
+            cx = c[p]
+    ah = float(d["ah"]) if np.ndim(d["ah"]) == 0 else float(d["ah"][0])
+    out[:, [0, 2]] /= float(d["aw"]); out[:, [1, 3]] /= ah
+    return out
 
 
 def gaze(d, times, union, k):
@@ -3349,14 +3387,16 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None):
 
     slid = recast_n = 0
     stuck = []
-    for i, s, why in window_fails(shots, W):
-        if why:
-            continue
+    todo = [(i, s) for i, s, why in window_fails(shots, W) if not why]
+    late = [(i, s) for i, s in enumerate(shots) if s["unit"].get("day") and s["act"] not in DAY_ACTS
+            and not window_exempt(s) and all(i != j for j, _ in todo)]     # daytime footage in a night act,
+    for i, s in sorted(todo + late, key=lambda x: x[0]):                    # whichever pass put it there
         u = s["unit"]
         a, L = played(s)
         speedy = any(f in SPEED for f in s["fx"])
         rec = next((r for r in moments if r["id"] == u["id"]), None)
-        dt = next((d for d in offsets(s, rec, u["id"], a, L, speedy) if fits_at(s, u, d, a, L)), None)
+        dt = None if (u.get("day") and s["act"] not in DAY_ACTS) else \
+            next((d for d in offsets(s, rec, u["id"], a, L, speedy) if fits_at(s, u, d, a, L)), None)
         if dt is not None:
             s.update(t=round(s["t"] + dt, 3), src_in=round(s["src_in"] + dt, 3), snapped=round(dt, 2))
             measure(s)
