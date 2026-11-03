@@ -25,13 +25,20 @@ SHARP_REL = 0.55                                  # a person counts as in focus 
 # tall, in at least SHARE of the shot's frames with focus data (one soft frame is not the camera's choice).
 # reel.json "focus_blur", "focus_near", "focus_min_h", "focus_share" (configure)
 FOCUS = dict(blur=0.4, near=1.5, min_h=0.5, share=0.4)
+# a group routine too wide for a portrait strip: a slow pan across it, through its middle (PAN_SPEED frame widths a
+# second at most, from PAN_MIN s), else -- a short shot, or "group": "centre" -- the dancer nearest the frame's
+# centre. reel.json "group": "pan" | "centre" (configure)
+GROUP = dict(mode="pan")
+PAN_SPEED, PAN_MIN = 0.08, 1.5
+PAN, CENTRE = "pan", "centre"                     # follow()'s third value for a group shot
 
 
 def configure(cfg):
     """Set the focus rule's thresholds from a project's config (reel.json "focus_blur" / "focus_min_h" /
-    "focus_share"; a profile can set them)."""
+    "focus_share") and how a group is framed ("group"); a profile can set them."""
     for k in FOCUS:
         FOCUS[k] = float(cfg.get(f"focus_{k}", _FOCUS0[k]))
+    GROUP["mode"] = cfg.get("group", "pan")
 
 
 _FOCUS0 = dict(FOCUS)
@@ -306,8 +313,9 @@ def follow(d, times, union, cw, split=0.8):
     shares the frame (couple: both dancers, the follow featured); a group is cut down to the people in the move.
     Otherwise, in a 9:16 strip out of a 16:9 frame, when the subject group is wider than the strip for a good part of the shot, centring on the group
     frames the empty floor between them: follow one dancer instead -- the one who shows their face most, then the
-    sharpest and biggest -- tracked box to box. Returns (boxes (F, 4), face (F,) bool, own boxes? -- the group's
-    edge contact no longer applies)."""
+    sharpest and biggest -- tracked box to box. A group routine (GROUP) pans slowly across the group's middle or
+    takes whoever dances nearest the frame's centre. Returns (boxes (F, 4), face (F,) bool, own boxes? -- the group's
+    edge contact no longer applies; PAN or CENTRE for a group, which is truthy)."""
     with warnings.catch_warnings():                         # (all-NaN stretches: a dancer lost for a moment)
         warnings.simplefilter("ignore", RuntimeWarning)
         return _follow(d, times, union, cw, split)
@@ -353,6 +361,10 @@ def _follow(d, times, union, cw, split):
         main = np.argmax(np.where(m, act + 1e-6 * area, -1), 1)
         return union, fv[np.arange(len(idx)), main] & m.any(1), False
     nb = boxes[..., :4] / [d["aw"], d["ah"], d["aw"], d["ah"]]
+    crowd = (m.sum(1) >= 3).mean() >= 0.5                     # (a couple far apart is not a group)
+    span = float(times[-1] - times[0]) if len(times) > 1 else 0.0
+    if crowd and GROUP["mode"] == PAN and span >= PAN_MIN:
+        return _pan(union, nb, m, fv, times, cw)
     f0 = int(np.argmax(np.where(wide, m.sum(1), -1)))
     best, best_sc = None, -1
     for k0 in np.nonzero(m[f0])[0]:
@@ -380,6 +392,9 @@ def _follow(d, times, union, cw, split):
         moving = np.mean([act[f, slot[f]] for f in np.nonzero(ok)[0]]) / (act[m].max() + 1e-6) if m.any() else 0
         sc = 2.0 * face.mean() + 1.5 * moving + ok.mean() + np.sqrt(area) + \
             0.5 * np.nan_to_num(sharp / (np.nanmax(foc) + 1e-6))
+        if crowd:                                             # a group: whoever is in the middle of it
+            cx = np.nanmean((seq[ok, 0] + seq[ok, 2]) / 2)
+            sc = 4.0 * (1 - 2 * abs(cx - 0.5)) + ok.mean() + 0.5 * face.mean()
         if sc > best_sc:
             best, best_sc = (seq, face), sc
     if best is None:
@@ -391,7 +406,28 @@ def _follow(d, times, union, cw, split):
         first = np.argmax(~gap)
         j[:first] = first
         seq = seq[j]
-    return seq, face, True
+    return seq, face, CENTRE if crowd else True
+
+
+def _pan(union, nb, m, fv, times, cw):
+    """A strip-wide box sliding slowly across a group: through the middle of the group's span over the shot, at
+    PAN_SPEED at most, the way the group drifts (else left to right). face: someone in it faces the camera."""
+    ok = ~np.isnan(union[:, 0])
+    if not ok.any():
+        return union, fv.any(1), True
+    gx0, gx1 = np.nanmedian(union[ok, 0]), np.nanmedian(union[ok, 2])
+    t = np.asarray(times, float)
+    span = max(t[-1] - t[0], 1e-3)
+    travel = min(max(gx1 - gx0 - cw, 0.0), PAN_SPEED * span)
+    cx = (union[ok, 0] + union[ok, 2]) / 2
+    sign = -1.0 if len(cx) > 1 and cx[-1] - cx[0] < -0.02 else 1.0
+    c = (gx0 + gx1) / 2 + sign * travel * ((t - t[0]) / span - 0.5)
+    half = 0.45 * cw
+    y0 = np.where(ok, union[:, 1], np.nanmedian(union[ok, 1]))
+    y1 = np.where(ok, union[:, 3], np.nanmedian(union[ok, 3]))
+    pcx = (nb[..., 0] + nb[..., 2]) / 2
+    inside = m & (np.abs(np.nan_to_num(pcx, nan=9) - c[:, None]) <= half)
+    return np.c_[c - half, y0, c + half, y1], (fv & inside).any(1), PAN
 
 
 PAIR_GAP, PAIR_H = 1.0, (0.6, 1.65)              # partners: closer than this many widths (arm's length in open

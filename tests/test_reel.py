@@ -931,6 +931,37 @@ def test_a_couple_shares_the_frame_with_the_follow_featured():
     assert box[0, 0] < 0.3                                               # and part of the lead
 
 
+def _group(n=15, xs=(0.15, 0.35, 0.5, 0.65, 0.85), faces=None):
+    """Score data for a row of dancers across a 640x360 analysis frame, faces to the camera."""
+    k = len(xs)
+    boxes, kp = np.full((n, k, 5), np.nan), np.zeros((n, k, 17, 3))
+    for j, x in enumerate(xs):
+        boxes[:, j] = [(x - 0.05) * 640, 0.2 * 360, (x + 0.05) * 640, 0.9 * 360, 0.9]
+        if faces is None or faces[j]:
+            kp[:, j, 0], kp[:, j, 1], kp[:, j, 2] = [x * 640, 80, 0.9], [x * 640 + 4, 76, 0.9], [x * 640 - 4, 76, 0.9]
+    d = dict(pose_t=np.arange(n) * 0.2, boxes=boxes, kp=kp, focus=np.ones((n, k)), aw=640, ah=360)
+    return d, np.tile([min(xs) - 0.05, 0.2, max(xs) + 0.05, 0.9], (n, 1)).astype(float)
+
+
+def test_a_group_pans_slowly_through_its_middle_or_takes_the_one_in_the_centre():
+    from focalcut.reel import frame as FR
+    d, union = _group()                                                  # 2.8 s: a slow pan across the middle
+    box, face, how = FR.follow(d, d["pose_t"], union, cw=0.32)
+    cx = (box[:, 0] + box[:, 2]) / 2
+    assert how == FR.PAN and face.all()
+    assert abs(cx.mean() - 0.5) < 0.01 and 0 < cx[-1] - cx[0] <= FR.PAN_SPEED * 2.8 + 1e-6
+    d, union = _group(n=5, faces=(True, True, False, True, True))        # 0.8 s, too short to pan: the one in the
+    box, _, how = FR.follow(d, d["pose_t"], union, cw=0.32)              # centre, even facing away
+    assert how == FR.CENTRE and abs((box[0, 0] + box[0, 2]) / 2 - 0.5) < 0.01
+    try:
+        FR.configure({"group": "centre"})
+        d, union = _group()
+        box, _, how = FR.follow(d, d["pose_t"], union, cw=0.32)
+        assert how == FR.CENTRE and abs((box[:, 0] + box[:, 2]).mean() / 2 - 0.5) < 0.01
+    finally:
+        FR.configure({})
+
+
 def test_shake_hf_ignores_pans_and_keeps_one_value_per_frame():
     from focalcut.reel.shake import hf
     pan = np.tile([0.004, 0.0], (60, 1))

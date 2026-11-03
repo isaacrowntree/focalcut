@@ -2289,6 +2289,7 @@ def _reframe(project, unit, t0, length, fmt):
     narrow = cw0 < 0.5                                      # a 9:16 strip out of a 16:9 frame: little room for lag
     face = np.zeros(len(union), bool)
     person = unit["role"] != "transition" or people_broll(unit)   # (scenery B-roll: no one to follow)
+    one = False
     if person:                                              # a couple shares the frame; a group too wide for a
         union, face, one = FR.follow(d, pt[sel], union, cw0)  # strip: follow one of them
         if one:                                             # the group's edge contact no longer applies: the
@@ -2308,13 +2309,14 @@ def _reframe(project, unit, t0, length, fmt):
         x = np.interp(grid, ts, v)
         k = np.exp(-0.5 * (np.arange(-3 * sig, 3 * sig + 1) / sig) ** 2); k /= k.sum()
         return np.convolve(np.pad(x, 3 * sig, mode="edge"), k, mode="valid")
-    if narrow and person:                                   # never through someone the subject's size beside them
+    crowd, pan = one in (FR.PAN, FR.CENTRE), one == FR.PAN  # a group: a slow pan or whoever is in its middle
+    if narrow and person and not pan:                       # never through someone the subject's size beside them
         zz, sx = clean_centre(d, pt[sel][ok], union[ok], sx, zz, cw0, ch0)
         cw, ch = cw0 / zz, ch0 / zz
     if narrow:                                              # a subject sitting low in the strip (a band under a
         zz = lift(union[ok], zz, cw0, ch0, FR.zmax(src_w, src_h, W, H))   # tall rig): zoom so the crop moves down
         cw, ch = cw0 / zz, ch0 / zz
-    if narrow:                                              # look room: a profile gets space ahead of their gaze
+    if narrow and not pan:                                  # look room: a profile gets space ahead of their gaze
         sx = sx + cw * gaze(d, pt[sel][ok], union[ok], R["look_player"] if unit["role"] != "dance" else R["look"])
     uh_ = union[ok, 3] - union[ok, 1]                       # a subject taller than the crop keeps their head in it
     sy = union[ok, 1] + 0.45 * np.minimum(uh_, 0.95 * ch)   # (not a torso, hands and a mic stand)
@@ -2369,6 +2371,8 @@ def _reframe(project, unit, t0, length, fmt):
                      else 0.0,
                      low=float(np.nanmedian(((b[:, 1] + b[:, 3]) / 2 - (by - ch / 2)) / ch))
                      if not np.isnan(b[:, 1]).all() else 0.5)
+        if crowd:                                            # a group always has someone at the strip's edge, and a
+            stats.update(split=0.0, torn=0.0, churn=0.0 if pan else churn)   # pan passes people through its centre
     return dict(w=round(cw, 4), h=round(ch, 4), z=round(zz, 3),
                 path=[[round(float(a), 2), round(float(b), 4), round(float(c), 4)]
                       for a, b, c in zip(grid[::2], x[::2], y[::2])],
