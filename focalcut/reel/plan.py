@@ -3066,14 +3066,19 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
 
 
 def coverage_report(project, fmt, plan):
-    """The plan log's coverage: dance units in the cut / all dance units, people in it / found (people.json), and
+    """The plan log's coverage: subject units (dance, show, performer B-roll; an editor's picks-only footage with no
+    moments aside) and dance units in the cut / all of them, and
     each unit left out with why (the scrub's fail counts on its record, else 'never frames' / 'no moments')."""
     mo = [r for r in project.load("moments.json") if project.in_cut(r["unit"])]
     seq = plan["shots"]
     used = {s["unit"]["id"] for s in seq}
-    dance = [r for r in mo if r["role"] == "dance"]
-    print(f"[reel]   coverage: dance units {sum(r['id'] in used for r in dance)}/{len(dance)}")
-    out = [r for r in mo if r["id"] not in used and (r["role"] != "transition" or people_broll(r["unit"]))]
+    subj = [r for r in mo if r["role"] != "transition" or people_broll(r["unit"])]
+    only = set(project.config.get("picks_only") or ())
+    subj = [r for r in subj if r["unit"].get("category") not in only or any(m.get("add") for m in r["moments"])]
+    dance = [r for r in subj if r["role"] == "dance"]
+    print(f"[reel]   coverage: subject units {sum(r['id'] in used for r in subj)}/{len(subj)}"
+          + (f", dance units {sum(r['id'] in used for r in dance)}/{len(dance)}" if dance else ""))
+    out = [r for r in subj if r["id"] not in used]
     for r in out:
         fails = r.get("fails") or {}
         why = ", ".join(f"{k} {v}" for k, v in sorted(fails.items(), key=lambda kv: -kv[1])[:4]) if fails else (
