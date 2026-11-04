@@ -9,7 +9,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Docs
 
-- **Docs site** at https://isaacrowntree.github.io/focalcut/ (mdBook from `docs/`, `book.toml`, rebuilt by
+- **Docs site** at https://isaacrowntree.com/focalcut/ (mdBook from `docs/`, `book.toml`, rebuilt by
   `.github/workflows/pages.yml` when the docs change): install, cutting a library by subject, recap reels, the
   editor's picks, the editing concepts, hardware, security, contributing and this changelog.
 - `docs/picks.md`: the review pages, `picks.json` (with portrait focal points), how picks are kept and condensed,

@@ -5,11 +5,11 @@ editor timelines.**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Docs](https://img.shields.io/badge/docs-isaacrowntree.github.io%2Ffocalcut-orange.svg)](https://isaacrowntree.github.io/focalcut/)
+[![Docs](https://img.shields.io/badge/docs-isaacrowntree.com%2Ffocalcut-orange.svg)](https://isaacrowntree.com/focalcut/)
 
 ![The Electric Nation 2026 landscape reel, shot by shot along the song: 151 shots in six acts, most of them cut from the editor's picks, above the music's energy per beat](docs/img/reel-timeline.jpg)
 
-**[Documentation](https://isaacrowntree.github.io/focalcut/)** · [Write-up](https://zackdesign.biz/focalcut/) · [Changelog](CHANGELOG.md)
+**[Documentation](https://isaacrowntree.com/focalcut/)** · [Write-up](https://zackdesign.biz/focalcut/) · [Changelog](CHANGELOG.md)
 
 Point focalcut at dance footage — or any video where the camera moves between subjects —
 and it finds the cuts where focus changes from one person or couple to the next, then
@@ -20,7 +20,7 @@ From a curated folder it also builds **recap reels**: a landscape and a portrait
 in acts, with velocity edits, transitions, portrait reframing that follows a dancer, shake checks, effects and an
 optional audio-reactive light-show overlay — plus a Premiere XML of each and a browser page for choosing,
 trimming and reframing shots (see [Recap reels](#recap-reels-recipe)). The editor's picks always win: the
-planner cuts around them, never over them ([The editor's picks](https://isaacrowntree.github.io/focalcut/picks.html)).
+planner cuts around them, never over them ([The editor's picks](https://isaacrowntree.com/focalcut/picks.html)).
 
 The recommended pipeline is **GPU-free**: ffmpeg contact sheets read by a vision model.
 

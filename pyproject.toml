@@ -59,9 +59,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://isaacrowntree.github.io/focalcut/"
+Homepage = "https://isaacrowntree.com/focalcut/"
 Repository = "https://github.com/isaacrowntree/focalcut"
-Documentation = "https://isaacrowntree.github.io/focalcut/"
+Documentation = "https://isaacrowntree.com/focalcut/"
 Issues = "https://github.com/isaacrowntree/focalcut/issues"
 Changelog = "https://github.com/isaacrowntree/focalcut/blob/main/CHANGELOG.md"
 

@@ -1,6 +1,6 @@
 name: Docs site
 
-# The book (docs/ through mdBook) at https://isaacrowntree.github.io/focalcut/,
+# The book (docs/ through mdBook) at https://isaacrowntree.com/focalcut/,
 # rebuilt whenever the docs change on main.
 on:
   push:
