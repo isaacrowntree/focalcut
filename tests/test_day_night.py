@@ -40,3 +40,18 @@ def test_a_face_is_never_averaged_over_frames_on_the_fast_stretch():
     assert out and all(v in greys for v in out)                          # each fast output frame a real frame
     greys, blended = _speed_frames(face=False)
     assert any(v not in greys for v in blended)                          # without a face it still blurs the motion
+
+
+def test_quick_cuts_never_take_the_closing_shots_footage():
+    end = dict(shot("H", "finale", 4, [130.9, 133.0], day=True), ending=True)     # the hands-in, the reel's last shot
+    seq = [shot("H", "shows", 2, [128.0, 134.0], day=True),                      # the same moment, picked again
+           shot("A", "shows", 2, [30.0, 40.0], day=True), shot("B", "arrival", 2), shot("C", "arrival", 2), end]
+    P.quick_cuts(seq, 3, "arrival", 0.5, at=3)
+    cuts = [s for s in seq if s.get("reuse")]
+    assert cuts and all(c["unit"]["id"] != "H" for c in cuts)
+    moved = shot("H", "finale", 4, [130.9, 133.0], day=True)                     # taken out of seq to move it
+    seq = [shot("H", "shows", 2, [128.0, 134.0], day=True), shot("B", "arrival", 2), shot("C", "arrival", 2)]
+    P.quick_cuts(seq, 2, "arrival", 0.5, at=2, avoid=[moved])
+    assert not any(s.get("reuse") and s["unit"]["id"] == "H" for s in seq)
+    P.quick_cuts(seq, 2, "arrival", 0.5, at=2)                                   # (without it, it would be taken)
+    assert any(s.get("reuse") and s["unit"]["id"] == "H" for s in seq)

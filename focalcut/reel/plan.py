@@ -705,7 +705,7 @@ def close_last(seq, beat, close):
     if k != len(seq) - 1:
         seq.remove(want)
         want["reuse"] = True                                 # (none of the cuts from its own footage)
-        quick_cuts(seq, want["beats"], want["act"], beat, k)
+        quick_cuts(seq, want["beats"], want["act"], beat, k, avoid=[want])
         want["reuse"] = None
         seq.append(want)
     want["act"] = "finale"
@@ -729,7 +729,7 @@ def finale_reuse(seq, beat, close=None):
         k, gap, act = seq.index(mv), mv["beats"], mv["act"]
         seq.remove(mv)
         mv["reuse"] = True                                   # (none of the cuts from its own footage)
-        quick_cuts(seq, gap, act, beat, k)
+        quick_cuts(seq, gap, act, beat, k, avoid=[mv])
         mv["reuse"], mv["beats"], mv["act"] = None, 0, "finale"
         last = [s for s in seq if s["act"] == "finale"][-1]
         seq.insert(seq.index(last) + 1, mv)
@@ -780,15 +780,23 @@ QUICK_DROP = ("beats", "act", "fx", "effect", "logo", "logo_image", "band", "rea
               "featured", "share", "add", "open", "person", "span", "whole", "reuse")   # a quick cut is footage, not a role
 
 
-def quick_cuts(seq, n, act, beat, at=None, size=1, hold=True):
+ENDING_GAP = 4.0         # the closing shot's footage, this far either side, is never cut in earlier (reserve_ending)
+
+
+def quick_cuts(seq, n, act, beat, at=None, size=1, hold=True, avoid=()):
     """n beats of quick cuts, size beats each, from the editor's picks, put into act at at (default: spread through
     it, never at its ends): first the ends that pick_beat trimmed off them (footage not seen yet), then the openings
     of picks two acts or more away (never footage seen moments ago); daytime footage (unit "day") never into a night
-    act, and the day's own picks first in the day (DAY_ACTS); crowd and B-roll picks first, never the same clip twice in a row. A cut is plain footage: no logo, title, effect or ending from the pick it comes from."""
+    act, and the day's own picks first in the day (DAY_ACTS); crowd and B-roll picks first, never the same clip twice
+    in a row; never the closing shot's footage (the ending or close, and avoid: one taken out of seq to move it,
+    ENDING_GAP either side: it is seen once, at the end, even where another pick holds the same moment). A cut is
+    plain footage: no logo, title, effect or ending from the pick it comes from."""
     picks = [s for s in seq if s.get("span") and not s.get("reuse") and not s.get("close") and not s.get("ending")]
     if not n or not picks:
         return
     used = {(s["unit"]["id"], round(s["span"][0], 2)) for s in seq if s.get("reuse")}
+    last_shots = [(s["unit"]["id"], s["span"]) for s in [*seq, *avoid]
+                  if (s.get("ending") or s.get("close") or any(s is x for x in avoid)) and s.get("span")]
     names = [a for a in ACT_NAMES if any(x["act"] == a for x in seq)]
     near = set(names[max(0, names.index(act) - 1):names.index(act) + 1]) if act in names else {act}
     is_day = lambda s: s["unit"].get("day", s["act"] in DAY_ACTS)
@@ -806,7 +814,8 @@ def quick_cuts(seq, n, act, beat, at=None, size=1, hold=True):
     srcs = rest + [(s, sp) for s, sp in tails if sp[1] - sp[0] >= 0.8 * beat * size] + \
         [(s, [s["span"][0], min(s["span"][1], s["span"][0] + beat * size)]) for s in order
          if s["act"] not in near and s["span"][1] - s["span"][0] >= 0.8 * beat * size]
-    srcs = [(s, sp) for s, sp in srcs if (s["unit"]["id"], round(sp[0], 2)) not in used]
+    srcs = [(s, sp) for s, sp in srcs if (s["unit"]["id"], round(sp[0], 2)) not in used
+            and not any(u == s["unit"]["id"] and sp[0] < b + ENDING_GAP and sp[1] > a - ENDING_GAP for u, (a, b) in last_shots)]
     if at is None:
         idx = [k for k, s in enumerate(seq) if s["act"] == act]
         if not idx:
