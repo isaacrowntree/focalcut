@@ -25,10 +25,10 @@ SHARP_REL = 0.55                                  # a person counts as in focus 
 # tall, in at least SHARE of the shot's frames with focus data (one soft frame is not the camera's choice).
 # reel.json "focus_blur", "focus_near", "focus_min_h", "focus_share" (configure)
 FOCUS = dict(blur=0.4, near=1.5, min_h=0.5, share=0.4, moving=1.0)
-# a group routine too wide for a portrait strip: a slow pan across it, through its middle (PAN_SPEED frame widths a
-# second at most, from PAN_MIN s), else -- a short shot, or "group": "centre" -- the dancer nearest the frame's
-# centre. reel.json "group": "pan" | "centre" (configure)
-GROUP = dict(mode="pan")
+# a group too wide for a portrait strip: one dancer whole -- the one nearest the frame's centre, or one right up front
+# -- never the floor between people (concepts §19); reel.json "group": "pan" asks for a slow pan through its middle
+# instead (PAN_SPEED frame widths a second at most, from PAN_MIN s) (configure)
+GROUP = dict(mode="centre")
 PAN_SPEED, PAN_MIN = 0.08, 1.5
 PAN, CENTRE = "pan", "centre"                     # follow()'s third value for a group shot
 FOLLOW_SHARP = 1.5                                # following one dancer: the weight of being the one in focus
@@ -41,7 +41,7 @@ def configure(cfg):
     "focus_share") and how a group is framed ("group"); a profile can set them."""
     for k in FOCUS:
         FOCUS[k] = float(cfg.get(f"focus_{k}", _FOCUS0[k]))
-    GROUP["mode"] = cfg.get("group", "pan")
+    GROUP["mode"] = cfg.get("group", CENTRE)
 
 
 _FOCUS0 = dict(FOCUS)
@@ -409,8 +409,9 @@ def _follow(d, times, union, cw, split):
         sc = 2.0 * face.mean() + 1.5 * moving + ok.mean() + np.sqrt(area) + FOLLOW_SHARP * sharp_rel
         if crowd:                                             # a group: whoever is in the middle of it -- unless
             cx = np.nanmean((seq[ok, 0] + seq[ok, 2]) / 2)    # one dancer is right up front, much bigger than the
-            sc = 4.0 * (1 - 2 * abs(cx - 0.5)) + ok.mean() + 0.5 * face.mean()   # rest: they are the shot
-            sc += FRONT_W * np.clip((area / max(typical, 1e-9) - FRONT[0]) / (FRONT[1] - FRONT[0]), 0, 1)
+            sc = 4.0 * (1 - 2 * abs(cx - 0.5)) + ok.mean() + 0.5 * face.mean()   # rest: they are the shot (in
+        sc += FRONT_W * np.clip((area / max(typical, 1e-9) - FRONT[0]) / (FRONT[1] - FRONT[0]), 0, 1)   # a couple
+        #                                                     too far apart, a class floor, too)
         if sc > best_sc:
             best, best_sc = (seq, face), sc
     if best is None:
@@ -451,6 +452,7 @@ PAIR_GAP, PAIR_H = 1.0, (0.6, 1.65)              # partners: closer than this ma
 FOLLOW_ROOM = 0.25                                # extra room on the follow's side, in follow widths (arms, spins)
 FOLLOW_W = 0.62                                   # when the couple won't fit: the crop centre's weight on the follow
 SAME_H = 0.92                                     # partners within this height ratio are "of a size"
+PAIR_DEPTH = 2.5                                  # a "partner" this many times smaller (box area) is further back
 
 
 def _partners(a, b):
@@ -475,8 +477,10 @@ def couple(d, times, boxes, m, close, cw, fv, act=None, union=None):
     soft = blurry(d, np.clip(np.searchsorted(pt, times), 0, len(pt) - 1)) if "focus" in d else np.zeros_like(ok)
     ok &= ~soft
     found = {}
+    edge = (np.nan_to_num(nb[..., 0], nan=0.5) <= 0.01) | (np.nan_to_num(nb[..., 2], nan=0.5) >= 0.99)
+    ok &= ~edge                                   # half out of the camera's own frame: never one of the pair
     for f in range(F):
-        mem = [k for k in np.nonzero(m[f])[0]]
+        mem = [k for k in np.nonzero(m[f])[0] if not edge[f, k]] or [k for k in np.nonzero(m[f])[0]]
         if not mem:
             continue
         size = lambda k: (nb[f, k, 2] - nb[f, k, 0]) * (nb[f, k, 3] - nb[f, k, 1])      # noqa: B023
@@ -538,6 +542,9 @@ def couple(d, times, boxes, m, close, cw, fv, act=None, union=None):
         idx = np.maximum.accumulate(np.where(got, np.arange(F), 0))   # lost a moment: hold where they were
         idx[:np.argmax(got)] = np.argmax(got)
         seq[j] = seq[j, idx]
+    area = [np.nanmedian((seq[j, :, 2] - seq[j, :, 0]) * (seq[j, :, 3] - seq[j, :, 1])) for j in (0, 1)]
+    if max(area) > PAIR_DEPTH * max(min(area), 1e-9):       # one right up at the lens, the other well behind:
+        return None                                          # not dancing together (follow() takes the near one)
     wo = woman(d, times, boxes)
     p = [np.nanmean([wo[f, slots[f, j]] for f in range(F) if slots[f, j] >= 0] or [np.nan]) for j in (0, 1)]
     if np.isnan(p).any() or abs(p[0] - p[1]) < 0.15:         # the role scan can't tell: the shorter one -- but
@@ -567,10 +574,12 @@ def couple(d, times, boxes, m, close, cw, fv, act=None, union=None):
         lo, hi = fb[:, 2] - win / 2, fb[:, 0] + win / 2
         c = np.where(lo <= hi, np.clip(c, lo, hi), fc)
         out[wide, 0], out[wide, 2] = c[wide] - win / 2, c[wide] + win / 2
-    if union is not None:                         # drifted off the subject (holds under half of it): the
-                                                  # subject's own box that frame
+    if union is not None:                         # drifted off the subject (the two overlap by under half of the
+                                                  # narrower -- a group wider than the strip holds the pair whole
+                                                  # inside it): the subject's own box that frame
         iw = np.clip(np.minimum(out[:, 2], union[:, 2]) - np.maximum(out[:, 0], union[:, 0]), 0, None)
-        off = ~np.isnan(union[:, 0]) & (np.nan_to_num(iw / np.maximum(union[:, 2] - union[:, 0], 1e-6)) < 0.5)
+        nw = np.maximum(np.minimum(out[:, 2] - out[:, 0], union[:, 2] - union[:, 0]), 1e-6)
+        off = ~np.isnan(union[:, 0]) & (np.nan_to_num(iw / nw) < 0.5)
         out[off] = union[off]
     return out, face[fo] | face[1 - fo]
 

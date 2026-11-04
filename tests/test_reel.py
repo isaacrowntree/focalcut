@@ -943,21 +943,21 @@ def _group(n=15, xs=(0.15, 0.35, 0.5, 0.65, 0.85), faces=None):
     return d, np.tile([min(xs) - 0.05, 0.2, max(xs) + 0.05, 0.9], (n, 1)).astype(float)
 
 
-def test_a_group_pans_slowly_through_its_middle_or_takes_the_one_in_the_centre():
+def test_a_group_takes_the_one_in_the_centre_or_pans_when_asked():
     from focalcut.reel import frame as FR
-    d, union = _group()                                                  # 2.8 s: a slow pan across the middle
-    box, face, how = FR.follow(d, d["pose_t"], union, cw=0.32)
-    cx = (box[:, 0] + box[:, 2]) / 2
-    assert how == FR.PAN and face.all()
-    assert abs(cx.mean() - 0.5) < 0.01 and 0 < cx[-1] - cx[0] <= FR.PAN_SPEED * 2.8 + 1e-6
-    d, union = _group(n=5, faces=(True, True, False, True, True))        # 0.8 s, too short to pan: the one in the
-    box, _, how = FR.follow(d, d["pose_t"], union, cw=0.32)              # centre, even facing away
-    assert how == FR.CENTRE and abs((box[0, 0] + box[0, 2]) / 2 - 0.5) < 0.01
+    d, union = _group()                                                  # by default one dancer whole, the one in
+    box, _, how = FR.follow(d, d["pose_t"], union, cw=0.32)              # the centre: never the floor between
+    assert how == FR.CENTRE and abs((box[:, 0] + box[:, 2]).mean() / 2 - 0.5) < 0.01
     try:
-        FR.configure({"group": "centre"})
-        d, union = _group()
-        box, _, how = FR.follow(d, d["pose_t"], union, cw=0.32)
-        assert how == FR.CENTRE and abs((box[:, 0] + box[:, 2]).mean() / 2 - 0.5) < 0.01
+        FR.configure({"group": "pan"})
+        d, union = _group()                                              # 2.8 s: a slow pan across the middle
+        box, face, how = FR.follow(d, d["pose_t"], union, cw=0.32)
+        cx = (box[:, 0] + box[:, 2]) / 2
+        assert how == FR.PAN and face.all()
+        assert abs(cx.mean() - 0.5) < 0.01 and 0 < cx[-1] - cx[0] <= FR.PAN_SPEED * 2.8 + 1e-6
+        d, union = _group(n=5, faces=(True, True, False, True, True))    # 0.8 s, too short to pan: the one in the
+        box, _, how = FR.follow(d, d["pose_t"], union, cw=0.32)          # centre, even facing away
+        assert how == FR.CENTRE and abs((box[0, 0] + box[0, 2]) / 2 - 0.5) < 0.01
     finally:
         FR.configure({})
 

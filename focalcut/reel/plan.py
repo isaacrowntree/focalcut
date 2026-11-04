@@ -190,6 +190,18 @@ PERFORMERS = ("band", "singer", "dj", "mc", "violin", "drum", "piano", "keys", "
 MEMBERS = []             # reel.json plan.<fmt>.members (portrait_rules() sets it): more performer tags
 
 
+CLOSE_H = 0.5            # B-roll with someone this tall (of the frame) in most of it is of dancers, not the room
+
+
+def close_dancers(d, times):
+    """B-roll shot among the dancers -- a class floor with people up close, the camera moving with them -- framed
+    like a subject in portrait (one dancer whole, followed), not cropped at the room's middle through whoever is
+    there."""
+    ii = np.clip(np.searchsorted(d["pose_t"], times), 0, len(d["pose_t"]) - 1)
+    h = np.nan_to_num((d["boxes"][ii, :, 3] - d["boxes"][ii, :, 1]) / d["ah"]).max(1)
+    return bool(len(h)) and float((h >= CLOSE_H).mean()) >= 0.6
+
+
 def people_broll(u):
     """B-roll whose subject is a person -- a band member, singer, DJ, MC (its tag or id names one) -- not scenery: in
     portrait it is framed like any other subject (who the strip is on, faces, backs, a head cut off, sitting low),
@@ -2379,7 +2391,8 @@ def _reframe(project, unit, t0, length, fmt):
     union, touch, _ = FR.track(d, pt[sel])
     narrow = cw0 < 0.5                                      # a 9:16 strip out of a 16:9 frame: little room for lag
     face = np.zeros(len(union), bool)
-    person = unit["role"] != "transition" or people_broll(unit)   # (scenery B-roll: no one to follow)
+    person = unit["role"] != "transition" or people_broll(unit) or close_dancers(d, pt[sel])   # (scenery B-roll:
+    #                                                         no one to follow; a class floor up close has dancers)
     one = False
     if person:                                              # a couple shares the frame; a group too wide for a
         union, face, one = FR.follow(d, pt[sel], union, cw0)  # strip: follow one of them

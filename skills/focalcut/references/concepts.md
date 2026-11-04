@@ -368,6 +368,12 @@ A shot is never:
   effects too: frame-blending on a fast stretch must not smear a close face. (`soft`, `blocked`)
 - **Shaky, leaving, sliced or low.** Wild camera swings, the subject leaving the frame, a couple split by the
   strip edge, or the subject far down the frame all fail. (`shake`, `exit`, `split`, `low`, `lost`)
+- **The gap between people.** When a pair or a group is wider than the portrait strip, frame one dancer or
+  couple whole and centred and let the others go out of frame. Never centre the floor between two couples and cut
+  both (SSMC: C1991's yellow couples). Groups take the dancer in the centre by default (`frame.GROUP` "centre";
+  reel.json `"group": "pan"` asks for a pan). B-roll shot among the dancers up close, like a class floor, follows
+  one dancer the same way (`plan.close_dancers`; SSMC: C1968). Someone the camera's own edge cuts in half is never
+  one of a couple.
 - **Bored, blinking or grimacing.** Engaged expressions only: smiling, eyes open, in the moment. This is about
   expression, never appearance. (`expr`)
 - **A weaker moment of the same person.** If the same clip shows that person smiling and letting loose
