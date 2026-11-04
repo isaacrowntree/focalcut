@@ -3482,6 +3482,10 @@ def window_fails(shots, W):
     return out
 
 
+BAN_CLEAR = 2.0          # snap_windows: a shot moved off banned footage along its own clip lands this far clear of
+                         # the ban (just past its edge is the same rejected scene)
+
+
 def snap_windows(project, fmt, shots, moments, cfg, W=None, split=True):
     """Every shot the planner chose (not the editor's picks, the ending, the opening) plays a stretch that passes
     the scrub in this format, whichever pass put it there (band inserts, people, quick cuts, landings, slides): one
@@ -3527,7 +3531,8 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None, split=True):
         s.pop("land", None); s.pop("land_fits", None)
 
     def offsets(s, r, uid, a, L, speedy):                    # moves to try, smallest first: onto a passing
-        dts = [m["t"] - s["t"] for m in (passing(r) if r else [])]   # moment (its move on the shot's beat)
+        dts = [m["t"] - s["t"] for m in ((passing(r) or r["moments"]) if r else [])]   # moment (its move on the
+        # shot's beat; unassessed moments -- a refill -- are judged by fits_at on the windows instead)
         if not speedy:                                       # a plain shot can start anywhere: on a window's edges
             for w in W.get(uid) or ():
                 if w["ok"]:
@@ -3546,8 +3551,9 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None, split=True):
         a, L = played(s)
         speedy = any(f in SPEED for f in s["fx"])
         rec = next((r for r in moments if r["id"] == u["id"]), None)
+        uc = dict(u, bans=[[x - BAN_CLEAR, y + BAN_CLEAR] for x, y in u["bans"]]) if in_bans(a, L, u) else u
         dt = None if (u.get("day") and s["act"] not in DAY_ACTS) or s.get("half") == 2 else \
-            next((d for d in offsets(s, rec, u["id"], a, L, speedy) if fits_at(s, u, d, a, L)), None)
+            next((d for d in offsets(s, rec, u["id"], a, L, speedy) if fits_at(s, uc, d, a, L)), None)
         if dt is not None:
             s.update(t=round(s["t"] + dt, 3), src_in=round(s["src_in"] + dt, 3), snapped=round(dt, 2))
             measure(s)
@@ -3556,25 +3562,28 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None, split=True):
         nb = [shots[k] for k in (i - 1, i + 1) if 0 <= k < len(shots)]
         perf = people_broll(u)
         best = None
-        for r in moments:
-            ru = r["unit"]
-            if r["id"] == u["id"] or (r["role"] != u["role"] if not perf else not people_broll(ru)):
-                continue
-            if any(n["unit"]["clip"] == ru["clip"] for n in nb):
-                continue
-            own_set = not cfg.get("sets") or ru.get("category") == u.get("category")   # (another set's only
-            d = bool(ru.get("day")) or (bool(day_cats) and fits(ru, day_cats))         # when its own has none)
-            if d != (s["act"] in DAY_ACTS) and (d or s["act"] == "arrival"):
-                continue
-            ms = passing(r) or r["moments"]                  # none left: footage the config keeps out
-            for dt in offsets(s, r, r["id"], a, L, speedy):
-                if not ms or not fits_at(s, ru, dt, a, L):
+        for loose in ((False, True) if in_bans(a, L, u) else (False,)):   # banned footage must go: footage of
+            if best:                                                       # another kind before none
+                break
+            for r in moments:
+                ru = r["unit"]
+                if r["id"] == u["id"] or (not loose and (r["role"] != u["role"] if not perf else not people_broll(ru))):
                     continue
-                mid = a + dt + L / 2                         # the shot's moment: the passing one nearest it
-                m = min(ms, key=lambda m, mid=mid: abs(m["t"] - mid))
-                key = (own_set, have[r["id"]] == 0, ru.get("category") == u.get("category"), rk(m, fmt))
-                if best is None or key > best[0]:
-                    best = (key, r, m, dt)
+                if any(n["unit"]["clip"] == ru["clip"] for n in nb):
+                    continue
+                own_set = not cfg.get("sets") or ru.get("category") == u.get("category")   # (another set's only
+                d = bool(ru.get("day")) or (bool(day_cats) and fits(ru, day_cats))         # when its own has none)
+                if d != (s["act"] in DAY_ACTS) and (d or s["act"] == "arrival"):
+                    continue
+                ms = passing(r) or r["moments"]                  # none left: footage the config keeps out
+                for dt in offsets(s, r, r["id"], a, L, speedy):
+                    if not ms or not fits_at(s, ru, dt, a, L):
+                        continue
+                    mid = a + dt + L / 2                         # the shot's moment: the passing one nearest it
+                    m = min(ms, key=lambda m, mid=mid: abs(m["t"] - mid))
+                    key = (own_set, have[r["id"]] == 0, ru.get("category") == u.get("category"), rk(m, fmt))
+                    if best is None or key > best[0]:
+                        best = (key, r, m, dt)
         if best:
             _, r, m, dt = best
             x = shot(r, m, fmt, s["beats"], act=s["act"])

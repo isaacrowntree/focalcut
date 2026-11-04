@@ -309,6 +309,8 @@ def test_a_shot_on_footage_banned_since_it_was_placed_moves_off_it(fakes):
     s = shots[1]
     assert (slid, recast, stuck) == (1, 0, [])
     assert s["unit"]["id"] == "A" and not plan.in_bans(s["src_in"], s["length"], s["unit"])
+    assert s["src_in"] >= 12.4 + plan.BAN_CLEAR or s["src_in"] + s["length"] <= 9.6 - plan.BAN_CLEAR   # clear of
+    # the rejected scene, not just past its edge
 
 
 def test_refill_replaces_only_the_rejected_shots_of_an_earlier_plan(fakes, monkeypatch):
