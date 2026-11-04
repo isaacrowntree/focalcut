@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 from urllib.parse import quote
 from xml.sax.saxutils import escape
+
+from . import hw
 
 FPS = 50
 SIZE = {"landscape": (1920, 1080), "portrait": (1080, 1920)}
@@ -113,7 +114,7 @@ def run(project, fmt, cut=None) -> str:
             keep = os.path.join(media, f'{i + 1:03d}_{u["id"].replace("#", "-")}_{s["kind"]}'
                                        f'{"_" + "+".join(s["fx"]) if s.get("fx") else ""}'
                                        f'{"_" + s["transition"] if s.get("transition") else ""}.mp4')
-            shutil.copy2(project.path(manifest[i]), keep)
+            hw.retag(project.path(manifest[i]), keep)
             n += 1; v1.append(clip(f"v1-{n}", files, keep, start, end, 0, label))
             n += 1; v2.append(clip(f"v2-{n}", files, src, start, end, round(s["src_in"] * FPS), f"{label} (source)",
                                    fmt=fmt, enabled=False))

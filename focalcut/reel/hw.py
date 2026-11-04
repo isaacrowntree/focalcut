@@ -22,9 +22,13 @@ import subprocess
 
 FPS = 50
 COLOUR = ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
-X264 = ["-c:v", "libx264", "-preset", "medium", "-crf", "14"]
+# BT.709 written into every SPS: frames piped in as raw RGB (transitions, effects, the visualiser) reach the encoder
+# with primaries and transfer unspecified, which override COLOUR (ffmpeg 8), and players then guess -- Android takes
+# untagged 4K for BT.2020 and oversaturates it
+VUI = "h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"
+X264 = ["-c:v", "libx264", "-preset", "medium", "-crf", "14", "-bsf:v", VUI]
 NVENC = ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", "16", "-b:v", "0",
-         "-profile:v", "high", "-bsf:v", "dump_extra=freq=keyframe"]
+         "-profile:v", "high", "-bsf:v", f"dump_extra=freq=keyframe,{VUI}"]
 
 
 @functools.cache
@@ -42,6 +46,12 @@ def nvenc() -> bool:
 def enc() -> list[str]:
     """Video encoder arguments for every intermediate and final picture (1080p, FPS, BT.709)."""
     return [*(NVENC if nvenc() else X264), "-pix_fmt", "yuv420p", "-r", str(FPS), *COLOUR]
+
+
+def retag(src: str, dst: str) -> None:
+    """A copy of an H.264 file with BT.709 in every SPS, by stream copy (shots cached before VUI was added)."""
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-map", "0", "-c", "copy", "-bsf:v", VUI, dst],
+                   check=True)
 
 
 def enc_tag() -> str:

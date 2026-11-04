@@ -332,7 +332,8 @@ def run(project, fmt, draft=False, cut=None) -> str:
                     "-af", f"loudnorm=I={I}:TP={TP}:LRA=11:linear=true:measured_I={m['input_i']}:"
                            f"measured_TP={m['input_tp']}:measured_LRA={m['input_lra']}:"
                            f"measured_thresh={m['input_thresh']}:offset={m['target_offset']},aresample=48000",
-                    "-c:v", "copy", "-c:a", "aac", "-b:a", "320k", "-shortest", "-movflags", "+faststart",
+                    "-c:v", "copy", "-bsf:v", hw.VUI, "-c:a", "aac", "-b:a", "320k", "-shortest",
+                    "-movflags", "+faststart",
                     final + ".part.mp4"], check=True)
     os.replace(final + ".part.mp4", final)
     if not draft:                                            # the cut as rendered: what "keep": true re-cuts from
