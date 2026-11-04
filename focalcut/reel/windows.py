@@ -32,15 +32,58 @@ GAP, PER_UNIT = 1.6, 40                           # moments: minimum spacing (s)
 FORMATS = ("landscape", "portrait")
 
 
+# the pick rules on the people a shot is about (persons.py), reel.json "person_rules" overrides: someone the shot is
+# about shows their own face for at least "face" of it, and the subject (the tallest) for at least "subject" unless
+# their partner does for "face" (else "back": a couple mid-turn passes, a back with nobody's face doesn't); the
+# subject's face turned no more than "yaw" eye-distances on the median (else "profile": only a face fully side-on --
+# the landmark measure is rough); and the subject's face at least "rel" of the frame's sharpest detail on the median
+# (else "soft")
+PERSON = dict(face=0.4, subject=0.2, yaw=3.0, rel=0.12, present=0.5)
+
+
+def person_reasons(pr, t0, t1, rules=None):
+    """The pick rules a window fails on its main people (persons track pr), and the measured values:
+    (reasons, {face: per-slot share, yaw, rel})."""
+    R = {**PERSON, **(rules or {})}
+    if pr is None:
+        return [], {}
+    m = (pr["t"] >= t0 - 0.1) & (pr["t"] <= t1 + 0.1)
+    if not m.any():
+        return [], {}
+    present = ~np.isnan(pr["box"][m][..., 0])                 # (k, 3)
+    face = pr["face"][m]
+    why, vals = [], {}
+    shares = []
+    for s in range(present.shape[1]):
+        if present[:, s].mean() >= R["present"]:
+            shares.append(float(face[present[:, s], s].mean()))
+    vals["face"] = [round(x, 2) for x in shares]
+    if shares and (max(shares) < R["face"] or (shares[0] < R["subject"] and max(shares[1:], default=0) < R["face"])):
+        why.append("back")
+    seen = face[:, 0]
+    if seen.any():
+        yaw = float(np.nanmedian(np.abs(pr["yaw"][m][seen, 0])))
+        rel = float(np.nanmedian(pr["rel"][m][seen, 0])) if not np.isnan(pr["rel"][m][seen, 0]).all() else np.nan
+        vals.update(yaw=round(yaw, 2), rel=None if np.isnan(rel) else round(rel, 3))
+        if yaw > R["yaw"]:
+            why.append("profile")
+        if not np.isnan(rel) and rel < R["rel"]:
+            why.append("soft")
+    return why, vals
+
+
 def grid(u):
     """(t0, t1) windows over a unit, clear of its edges."""
     a, b = u["t0"] + 0.3, u["t1"] - 0.3
     return [(round(float(t), 2), round(float(t) + L, 2)) for L in LENGTHS for t in np.arange(a, b - L + 1e-6, STEP)]
 
 
-def scrub(project, rec, S, tr, fmt, cfg, taste=None):
-    """Every window of one unit in one format: [{t0, t1, ok, score, rank, expr, taste, reasons}]. taste: (track,
-    scores) of the unit's frames, or None."""
+def scrub(project, rec, S, tr, fmt, cfg, taste=None, pr=None):
+    """Every window of one unit in one format: [{t0, t1, ok, score, rank, expr, taste, reasons, person}]. taste:
+    (track, scores) of the unit's frames, or None; pr: its persons track (persons.py), for the pick rules on the
+    people the shot is about (person_reasons) -- for people footage only, never scenery."""
+    from . import plan as PL0
+    people = rec["unit"]["role"] != "transition" or PL0.people_broll(rec["unit"])
     from . import expression as EX
     from . import moments as MO
     from . import plan as PL
@@ -69,6 +112,8 @@ def scrub(project, rec, S, tr, fmt, cfg, taste=None):
         terms = dict(engaged=best, face=face, focus=focus, move=move, taste=tv)
         use = {k: v for k, v in W.items() if not np.isnan(terms.get(k, np.nan))}
         rank = sum(v * terms[k] for k, v in use.items()) / max(sum(use.values()), 1e-6)
+        pw, pv = person_reasons(pr, t0, t1, cfg.get("person")) if people else ([], {})
+        reasons += [w for w in pw if w not in reasons]
         if not np.isnan(e):
             if e < cfg["floor"]:
                 reasons.append("expr")
@@ -76,7 +121,7 @@ def scrub(project, rec, S, tr, fmt, cfg, taste=None):
                 score *= max(0.1, 1 + cfg["w"] * e)
         out.append(dict(t0=t0, t1=t1, ok=not reasons, score=round(score, 3), rank=round(rank, 3),
                         expr=None if np.isnan(e) else round(e, 2), taste=None if np.isnan(tv) else round(tv, 2),
-                        reasons=reasons))
+                        reasons=reasons, person=pv))
     return out
 
 
@@ -147,8 +192,10 @@ def unit_job(args):
     tr = EX.load(project, u)
     tt = TA.track(project, u) if cfg.get("taste") else None
     taste = (tt, TA.series(tt, *cfg["taste"])) if tt is not None else None
+    from . import persons as PS
+    pr = PS.load(project, u)
     formats = [f for f in formats if f == "portrait" or u["orient"] == "landscape"]   # (as the planner: a clip shot
-    wins = {f: scrub(project, rec, S, tr, f, cfg, taste) for f in formats}            # upright plays in portrait only)
+    wins = {f: scrub(project, rec, S, tr, f, cfg, taste, pr) for f in formats}            # upright plays in portrait only)
     ms, fails = moments_from(rec, S, tr, wins)
     return u["id"], wins, ms, fails
 
@@ -160,7 +207,8 @@ def run(project, formats=FORMATS, workers=12) -> dict:
     from concurrent.futures import ProcessPoolExecutor
     cfg = dict(floor=float(project.config.get("expression_floor", EXPR_FLOOR)),
                w=float(project.config.get("expression_w", EXPR_W)),
-               rank={**RANK, **(project.config.get("scrub_rank") or {})})
+               rank={**RANK, **(project.config.get("scrub_rank") or {})},
+               person={**PERSON, **(project.config.get("person_rules") or {})})
     from . import taste as TA
     tm = TA.model(project)
     if tm is None:

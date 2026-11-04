@@ -24,13 +24,16 @@ SHARP_REL = 0.55                                  # a person counts as in focus 
 # is motion blur) -- is out of focus and never the subject; the sharp one takes over when at least MIN_H of the frame
 # tall, in at least SHARE of the shot's frames with focus data (one soft frame is not the camera's choice).
 # reel.json "focus_blur", "focus_near", "focus_min_h", "focus_share" (configure)
-FOCUS = dict(blur=0.4, near=1.5, min_h=0.5, share=0.4)
+FOCUS = dict(blur=0.4, near=1.5, min_h=0.5, share=0.4, moving=1.0)
 # a group routine too wide for a portrait strip: a slow pan across it, through its middle (PAN_SPEED frame widths a
 # second at most, from PAN_MIN s), else -- a short shot, or "group": "centre" -- the dancer nearest the frame's
 # centre. reel.json "group": "pan" | "centre" (configure)
 GROUP = dict(mode="pan")
 PAN_SPEED, PAN_MIN = 0.08, 1.5
 PAN, CENTRE = "pan", "centre"                     # follow()'s third value for a group shot
+FOLLOW_SHARP = 1.5                                # following one dancer: the weight of being the one in focus
+FRONT, FRONT_W = (1.8, 3.5), 6.0                  # in a group, a dancer this many times a member's usual size
+                                                  # (ramping) is up front, and taken over whoever is central
 
 
 def configure(cfg):
@@ -83,14 +86,18 @@ def track(d, times):
 
 def blurry(d, idx):
     """(F, P): who is out of focus in each pose frame: under FOCUS["blur"] of the sharpest person there and at least
-    FOCUS["near"] x their area (in front of them, nearer the lens). Needs two people with focus data."""
+    FOCUS["near"] x their area (in front of them, nearer the lens), and dancing less than the sharpest person (a
+    close dancer softened by their own motion is the shot, not a bystander in front of it). Needs two people with
+    focus data."""
     b, foc = d["boxes"][idx], d["focus"][idx]
+    act = activity(d)[idx]
     have = ~np.isnan(b[..., 0]) & ~np.isnan(foc)
     out = np.zeros(have.shape, bool)
     area = (b[..., 2] - b[..., 0]) * (b[..., 3] - b[..., 1])
     for f in np.nonzero(have.sum(1) >= 2)[0]:
         k = int(np.nanargmax(np.where(have[f], foc[f], np.nan)))
-        out[f] = have[f] & (foc[f] < FOCUS["blur"] * foc[f, k]) & (area[f] >= FOCUS["near"] * area[f, k])
+        out[f] = have[f] & (foc[f] < FOCUS["blur"] * foc[f, k]) & (area[f] >= FOCUS["near"] * area[f, k]) & \
+            (act[f] < FOCUS["moving"] * max(act[f, k], 1e-6))
     return out
 
 
@@ -234,6 +241,7 @@ def faces(kp):
 
 
 FACE_SCORE, FACE_H = 0.8, 0.03                    # a YuNet face that counts: detector score, height (of the frame)
+FACE_OWN = 0.3                                    # ... and a person's own: at least this x their build (frame heights)
 
 
 def face_seen(d, times, boxes, kp):
@@ -244,8 +252,9 @@ def face_seen(d, times, boxes, kp):
         return faces(kp)
     y = d["yf"]
     keep = (y["score"] >= FACE_SCORE) & (y["h"] >= FACE_H)
-    yt, cx, cy = y["t"][keep], y["cx"][keep], y["cy"][keep]
+    yt, cx, cy, fh = y["t"][keep], y["cx"][keep], y["cy"][keep], y["h"][keep]
     nb = boxes[..., :4] / [d["aw"], d["ah"], d["aw"], d["ah"]]
+    aspect = d["ah"] / d["aw"]
     out = np.zeros(boxes.shape[:2], bool)
     for f, t in enumerate(times):
         near = np.abs(yt - t) <= 0.3
@@ -253,7 +262,17 @@ def face_seen(d, times, boxes, kp):
             continue
         x0, y0, x1, y1 = (nb[f, :, k][:, None] for k in range(4))
         head = (cx[near] >= x0) & (cx[near] <= x1) & (cy[near] >= y0 - 0.02) & (cy[near] <= y0 + 0.4 * (y1 - y0))
-        out[f] = np.nan_to_num(head).astype(bool).any(1)
+        # and theirs: a face their build's size (not a smaller one further back, showing past their head), with
+        # their own face points on it when the pose has any (persons.py's test)
+        build = np.maximum.reduce([0.45 * (x1 - x0) / aspect, 0.12 * (y1 - y0), np.zeros_like(x0)])
+        sized = fh[near][None, :] >= FACE_OWN * build
+        kp_ = kp[f, :, :5]
+        pts = (kp_[..., 2] >= 0.3)[:, :, None]                                    # (P, 5, 1)
+        dx = kp_[..., 0:1] / d["aw"] - cx[near][None, None, :]
+        dy = kp_[..., 1:2] / d["ah"] - cy[near][None, None, :]
+        on = (pts & (np.abs(dx) <= 0.9 * fh[near] / aspect) & (np.abs(dy) <= 0.9 * fh[near])).any(1)   # (P, n)
+        own = on | ~pts.any(1)                                                    # (no face points: box alone)
+        out[f] = np.nan_to_num(head).astype(bool).__and__(sized & own).any(1)
     return out
 
 
@@ -366,6 +385,8 @@ def _follow(d, times, union, cw, split):
     if crowd and GROUP["mode"] == PAN and span >= PAN_MIN:
         return _pan(union, nb, m, fv, times, cw)
     f0 = int(np.argmax(np.where(wide, m.sum(1), -1)))
+    pa = (nb[..., 2] - nb[..., 0]) * (nb[..., 3] - nb[..., 1])
+    typical = float(np.nanmedian(np.where(m, pa, np.nan))) if m.any() else 0.0   # a member's usual size
     best, best_sc = None, -1
     for k0 in np.nonzero(m[f0])[0]:
         seq, face = np.full((len(idx), 4), np.nan), np.zeros(len(idx), bool)
@@ -390,11 +411,12 @@ def _follow(d, times, union, cw, split):
         area = np.nanmean((seq[ok, 2] - seq[ok, 0]) * (seq[ok, 3] - seq[ok, 1]))
         sharp = np.nanmean([foc[f, slot[f]] for f in np.nonzero(ok)[0]])
         moving = np.mean([act[f, slot[f]] for f in np.nonzero(ok)[0]]) / (act[m].max() + 1e-6) if m.any() else 0
-        sc = 2.0 * face.mean() + 1.5 * moving + ok.mean() + np.sqrt(area) + \
-            0.5 * np.nan_to_num(sharp / (np.nanmax(foc) + 1e-6))
-        if crowd:                                             # a group: whoever is in the middle of it
-            cx = np.nanmean((seq[ok, 0] + seq[ok, 2]) / 2)
-            sc = 4.0 * (1 - 2 * abs(cx - 0.5)) + ok.mean() + 0.5 * face.mean()
+        sharp_rel = np.nan_to_num(sharp / (np.nanmax(foc) + 1e-6))
+        sc = 2.0 * face.mean() + 1.5 * moving + ok.mean() + np.sqrt(area) + FOLLOW_SHARP * sharp_rel
+        if crowd:                                             # a group: whoever is in the middle of it -- unless
+            cx = np.nanmean((seq[ok, 0] + seq[ok, 2]) / 2)    # one dancer is right up front, much bigger than the
+            sc = 4.0 * (1 - 2 * abs(cx - 0.5)) + ok.mean() + 0.5 * face.mean()   # rest: they are the shot
+            sc += FRONT_W * np.clip((area / max(typical, 1e-9) - FRONT[0]) / (FRONT[1] - FRONT[0]), 0, 1)
         if sc > best_sc:
             best, best_sc = (seq, face), sc
     if best is None:
@@ -434,6 +456,7 @@ PAIR_GAP, PAIR_H = 1.0, (0.6, 1.65)              # partners: closer than this ma
                                                   # position), heights within this ratio
 FOLLOW_ROOM = 0.25                                # extra room on the follow's side, in follow widths (arms, spins)
 FOLLOW_W = 0.62                                   # when the couple won't fit: the crop centre's weight on the follow
+SAME_H = 0.92                                     # partners within this height ratio are "of a size"
 
 
 def _partners(a, b):
@@ -523,9 +546,16 @@ def couple(d, times, boxes, m, close, cw, fv, act=None, union=None):
         seq[j] = seq[j, idx]
     wo = woman(d, times, boxes)
     p = [np.nanmean([wo[f, slots[f, j]] for f in range(F) if slots[f, j] >= 0] or [np.nan]) for j in (0, 1)]
-    if np.isnan(p).any() or abs(p[0] - p[1]) < 0.15:
-        hgt = [np.nanmean(seq[j, :, 3] - seq[j, :, 1]) for j in (0, 1)]
-        fo = int(np.argmin(hgt))
+    if np.isnan(p).any() or abs(p[0] - p[1]) < 0.15:         # the role scan can't tell: the shorter one -- but
+        hgt = [np.nanmean(seq[j, :, 3] - seq[j, :, 1]) for j in (0, 1)]   # two of a size (a duo of women) are
+        if min(hgt) < SAME_H * max(hgt):                      # told apart by who faces the camera, in focus
+            fo = int(np.argmin(hgt))
+        else:
+            foc = d["focus"][np.clip(np.searchsorted(pt, times), 0, len(pt) - 1)]
+            top = max(np.nanmax(foc), 1e-6) if not np.isnan(foc).all() else 1.0
+            sc = [face[j].mean() + np.nan_to_num(np.nanmean([foc[f, slots[f, j]] for f in range(F)
+                                                             if slots[f, j] >= 0] or [np.nan]) / top) for j in (0, 1)]
+            fo = int(np.argmax(sc))
     else:
         fo = int(np.argmax(p))
     fb, lb = seq[fo], seq[1 - fo]
