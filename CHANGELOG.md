@@ -7,6 +7,25 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Docs
+
+- **Docs site** at https://isaacrowntree.github.io/focalcut/ (mdBook from `docs/`, `book.toml`, rebuilt by
+  `.github/workflows/pages.yml` when the docs change): install, cutting a library by subject, recap reels, the
+  editor's picks, the editing concepts, hardware, security, contributing and this changelog.
+- `docs/picks.md`: the review pages, `picks.json` (with portrait focal points), how picks are kept and condensed,
+  review rounds (`reject`, `refill`) and reel.json profiles. The recipe's reel.json table gains `exposure`, `reject`,
+  `refill`, `cuts`, `profiles` / `use` and the pick keys.
+- `SECURITY.md` with the threat model (ffmpeg on untrusted media, the localhost-only review server, BiRefNet's
+  remote code); an issue-template config pointing at private advisories and the docs; package metadata
+  (description, keywords, classifiers, documentation, issues and changelog URLs); a README hero image.
+
+### Fixed
+
+- Renders carry BT.709 primaries, transfer and matrix in the H.264 stream. Raw-RGB encodes (transitions, effects,
+  the visualiser) were untagged, and Android read them as BT.2020 at 4K and oversaturated them.
+- People coverage no longer rates footage that is banned anyway (a picked clip's other footage): a portrait plan
+  with most clips picked went from over 30 minutes to about 2.
+
 ### Changed
 
 - **MilkDrop renders natively** with projectM 4 (`reel/milkdrop/mdrender.cpp`, off-screen EGL, a fixed frame time
@@ -16,6 +35,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   first use. The Chromium path (`render.mjs`, `cdp.mjs`, `FOCALCUT_CHROME`) is gone, and with it the need for node.
 
 ### Added
+
+- reel.json `plan.<fmt>.pick_clip_share` (default 1.5): how far above an even share one clip's condensed picks may
+  go. Raise it when the editor's picks bunch in a few clips (Electric Nation 2026: 90 to 127 of 132 picks kept).
+- reel.json `"refill"`: re-cut by keeping every shot of an earlier plan and moving only those on footage banned since.
+- reel.json `"exposure"` `"lift"`: night subjects that sit dark get a small midtone lift on luma, black and white held.
 
 - **Cuts** (reel.json `"cuts"`, `focalcut reel run --cut <name>`): other reels from the same footage and analysis,
   e.g. a portrait-only night reel of everything shot vertically plus the band (`"footage": ["@portrait", "band"]`)

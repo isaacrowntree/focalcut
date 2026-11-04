@@ -1,0 +1,21 @@
+[book]
+title = "focalcut"
+description = "Cut dance and event footage by who the camera is following"
+authors = ["Isaac Rowntree"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "target/book"
+
+[output.html]
+site-url = "/focalcut/"
+git-repository-url = "https://github.com/isaacrowntree/focalcut"
+edit-url-template = "https://github.com/isaacrowntree/focalcut/edit/main/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"
+additional-css = ["docs/book.css"]
+no-section-label = true
+
+[output.html.fold]
+enable = false

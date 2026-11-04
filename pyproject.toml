@@ -5,12 +5,22 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "focalcut"
 version = "0.1.0"
-description = "Split video into per-subject segments by following whoever the camera is focused on, and export an editor timeline."
+description = "Cut dance and event footage by who the camera is following: per-subject clips, beat-synced recap reels and editor timelines."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Isaac Rowntree" }]
-keywords = ["video", "editing", "segmentation", "sam3", "tracking", "object-permanence"]
+keywords = ["video", "video-editing", "dance", "recap-reel", "beat-sync", "reframing", "segmentation", "sam3",
+            "opentimelineio", "premiere", "davinci-resolve", "fcp7-xml"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Multimedia :: Video :: Non-Linear Editor",
+]
 # The recommended pipeline (contact sheets + a vision judge) is GPU-free and needs
 # only numpy + ffmpeg on PATH. torch and SAM 3 are an opt-in extra so a plain install
 # does not pull ~2.5GB of CUDA wheels for users who never touch the SAM engines.
@@ -49,8 +59,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/isaacrowntree/focalcut"
+Homepage = "https://isaacrowntree.github.io/focalcut/"
 Repository = "https://github.com/isaacrowntree/focalcut"
+Documentation = "https://isaacrowntree.github.io/focalcut/"
+Issues = "https://github.com/isaacrowntree/focalcut/issues"
+Changelog = "https://github.com/isaacrowntree/focalcut/blob/main/CHANGELOG.md"
 
 [project.scripts]
 focalcut = "focalcut.cli:main"

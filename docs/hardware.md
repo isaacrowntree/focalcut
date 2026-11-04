@@ -68,6 +68,14 @@ MESA_D3D12_DEFAULT_ADAPTER_NAME=Intel vainfo --display drm --device /dev/dri/car
 
 That gives H.264, HEVC Main/Main10, VP9 and AV1 decode and encode on either GPU, but not 4:2:2.
 
+## Colour tags
+
+Every render is tagged BT.709 (primaries, transfer and matrix) in the H.264 stream itself, through ffmpeg's
+`h264_metadata` bitstream filter (`hw.VUI`). Shots encoded from raw RGB (transitions, effects, the visualiser) used
+to come out with primaries and transfer unspecified. Players guess then, and Android guesses BT.2020 for 4K, which
+oversaturates the picture. The final mux and the media copied for the XML are re-tagged too, so shots cached before
+the fix are covered.
+
 ## Other notes
 
 - **Scoring decodes every 4K frame on the CPU** (about 1.6x real time); it skips non-reference frames and

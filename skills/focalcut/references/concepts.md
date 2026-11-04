@@ -337,7 +337,7 @@ check yet is a bug in the scrub, not a reason to let the shot through.
 
 The editor's picks always win, in every format: no rule overrides a pick. A clip with picks is the editor's call
 on its best part, so the planner takes nothing else from it, in either format (`apply_picks`, on by default;
-plan.<fmt> `"only_picks": false` lets the rest back in). The planner may still change a pick itself: cut it to its
+`plan.<fmt>.only_picks: false` lets the rest back in). The planner may still change a pick itself: cut it to its
 best beats, take a second piece of it, condense a clip's many picks (`pick_hold`, `pick_share`).
 
 The face that counts is the subject's own: the person the shot is about, and for a couple, duo or group, every

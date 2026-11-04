@@ -1,0 +1,6 @@
+/* focalcut's amber (the editor's picks in the timeline figure) for links and the title. */
+:root { --focalcut: #a86f00; }
+.navy, .coal, .ayu { --focalcut: #ffc400; }
+.menu-title { color: var(--focalcut); font-weight: 800; }
+a, a:visited { color: var(--focalcut); }
+.content img { max-width: 100%; border-radius: 8px; }

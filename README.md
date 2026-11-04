@@ -5,6 +5,11 @@ editor timelines.**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-isaacrowntree.github.io%2Ffocalcut-orange.svg)](https://isaacrowntree.github.io/focalcut/)
+
+![The Electric Nation 2026 landscape reel, shot by shot along the song: 151 shots in six acts, most of them cut from the editor's picks, above the music's energy per beat](docs/img/reel-timeline.jpg)
+
+**[Documentation](https://isaacrowntree.github.io/focalcut/)** · [Write-up](https://zackdesign.biz/focalcut/) · [Changelog](CHANGELOG.md)
 
 Point focalcut at dance footage — or any video where the camera moves between subjects —
 and it finds the cuts where focus changes from one person or couple to the next, then
@@ -14,7 +19,8 @@ Final Cut or Avid.
 From a curated folder it also builds **recap reels**: a landscape and a portrait cut on the music's beats, told
 in acts, with velocity edits, transitions, portrait reframing that follows a dancer, shake checks, effects and an
 optional audio-reactive light-show overlay — plus a Premiere XML of each and a browser page for choosing,
-trimming and reframing shots (see [Recap reels](#recap-reels-recipe)).
+trimming and reframing shots (see [Recap reels](#recap-reels-recipe)). The editor's picks always win: the
+planner cuts around them, never over them ([The editor's picks](https://isaacrowntree.github.io/focalcut/picks.html)).
 
 The recommended pipeline is **GPU-free**: ffmpeg contact sheets read by a vision model.
 
@@ -154,7 +160,8 @@ act has a short vocabulary of transitions, and one goes in only where the cut ha
 turns, a swipe when the same travel carries across, a push in to a face, a flash on a big hit). Camera shake is
 measured, so shaky stretches give way to steadier ones and mildly shaky shots are stabilised. In portrait the strip
 follows one dancer of a couple dancing apart and favours faces over backs. Band players cut in on the musical hits,
-and the reel can end on a shot you choose. See [docs/recipes/recap-reel.md](docs/recipes/recap-reel.md), and [docs/hardware.md](docs/hardware.md) for what runs on which chip.
+and the reel can end on a shot you choose. See [docs/recipes/recap-reel.md](docs/recipes/recap-reel.md), [docs/hardware.md](docs/hardware.md) for what runs on which chip, and
+[docs/picks.md](docs/picks.md) for the review pages, `picks.json`, review rounds and reel.json profiles.
 
 Every one of these is a reusable piece. `plan.place()` turns any hand-built sequence of shots into a plan that
 renders and exports like a reel, so a teaser, a highlight or a promo uses the same rules (see
@@ -181,7 +188,14 @@ precision/recall, over/under-segmentation, and a `manual_corrections_per_min`
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Issues and PRs get a reply within a week.
 
-## Licence
+## Security
+
+See [SECURITY.md](SECURITY.md). The review server answers localhost only.
+
+## License
 
 MIT — see [LICENSE](LICENSE). SAM 3 model weights are under Meta's separate SAM
 Licence; review it before using the `[sam]` engines.
+
+focalcut is not affiliated with or endorsed by Adobe, Apple, Avid, Blackmagic Design or Meta. Premiere Pro,
+Final Cut Pro, Media Composer, DaVinci Resolve and SAM are trademarks of their owners.
