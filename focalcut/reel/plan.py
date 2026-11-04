@@ -1071,7 +1071,8 @@ def cover_people(P, seq, recs, home, people, fmt, beat, climax_from=None, allowe
         t, ok = r["band_ok"]
         w = (t >= sp[1] - 0.4) & (t <= sp[1] + 1.2)
         return bool(w.any() and ok[w].mean() >= 0.6)
-    spots = {sp for sp in spots if band_ok(sp)}
+    spots = {sp for sp in spots if band_ok(sp)        # nor the editor's banned stretches -- the rest of a picked
+             and not in_bans(sp[1] - beat, 2 * beat, by[sp[0]]["unit"])}     # clip is banned (apply_picks)
 
     probe = {sp: [k for k, it in enumerate(items) if shows(dict(unit=dict(id=sp[0]), t=sp[1], beats=2), it)]
              for sp in spots}
