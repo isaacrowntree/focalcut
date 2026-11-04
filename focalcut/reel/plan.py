@@ -3306,21 +3306,25 @@ def load_windows(project, fmt):
     return json.load(open(p)) if os.path.exists(p) else None
 
 
+INSIDE = 0.8             # span_ok: a shortest window this much inside a shot is a second the shot plays
+
+
 def span_ok(wins, a, b, tol=SNAP_TOL):
     """Does the source stretch a..b sit on passing windows? True / False, None when the scrub didn't judge it (no
-    windows there: scenery, an unscrubbed unit). Its end decides first: the last of the shortest windows inside it
-    must pass (the camera panning off the subject, the subject leaving, fails however well longer windows over it
-    average out). Then the windows that cover it (start within tol after a, end within tol
-    before b) decide: any passing one passes it. A shot longer than every window passes when passing windows inside
-    it tile it end to end."""
+    windows there: scenery, an unscrubbed unit). The shortest windows it plays decide first: any of them lying
+    mostly inside it (INSIDE of the window) that fails fails it -- a back filling the frame for a second, the camera
+    panning off the subject, the subject leaving, however well a longer window over it averages them out. Then the
+    windows that cover it (start within tol after a, end within tol before b) decide: any passing one passes it. A
+    shot longer than every window passes when passing windows inside it tile it end to end."""
     if not wins:
         return None
     tol += 1e-3                                              # (in-points are kept to the millisecond)
     short = min(w["t1"] - w["t0"] for w in wins)
-    tail = [w for w in wins if w["t1"] - w["t0"] <= short + 1e-3 and w["t0"] >= a - tol and w["t1"] <= b + 0.05]
-    if tail and short < b - a - tol and not max(tail, key=lambda w: w["t1"])["ok"]:
-        return False                                         # it ends as the subject leaves: a long window passing
-    cover = [w for w in wins if w["t0"] <= a + tol and w["t1"] >= b - tol]   # over it averages the pan-off away
+    inner = [w for w in wins if w["t1"] - w["t0"] <= short + 1e-3
+             and min(b, w["t1"]) - max(a, w["t0"]) >= INSIDE * (w["t1"] - w["t0"])]
+    if any(not w["ok"] for w in inner):
+        return False                                         # a second of it fails: a long window passing over
+    cover = [w for w in wins if w["t0"] <= a + tol and w["t1"] >= b - tol]   # it averages that away
     if cover:
         return any(w["ok"] for w in cover)
     if not any(w["t1"] > a and w["t0"] < b for w in wins):

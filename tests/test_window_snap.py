@@ -111,7 +111,7 @@ def test_the_plan_log_warns_about_a_planner_shot_left_on_failing_windows(fakes, 
 
 
 def test_an_in_point_rounded_to_the_millisecond_still_sits_on_its_window():
-    W = [win(57.3, 60.9, True), win(57.8, 61.4, False)]
+    W = [win(57.3, 60.9, True), win(58.8, 62.4, False)]
     assert plan.span_ok(W, 57.996, 57.996 + 3.204) is True    # b - tol is 60.900000000000006
 
 
@@ -229,11 +229,20 @@ def test_a_close_dancer_with_arms_up_keeps_her_head_by_her_face_points():
     assert plan.shown(*args)[1] == 0.0                        # by the box top alone: cut off
 
 
-def test_a_window_running_past_the_shots_end_doesnt_judge_its_end():
+def test_a_window_mostly_past_the_shots_end_doesnt_judge_it():
     W = [win(92.7, 93.9, True), win(93.2, 94.4, True), win(93.7, 94.9, False), win(92.7, 95.1, True)]
-    assert plan.span_ok(W, 93.167, 94.769) is True            # 93.7-94.9 fails after the shot has ended
+    assert plan.span_ok(W, 93.167, 94.6) is True              # 93.7-94.9 fails, a quarter of it after the end
+    assert plan.span_ok(W, 93.167, 94.769) is False           # nine tenths of it inside: the shot plays it
     W[1]["ok"] = False
-    assert plan.span_ok(W, 93.167, 94.769) is False           # its own last stretch fails: it does
+    assert plan.span_ok(W, 93.167, 94.6) is False             # its own last stretch fails
+
+
+def test_a_long_passing_window_never_hides_a_failing_second_inside_the_shot():
+    # Fiesta C2139@28.0: a back fills 28.3-29.5 ("back"), a 2.4 s window over the shot averages it to a pass
+    W = [win(27.8, 29.0, True), win(28.3, 29.5, False), win(27.3, 29.7, True), win(26.8, 30.4, True)]
+    assert plan.span_ok(W, 28.04, 29.41) is False
+    W[1]["ok"] = True
+    assert plan.span_ok(W, 28.04, 29.41) is True
 
 
 def test_a_recast_never_lands_a_long_slot_on_a_picked_clip_s_banned_footage(fakes):
