@@ -240,7 +240,7 @@ def faces(kp):
     return (kp[..., 0, 2] > 0.6) & (kp[..., 1, 2] > 0.6) & (kp[..., 2, 2] > 0.6) & (kp[..., 1, 0] > kp[..., 2, 0])
 
 
-FACE_SCORE, FACE_H = 0.8, 0.03                    # a YuNet face that counts: detector score, height (of the frame)
+FACE_SCORE, FACE_H = 0.65, 0.03                   # a YuNet face that counts: detector score, height (of the frame)
 FACE_OWN = 0.3                                    # ... and a person's own: at least this x their build (frame heights)
 
 
@@ -262,17 +262,11 @@ def face_seen(d, times, boxes, kp):
             continue
         x0, y0, x1, y1 = (nb[f, :, k][:, None] for k in range(4))
         head = (cx[near] >= x0) & (cx[near] <= x1) & (cy[near] >= y0 - 0.02) & (cy[near] <= y0 + 0.4 * (y1 - y0))
-        # and theirs: a face their build's size (not a smaller one further back, showing past their head), with
-        # their own face points on it when the pose has any (persons.py's test)
+        # and theirs: a face their build's size, not a smaller one further back showing past their head (their
+        # own face points aren't asked for: the pose is 5 a second and a spinning head moves between scans)
         build = np.maximum.reduce([0.45 * (x1 - x0) / aspect, 0.12 * (y1 - y0), np.zeros_like(x0)])
         sized = fh[near][None, :] >= FACE_OWN * build
-        kp_ = kp[f, :, :5]
-        pts = (kp_[..., 2] >= 0.3)[:, :, None]                                    # (P, 5, 1)
-        dx = kp_[..., 0:1] / d["aw"] - cx[near][None, None, :]
-        dy = kp_[..., 1:2] / d["ah"] - cy[near][None, None, :]
-        on = (pts & (np.abs(dx) <= 0.9 * fh[near] / aspect) & (np.abs(dy) <= 0.9 * fh[near])).any(1)   # (P, n)
-        own = on | ~pts.any(1)                                                    # (no face points: box alone)
-        out[f] = np.nan_to_num(head).astype(bool).__and__(sized & own).any(1)
+        out[f] = (np.nan_to_num(head).astype(bool) & sized).any(1)
     return out
 
 
