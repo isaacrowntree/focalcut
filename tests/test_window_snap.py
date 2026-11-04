@@ -286,3 +286,16 @@ def test_a_long_shot_no_stretch_passes_over_whole_is_cut_in_two_onto_passing_foo
     assert shots[2]["unit"]["clip"] != shots[1]["unit"]["clip"]
     for s in shots[1:3]:
         assert plan.span_ok(W[s["unit"]["id"]], s["src_in"], s["src_in"] + s["length"]) is True
+
+
+def test_portrait_recast_alternatives_keep_day_footage_out_of_the_night():
+    # Fiesta: a night "show" shot framing badly was recast onto C2147, a daytime clip, in the climax
+    day, night = rec("DAY", [5.0]), rec("NIGHT", [5.0])
+    day["unit"]["day"] = True
+    for r in (day, night):
+        r["moments"][0]["plays_p"] = 0.9
+    seq = [placed("C", 2.0), placed("A", 10.0), placed("C", 20.0)]
+    seq[1]["act"] = "climax"
+    assert [r["id"] for r, _ in plan._alternatives(seq, 1, [day, night], "portrait")] == ["NIGHT"]
+    seq[1]["act"] = "arrival"
+    assert [r["id"] for r, _ in plan._alternatives(seq, 1, [day, night], "portrait")] == ["DAY"]

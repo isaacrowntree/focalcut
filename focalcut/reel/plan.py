@@ -3115,11 +3115,13 @@ def _recastable(s):
 
 
 def _alternatives(seq, i, moments, fmt):
-    """Unused moments of the same kind of footage as seq[i] (its category first, then by rank) not beside its clip."""
-    u = seq[i]["unit"]
+    """Unused moments of the same kind of footage as seq[i] (its category first, then by rank) not beside its clip;
+    day footage (unit "day") only in the day, and the day's arrival only day footage."""
+    u, act = seq[i]["unit"], seq[i]["act"]
     used = [(x["unit"]["id"], x["t"]) for x in seq]
     near = {seq[k]["unit"]["clip"] for k in (i - 1, i + 1) if 0 <= k < len(seq)}
-    cands = [(r, m) for r in moments if r["role"] == u["role"] and r["unit"]["clip"] not in near
+    fits_act = lambda ru: bool(ru.get("day")) == (act in DAY_ACTS) or not (ru.get("day") or act == "arrival")
+    cands = [(r, m) for r in moments if r["role"] == u["role"] and r["unit"]["clip"] not in near and fits_act(r["unit"])
              for m in r["moments"] if not m.get("pick") and m.get("plays_p", 1.0) >= RECAST
              and all(not (uid == r["id"] and abs(t - m["t"]) < 4.0) for uid, t in used)]
     cands.sort(key=lambda rm: (rm[0]["unit"].get("category") != u.get("category"), -rk(rm[1], fmt)))
@@ -3605,7 +3607,7 @@ def split_shot(s):
     f1 = round((s["rec_in"] + b1 * beat) * FPS) - round(s["rec_in"] * FPS)
     L1 = round(b1 * beat, 4)
     t = dict(s, beats=s["beats"] - b1, length=round(s["length"] - L1, 4), frames=s["frames"] - f1,
-             rec_in=round(s["rec_in"] + L1, 3), src_in=round(s["src_in"] + L1, 3), half=2)
+             rec_in=round(s["rec_in"] + L1, 3), src_in=round(s["src_in"] + L1, 3), half=2, fx=list(s["fx"]))
     t["t"] = s["t"] if t["src_in"] <= s["t"] <= t["src_in"] + t["length"] else round(t["src_in"] + t["length"] / 2, 3)
     t["peak"] = round(t["t"] - t["src_in"], 3)
     s.update(beats=b1, length=L1, frames=f1, half=1)
