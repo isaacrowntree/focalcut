@@ -1260,12 +1260,13 @@ PIECE_FULL = 0.55        # picks cut to pieces fill at most this share of an act
 PIECE_KEEP = 0.7         # a pick's second piece goes in only if it plays at least this well against its best one
 
 
-def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None, close=None):
+def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None, close=None, clip_share=None):
     """Long picks cut down to their best part (reel.json plan.<fmt> "pick_hold": beats): each in-out longer than
     hold beats becomes its best hold-beat window, scored on the moment curve (moments.curve: moves, quality, framing
     in this format, activity, face) -- the editor chose the stretch, the planner the best of it. Then the picks are
     condensed to a share of the reel's beats (budget, default half), shared out by subject: a clip with many picks
-    keeps its best ones up to its share (at least one; 1.5x the even share, at least two pieces' worth), and a long
+    keeps its best ones up to its share (at least one; clip_share -- cfg "pick_clip_share", default 1.5 -- times
+    the even share, at least two pieces' worth; raise it when the editor's picks bunch in a few clips), and a long
     pick earns a second piece of itself when there is room and it plays nearly as well (PIECE_KEEP). Each piece is a
     shot of its own (include_adds spreads them through the act, between the rest of the footage). The ending (cfg
     "ending": [file, from, to, ...]) and the close (cfg "close": [unit id, time]) are left whole and aren't counted.
@@ -1315,7 +1316,7 @@ def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None,
     room = budget * (share or 0.5)
     n = lambda z: max(1, round((z[2] - z[1]) / beat))
     subj = Counter(c["subject"] for c in cands)
-    cap = max(2 * hold, 1.5 * room / len(subj))
+    cap = max(2 * hold, (clip_share or 1.5) * room / len(subj))
     keep = {id(c): [c["wins"][0]] for c in cands}
     load = Counter()
     for c in cands:
@@ -2984,7 +2985,7 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     if cfg.get("pick_hold") and picks:                       # long picks: their best part; many: condensed
         b = music.get("beat") or float(np.median(np.diff(music["beats"])))
         condensed = pick_pieces(project, moments, fmt, b, cfg["pick_hold"], music["length"] / b, cfg.get("pick_share"),
-                                 cfg.get("ending"), cfg.get("close"))
+                                 cfg.get("ending"), cfg.get("close"), cfg.get("pick_clip_share"))
     kp = project.config.get("keep")
     kp = "plan_{fmt}_rendered.json" if kp is True else kp    # true: the last cut rendered (render.run saves it)
     kp = kp and kp.format(fmt=project.cut_name(fmt))
