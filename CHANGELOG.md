@@ -21,6 +21,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Effect masks keep what the matte joins to the subject. BiRefNet's edge was clipped to SAM 3's "person" mask, which
+  stops at the arm, so a skirt flung out, a fan or a serpentine dancer's wing on its wand was cut out of the glow,
+  outline and aura. Matte pieces joined to the subject now stay in, within the crop around it; pieces apart from it
+  still stay out.
+
 - Renders carry BT.709 primaries, transfer and matrix in the H.264 stream. Raw-RGB encodes (transitions, effects,
   the visualiser) were untagged, and Android read them as BT.2020 at 4K and oversaturated them.
 - People coverage no longer rates footage that is banned anyway (a picked clip's other footage): a portrait plan

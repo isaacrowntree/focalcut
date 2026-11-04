@@ -459,6 +459,26 @@ def test_effect_mask_edges_come_from_the_matte_inside_the_sam_mask():
     assert a[5, 5] < 0.05 and a[60, 150] < 0.05                          # the rest of the frame stays out
 
 
+def test_effect_mask_keeps_what_the_matte_joins_to_the_subject():
+    pytest.importorskip("torch")
+    from focalcut.fx.masks import refine
+    h, w = 300, 400
+    coarse = np.zeros((h, w), np.float32); coarse[100:220, 160:220] = 1  # SAM's "person": the body, not the costume
+    frame = np.zeros((h, w, 3), np.uint8)
+
+    def fake(crop):                                                      # in frame coordinates (the crop starts at 68, 128)
+        ch, cw = crop.shape[:2]
+        m = np.zeros((h, w), np.float32)
+        m[100:220, 160:220] = 1                                          # the body
+        m[90:110, 132:162] = 1                                           # a wing held out past the arm, joined to it
+        m[200:215, 232:242] = 1                                          # something else salient, not touching
+        return m[68:68 + ch, 128:128 + cw]
+    a = refine(frame, coarse, matte=fake)
+    assert a[160, 190] > 0.95                                            # the subject
+    assert a[96, 136] > 0.9                                              # the wing, well past SAM's mask
+    assert a[207, 237] < 0.1                                             # the stray piece stays out
+
+
 # --- the editor's picks, activity, the review page ------------------------------------------------------------------
 
 def picks_rec(export_t0=10.0):

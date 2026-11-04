@@ -63,7 +63,9 @@ def performer_masks(frames, prompt="person", group=False):
 
 def refine(frame, coarse, matte=None):
     """Clean edges: BiRefNet's matte on a crop around the subject (so it sees them at high resolution), kept to the
-    subject by SAM 3's mask grown a little; SAM's eroded core fills in anyone the matte half-misses (a partner)."""
+    subject by SAM 3's mask grown a little, and past it wherever the matte stays joined to the subject: a "person"
+    mask stops at the arm, so a skirt flung out, a fan or a serpentine dancer's wing on its wand would be cut off.
+    SAM's eroded core fills in anyone the matte half-misses (a partner)."""
     if matte is None:
         from ..reel.subject_engine import matte
     H, W = coarse.shape
@@ -80,6 +82,10 @@ def refine(frame, coarse, matte=None):
     def ell(n):
         return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * n + 1, 2 * n + 1))
     gate = cv2.GaussianBlur(cv2.dilate(hard, ell(2 * r)).astype(np.float32), (0, 0), r)
+    n, lab = cv2.connectedComponents((out > 0.5).astype(np.uint8))      # the matte's pieces touching the subject
+    joined = np.isin(lab, [k for k in np.unique(lab[hard > 0]) if k]) if n > 1 else np.zeros((H, W), bool)
+    reach = cv2.GaussianBlur(cv2.dilate(joined.astype(np.uint8), ell(r)).astype(np.float32), (0, 0), r / 2)
+    gate = np.maximum(gate, reach)                                     # (dilated: the matte's own soft edge stays)
     core = cv2.GaussianBlur(cv2.erode(hard, ell(2 * r)).astype(np.float32), (0, 0), r)
     return np.maximum(out * gate, core)
 
