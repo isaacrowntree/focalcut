@@ -49,3 +49,42 @@ def test_by_hand_pulls_match_a_unit_or_a_stretch():
     assert X.by_hand(cfg, u("C2150"), {"src_in": 18.0, "length": 4.0}) == 0.05
     assert X.by_hand(cfg, u("C2150"), {"src_in": 21.0, "length": 2.0}) is None
     assert X.filt(0) == "" and X.filt(0.05).startswith("format=yuv422p10le,lutyuv=y=")
+
+
+def lifted(lift, x):
+    """The night lift's lutyuv expression evaluated on legal-range luma x."""
+    e = X.lift_curve(lift).replace("\\,", ",").replace("if(", "IF(").replace("between(", "BETWEEN(")
+    val = X.BLACK + x * (X.WHITE - X.BLACK)
+    y = eval(e, {"IF": lambda c, a, b: a if c else b, "BETWEEN": lambda v, a, b: a <= v <= b, "val": val})
+    return (y - X.BLACK) / (X.WHITE - X.BLACK)
+
+
+@pytest.mark.parametrize("lift", [0.03, X.LIFT_MAX, 0.15])
+def test_lift_raises_the_mids_keeps_black_and_white_and_never_reverses(lift):
+    xs = np.linspace(-0.05, X.TOP, 400)
+    ys = np.array([lifted(lift, x) for x in xs])
+    assert lifted(lift, 0.0) == pytest.approx(0.0) and lifted(lift, 1.0) == pytest.approx(1.0)
+    assert lifted(lift, -0.05) == pytest.approx(-0.05) and lifted(lift, 1.05) == pytest.approx(1.05)
+    assert lifted(lift, 0.5) == pytest.approx(0.5 + lift, abs=1e-4)
+    assert (np.diff(ys) > 0).all() and (ys >= xs - 1e-9).all()
+
+
+def test_lift_only_for_dark_night_subjects_more_the_darker():
+    dark = dict(frame=0.12, face=0.15, face_clip=0.0, subject=0.0, top=0.6, mid=0.1)
+    assert 0 < X.lift_amount(dark) <= X.LIFT_MAX
+    assert X.lift_amount(dict(dark, frame=0.5)) == 0                   # daytime: never lifted
+    assert X.lift_amount(dict(dark, face=0.45)) == 0                   # already lit
+    assert X.lift_amount(dict(dark, face=0.35)) < X.lift_amount(dict(dark, face=0.30)) <= X.LIFT_MAX
+    assert X.lift_amount(dict(dark, face=None)) > 0                    # no face: the people's median
+    assert X.lift_amount(dict(dark, face=None, mid=None)) == 0
+    assert X.lift_amount(dark, top=0.02) == 0.02
+
+
+def test_lift_config_and_filter():
+    assert X.lift_config({}) is None and X.lift_config({"lift": False}) is None
+    assert X.lift_config({"lift": True}) == (X.NIGHT_TARGET, X.LIFT_MAX)
+    assert X.lift_config({"lift": {"max": 0.05}}) == (X.NIGHT_TARGET, 0.05)
+    assert X.by_hand({"lift_by": {"C2037": 0}}, {"id": "C2037", "clip": "C2037"}, {"src_in": 1, "length": 1},
+                     "lift_by") == 0
+    assert X.filt(0, 0) == "" and "between(val" in X.filt(0, 0.05)
+    assert X.filt(0.05, 0.05) == X.filt(0.05)                          # a pulled shot is never also lifted

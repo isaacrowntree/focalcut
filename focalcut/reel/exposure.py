@@ -7,14 +7,20 @@ player clips away but a highlight shoulder brings back.
 
 The fix is a smooth curve on luma only (lutyuv): untouched below KNEE; above it the brightest superwhite lands on
 legal white (white stays white) and the upper midtones -- sunlit skin -- come down by up to pull. Shadows, midtones and colour stay as shot; it is a repair on the worst shots, not a
-look. Night shots (a dark frame overall) are never touched.
+look. Night shots (a dark frame overall) are never pulled.
+
+At night the opposite: a subject that sits dark (its faces, or the people from the head down where no face is seen)
+is lifted a little -- a midtone lift on luma, black stays black and white stays white, so the room stays night and
+the noise floor stays down -- by more the darker it is, up to "lift_max".
 
 reel.json "exposure" (off unless set):
     {"auto": true,                      measure every shot and pull the blown-out ones
      "max": 0.12,                       the most any shot is pulled (of white, at the dip's deepest)
      "pull": {"C2148": 0.15,            by hand, per unit or per stretch of it ("<unit>@<in>-<out>", source time);
               "C2150@0:10-0:20": 0.1},  0 keeps a shot untouched
-     "skip": ["C2153_crowd-dusk"]}      never pulled
+     "skip": ["C2153_crowd-dusk"],      never pulled or lifted
+     "lift": true,                      night shots: lift dark subjects (or {"target": 0.4, "max": 0.08})
+     "lift_by": {"C2037": 0}}           by hand, like "pull" (0 keeps a shot as shot)
 """
 from __future__ import annotations
 
@@ -34,6 +40,8 @@ MAX = 0.12                        # the most a shot is pulled (the curve stays m
 CLIP = 0.97                       # a pixel this bright (of legal white) has lost its detail on a player
 DAY = 0.30                        # frame mean luma at or above this: a daytime shot
 LIT = 0.55                        # faces darker than this (median) are in shade or backlit: nothing blown to fix
+NIGHT_TARGET = 0.40              # a night subject's level (faces, else the median of the people) lifted toward this
+LIFT_MAX = 0.08                   # the most a night shot is lifted (at mid-grey: a dark face ~2/3 of it)
 SAMPLES = (0.2, 0.5, 0.8)         # where in the shot to look
 GRAB_W = 960
 
@@ -84,7 +92,7 @@ def _cut(y, b):
 def measure(project, unit, src_in, length):
     """The subject's exposure over a shot: frame (mean luma of the whole frame: day or night), subject (share of
     the subject's pixels past CLIP, from the top of the faces down), face (median face luma, None if no face is seen), face_clip, top (99.5th
-    percentile of the subject)."""
+    percentile of the subject), mid (median of the subject's pixels)."""
     times = [src_in + length * k for k in SAMPLES]
     rows = []
     for t, (box, faces) in zip(times, regions(project, unit, times), strict=True):
@@ -98,7 +106,8 @@ def measure(project, unit, src_in, length):
         rows.append(dict(frame=float(y.mean()), subject=float((s >= CLIP).mean()) if s.size else 0.0,
                          face=float(np.median(fp)) if fp.size else None,
                          face_clip=float((fp >= CLIP).mean()) if fp.size else None,
-                         top=float(np.percentile(s, 99.5)) if s.size else 0.0))
+                         top=float(np.percentile(s, 99.5)) if s.size else 0.0,
+                         mid=float(np.median(s)) if s.size else None))
     if not rows:
         return None
     faces = [r["face"] for r in rows if r["face"] is not None]
@@ -107,7 +116,8 @@ def measure(project, unit, src_in, length):
                 subject=round(float(np.mean([r["subject"] for r in rows])), 4),
                 face=round(float(np.mean(faces)), 3) if faces else None,
                 face_clip=round(float(np.mean(fclip)), 3) if fclip else None,
-                top=round(float(np.mean([r["top"] for r in rows])), 3))
+                top=round(float(np.mean([r["top"] for r in rows])), 3),
+                mid=round(float(np.mean(mids)), 3) if (mids := [r["mid"] for r in rows if r["mid"] is not None]) else None)
 
 
 def amount(m, top=MAX):
@@ -119,6 +129,24 @@ def amount(m, top=MAX):
     if bad < 1.0:
         return 0.0
     return round(min(top, 0.03 + 0.04 * (bad - 1.0)), 3)
+
+
+def lift_amount(m, target=NIGHT_TARGET, top=LIFT_MAX):
+    """How far to lift a measured night shot: 0 by day and for subjects already at target; more the darker the
+    subject (its faces, else the people's median), never past top."""
+    if not m or m["frame"] >= DAY:
+        return 0.0
+    level = m["face"] if m.get("face") is not None else m.get("mid")
+    if level is None or level >= target:
+        return 0.0
+    return round(min(top, 0.01 + 0.4 * (target - level)), 3)
+
+
+def lift_curve(lift):
+    """lutyuv luma expression (10-bit values): x + 4 * lift * x * (1 - x) over legal range -- lift at mid-grey, less
+    toward black and white, which stay where they are (as does anything outside legal range)."""
+    g = 4 * lift / (WHITE - BLACK)
+    return f"if(between(val\\,{BLACK}\\,{WHITE})\\,val+{g:.8f}*(val-{BLACK})*({WHITE}-val)\\,val)"
 
 
 def curve(pull):
@@ -134,9 +162,11 @@ def curve(pull):
             f"-{dip:.2f}*pow(sin(PI*(val-{k:.1f})/{d:.1f})\\,2))")
 
 
-def filt(pull):
-    """The shot's highlight pull for its filter chain ('' for none)."""
-    return f"format=yuv422p10le,lutyuv=y={curve(pull)}" if pull and pull > 0 else ""
+def filt(pull, lift=0.0):
+    """The shot's highlight pull, or its night lift, for its filter chain ('' for neither)."""
+    if pull and pull > 0:
+        return f"format=yuv422p10le,lutyuv=y={curve(pull)}"
+    return f"format=yuv422p10le,lutyuv=y={lift_curve(lift)}" if lift and lift > 0 else ""
 
 
 def _key(unit, s):
@@ -152,29 +182,46 @@ def _span(k):
     return u, sec[0], sec[1]
 
 
-def by_hand(cfg, unit, s):
-    """A pull reel.json sets for this shot (its unit, or a stretch of it the shot overlaps), else None."""
-    for k, v in (cfg.get("pull") or {}).items():
+def by_hand(cfg, unit, s, key="pull"):
+    """A pull (or with key "lift_by", a lift) reel.json sets for this shot (its unit, or a stretch of it the shot
+    overlaps), else None."""
+    for k, v in (cfg.get(key) or {}).items():
         u, a, b = _span(k)
         if u in (unit["id"], unit.get("clip")) and (a is None or (s["src_in"] < b and s["src_in"] + s["length"] > a)):
             return float(v)
     return None
 
 
+def lift_config(cfg):
+    """reel.json "exposure" "lift" as (target, max), or None when night shots are left as shot."""
+    v = cfg.get("lift")
+    if not v:
+        return None
+    v = v if isinstance(v, dict) else {}
+    return float(v.get("target", NIGHT_TARGET)), float(v.get("max", LIFT_MAX))
+
+
 def mark(project, plan, workers=6):
-    """Give each shot of the plan its "pull" (removed where there is none), measuring what is not cached
-    (focalcut/reel/exposure.json). Returns {shot index: pull} for the shots pulled."""
+    """Give each shot of the plan its "pull" and its night "lift" (removed where there is none), measuring what is
+    not cached (focalcut/reel/exposure.json). Returns {shot index: (pull, lift)} for the shots changed."""
     cfg = config(project)
     shots = plan["shots"]
     for s in shots:
         s.pop("pull", None)
+        s.pop("lift", None)
     if not cfg:
         return {}
+    lc = lift_config(cfg)
     cache_f = project.path("exposure.json")
     cache = json.load(open(cache_f)) if os.path.exists(cache_f) else {}
     skip = set(cfg.get("skip") or [])
-    want = [s for s in shots if cfg.get("auto") and s["unit"]["id"] not in skip and _key(s["unit"], s) not in cache
-            and by_hand(cfg, s["unit"], s) is None]
+
+    def needs(s):                                            # measured (with the subject's median, for the lift)
+        m = cache.get(_key(s["unit"], s), False)
+        auto = cfg.get("auto") and by_hand(cfg, s["unit"], s) is None
+        lift = lc and by_hand(cfg, s["unit"], s, "lift_by") is None
+        return (auto and m is False) or (lift and (m is False or (m and "mid" not in m)))
+    want = [s for s in shots if s["unit"]["id"] not in skip and needs(s)]
     if want:
         with ThreadPoolExecutor(workers) as ex:
             got = list(ex.map(lambda s: measure(project, s["unit"], s["src_in"], s["length"]), want))
@@ -188,10 +235,17 @@ def mark(project, plan, workers=6):
         u = s["unit"]
         if u["id"] in skip:
             continue
+        m = cache.get(_key(u, s))
         p = by_hand(cfg, u, s)
         if p is None and cfg.get("auto"):
-            p = amount(cache.get(_key(u, s)), float(cfg.get("max", MAX)))
+            p = amount(m, float(cfg.get("max", MAX)))
         if p:
             s["pull"] = min(round(p, 3), 0.18)
-            out[i] = s["pull"]
+        lf = by_hand(cfg, u, s, "lift_by")
+        if lf is None and lc and not s.get("pull"):
+            lf = lift_amount(m, *lc)
+        if lf and not s.get("pull"):
+            s["lift"] = min(round(lf, 3), 0.15)
+        if s.get("pull") or s.get("lift"):
+            out[i] = (s.get("pull", 0.0), s.get("lift", 0.0))
     return out

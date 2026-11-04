@@ -81,8 +81,8 @@ def shot_filter(s, fmt, project=None, dur=None):
     if c:
         f.append(f"crop=w=iw*{c['w']}:h=ih*{c['h']}:x=({crop_expr(c['path'], 1)})*iw-ow/2"
                  f":y=({crop_expr(c['path'], 2)})*ih-oh/2")
-    if s.get("pull"):                                       # a blown-out subject: its highlights pulled back
-        f.append(exposure.filt(s["pull"]))
+    if s.get("pull") or s.get("lift"):                      # a blown-out subject: its highlights pulled back;
+        f.append(exposure.filt(s.get("pull"), s.get("lift")))   # a dark one at night: lifted
     p = s.get("speed") or 1.0                               # the shot's pace (plan "pace"): source read p times
     if p != 1.0 and not s.get("fx"):                        # as fast, the nearest frame each (a speed effect
         f.append(f"setpts=PTS/{p:.4f}")                     # applies it inside its curve instead)
@@ -97,6 +97,7 @@ def key(s, beat=None):
                     s.get("crop"), s["peak"], s.get("logo"), s.get("stab"), s["kind"] == "closeup", beat, 3, hw.enc_tag()]
                    + ([s["span"]] if s.get("span") else []) + ([s["logo_image"]] if s.get("logo_image") else [])
                    + ([["pull", s["pull"]]] if s.get("pull") else [])
+                   + ([["lift", s["lift"]]] if s.get("lift") else [])
                    + (["speed2"] if any(n in SPEED_FX for n in s.get("fx") or ()) else [])   # (1x tails)
                    + ([["pace", s["speed"]]] if (s.get("speed") or 1.0) != 1.0 else []),
                    sort_keys=True)
@@ -283,10 +284,12 @@ def run(project, fmt, draft=False, cut=None) -> str:
     W, H = SIZE[fmt]
     outdir, work = project.path("out"), project.path("work", cut)
     os.makedirs(outdir, exist_ok=True); os.makedirs(work, exist_ok=True)
-    pulled = exposure.mark(project, plan)                    # reel.json "exposure": blown-out subjects
-    if pulled:
-        print(f"[reel] {cut}: highlights pulled on {len(pulled)} shots: "
-              + ", ".join(f"{i} {plan['shots'][i]['unit']['id']} {p:.2f}" for i, p in pulled.items()))
+    marked = exposure.mark(project, plan)                    # reel.json "exposure": blown-out / dark subjects
+    for what, k in (("highlights pulled", 0), ("night subjects lifted", 1)):
+        done = {i: v[k] for i, v in marked.items() if v[k]}
+        if done:
+            print(f"[reel] {cut}: {what} on {len(done)} shots: "
+                  + ", ".join(f"{i} {plan['shots'][i]['unit']['id']} {v:.2f}" for i, v in done.items()))
     from .velocity import speed_tails
     for line in speed_tails(plan):
         print(f"[reel] {cut}: WARNING speed: {line}")

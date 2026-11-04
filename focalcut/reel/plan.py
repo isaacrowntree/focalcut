@@ -3388,7 +3388,7 @@ def end_clean(project, fmt, shots, moments, cfg, W=None):
             if span_ok(W.get(r["id"]), a, a + L2) is False:
                 continue
             fill = {key: v for key, v in s.items() if key not in (
-                "span", "ending", "close", "open", "logo", "logo_image", "title", "speed", "pull", "snapped",
+                "span", "ending", "close", "open", "logo", "logo_image", "title", "speed", "pull", "lift", "snapped",
                 "recast_window", "transition", "land", "land_fits", "reaction", "add", "person", "reuse")}
             fill.update(unit=ru, t=m["t"], kind=m.get("kind", "crowd"), rank=rk(m, fmt), src_in=a, peak=round(m["t"] - a, 3),
                         beats=k, length=round(L2, 4), rec_in=round(at, 3), frames=edge(rec0 + s["length"]) - edge(at),
