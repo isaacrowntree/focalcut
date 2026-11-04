@@ -249,3 +249,16 @@ def test_a_recast_never_lands_a_long_slot_on_a_picked_clip_s_banned_footage(fake
     s = shots[1]
     assert s["unit"]["id"] != "P" or not plan.in_bans(s["src_in"], s["length"], s["unit"])
     assert plan.in_bans(1.0, 29.0, p["unit"]) and not plan.in_bans(28.0, 3.0, p["unit"])
+
+
+def test_the_unit_with_the_fewest_slots_it_fits_is_covered_first(fakes):
+    # Fiesta portrait: C2144 (any slot) took the one short slot before C2146 (passes only over ~1.4 s) was tried
+    long_, short = placed("A", 9.0), placed("A", 30.0)
+    long_.update(length=2.7, beats=6)
+    short.update(length=0.9, beats=2)
+    shots = [placed("A", 1.0), short, placed("B", 2.0), long_, placed("B", 6.0), placed("A", 40.0), placed("B", 9.0)]
+    W = {"D": [win(20.0, 21.2, True), win(19.0, 22.6, False)], "E": grid(0.3, 40.0)}
+    e = rec("E", [10.0])
+    e["moments"][0].update(score=0.9, score_p=0.9)            # the better unit: tried first by rank alone
+    assert sorted(plan.ensure_units(None, "portrait", shots, [e, rec("D", [20.5])], CFG, W)) == ["D", "E"]
+    assert short["unit"]["id"] == "D"

@@ -3204,7 +3204,8 @@ def ensure_units(project, fmt, shots, moments, cfg, W=None):
         miss = [r for r in miss if r["id"] not in weak]
     miss.sort(key=lambda r: -max(rk(m, fmt) for m in passing(r)))
     placed, stuck = [], []
-    for r in miss:
+
+    def options(r):                                          # its best moment, and the slots it fits: {slot: in}
         m = max(passing(r), key=lambda m: rk(m, fmt))
         clip = r["unit"]["clip"]
 
@@ -3236,13 +3237,22 @@ def ensure_units(project, fmt, shots, moments, cfg, W=None):
             cands = [x for x in cands if not in_bans(x, L, u) and span_ok(wins, x, x + L) is True]
             return min(cands, key=lambda x: abs(x - src)) if cands else None
         at = {i: start(i) for i in idx}
-        idx = [i for i in idx if at[i] is not None]
-        if not idx:
+        return m, {i: x for i, x in at.items() if x is not None}
+    while miss:                                              # the unit with the fewest slots it fits goes first
+        opts = {r["id"]: options(r) for r in miss}           # (one that passes only over a short stretch isn't
+        for r in [r for r in miss if not opts[r["id"]][1]]:  # left without one by a unit any slot would take)
             stuck.append(r["id"])
-            continue
+        miss = [r for r in miss if opts[r["id"]][1]]
+        if not miss:
+            break
+        r = min(miss, key=lambda r: len(opts[r["id"]][1]))   # (ties: the best first, as miss is sorted)
+        miss.remove(r)
+        (m, at), u = opts[r["id"]], r["unit"]
+        idx = list(at)
+        wanted = Counter(i for q in miss for i in opts[q["id"]][1])   # a slot fewer of the others fit, first
         cat = u.get("category")
-        i = max(idx, key=lambda i: (shots[i]["unit"].get("category") == cat, have[shots[i]["unit"]["id"]],
-                                    -shots[i]["rank"]))
+        i = max(idx, key=lambda i: (shots[i]["unit"].get("category") == cat, -wanted[i],
+                                    have[shots[i]["unit"]["id"]], -shots[i]["rank"]))
         s = shots[i]
         x = shot(r, m, fmt, s["beats"], act=s["act"])
         L, src = s["length"], at[i]
