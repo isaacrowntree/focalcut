@@ -165,6 +165,8 @@ class Picker:
             out["span"] = m["span"]
             if m.get("whole"):                               # (the best part of a longer one: pick_pieces)
                 out["whole"] = m["whole"]
+            if m.get("close"):                               # (the reel's close: no quick cut replays it)
+                out["close"] = True
         return out
 
     def pool(self, recs, kinds=None, min_frame=0.0, usable=False):
@@ -681,10 +683,12 @@ def close_last(seq, beat, close):
     fill it (finale_reuse does it when they do): moved to the end, its old place quick cuts, held at real speed for
     all its footage up to 2 x CLOSE_BEATS. The beats it adds come off the plain shots afterwards (the grid's
     evening out). Returns whether it was found."""
-    want = next((s for s in seq if s.get("span") and s["unit"]["id"].startswith(close[0])
-                 and s["span"][0] - 0.5 <= close[1] <= s["span"][1]), None)
+    mine = [s for s in seq if s.get("span") and not s.get("reuse") and s["unit"]["id"].startswith(close[0])
+            and s["span"][0] - 0.5 <= close[1] <= s["span"][1]]
+    want = max(mine, key=lambda s: s["span"][1] - s["span"][0], default=None)   # the pick itself, not a cut of it
     if want is None:
         return False
+    want["close"] = True                                     # (quick cuts never take its footage)
     k = seq.index(want)
     if k != len(seq) - 1:
         seq.remove(want)
@@ -769,7 +773,7 @@ def quick_cuts(seq, n, act, beat, at=None, size=1, hold=True):
     it, never at its ends): first the ends that pick_beat trimmed off them (footage not seen yet), then the openings
     of picks two acts or more away (never footage seen moments ago); daytime footage (unit "day") never into a night
     act, and the day's own picks first in the day (DAY_ACTS); crowd and B-roll picks first, never the same clip twice in a row. A cut is plain footage: no logo, title, effect or ending from the pick it comes from."""
-    picks = [s for s in seq if s.get("span") and not s.get("reuse")]
+    picks = [s for s in seq if s.get("span") and not s.get("reuse") and not s.get("close") and not s.get("ending")]
     if not n or not picks:
         return
     used = {(s["unit"]["id"], round(s["span"][0], 2)) for s in seq if s.get("reuse")}
@@ -2092,6 +2096,12 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
     cover_all(P, seq, recs, home, confined=bool(sets))
     pbeat = pick_beat(recs, music["beat"], video_beats - budget["teaser"] - min(budget["finale"], 8))
     P.hold_adds = False
+    if cfg.get("close"):                                     # the close: no quick cut ever replays its footage
+        c = cfg["close"]
+        for r in recs:
+            for m in r["moments"] if r["unit"]["id"].startswith(c[0]) else ():
+                if m.get("span") and m["span"][0] - 0.5 <= c[1] <= m["span"][1]:
+                    m["close"] = True
     include_adds(P, seq, recs, home, pbeat, budget, insert=bool(cfg.get("pick_hold")))
     cov = cover_people(P, seq, recs, home, cfg.get("people"), fmt, music["beat"], cfg.get("climax_from"), allowed,
                        rate)
@@ -3313,8 +3323,9 @@ def span_ok(wins, a, b, tol=SNAP_TOL):
 def window_exempt(s):
     """Shots chosen by hand or by config, which play where they were put: the editor's picks (and the close among
     them), the ending, the opening, logos and titles. (cover_people's shots are marked add too, with person: those
-    the planner chose.)"""
-    return bool(s.get("span") or (s.get("add") and not s.get("person")) or s.get("ending") or s.get("open") or s.get("logo")
+    the planner chose; so are quick cuts replaying a pick, reuse: the planner put them there, framed its own way.)"""
+    return bool((s.get("span") and not s.get("reuse")) or (s.get("add") and not s.get("person")) or s.get("ending")
+                or s.get("open") or s.get("logo")
                 or s.get("logo_image") or s.get("title"))
 
 
@@ -3323,8 +3334,9 @@ END_FILL = ("band", "singer", "stage", "dj", "crowd")   # what follows a last sh
 
 def end_clean(project, fmt, shots, moments, cfg, W=None):
     """The reel's last shot ends before its subject leaves (the camera panning off onto nothing ends nothing): when
-    its end fails the scrub, it is cut back to the longest stretch that ends well (two beats or more; an editor's
-    chosen ending too, its moment kept), and the beats it gives up go to a shot after it -- the band, the stage, the
+    its end fails the scrub, it is cut back to the longest stretch that ends well (two beats or more; a configured
+    ending too, its moment kept -- an editor's pick, the close among them, always plays as chosen), and the beats it
+    gives up go to a shot after it -- the band, the stage, the
     DJ or the crowd (END_FILL), else any footage passing there. Changes shots in place; returns the filler or None."""
     W = load_windows(project, fmt) if W is None and project is not None else W
     if not shots or not W:
@@ -3332,6 +3344,8 @@ def end_clean(project, fmt, shots, moments, cfg, W=None):
     s = shots[-1]
     u, p = s["unit"], s.get("speed") or 1.0
     wins = W.get(u["id"])
+    if s.get("span") and not s.get("reuse"):                 # an editor's pick (the close) plays as chosen
+        return None
     if any(f in SPEED and f != "fit" for f in s["fx"]) or span_ok(wins, s["src_in"], s["src_in"] + s["length"] * p) is not False:
         return None
     beat = s["beat"]
@@ -3432,7 +3446,8 @@ def window_fails(shots, W):
     for i, s in enumerate(shots):
         a, L = played(s)
         if span_ok(W.get(s["unit"]["id"]), a, a + L) is False:
-            out.append((i, s, "pick" if s.get("span") or (s.get("add") and not s.get("person")) else "ending" if s.get("ending")
+            out.append((i, s, "pick" if (s.get("span") and not s.get("reuse")) or (s.get("add") and not s.get("person"))
+                        else "ending" if s.get("ending")
                         else "opening" if s.get("open") or s.get("logo") else "title" if window_exempt(s) else None))
     return out
 
