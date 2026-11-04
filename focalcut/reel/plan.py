@@ -2278,7 +2278,9 @@ def _reframe(project, unit, t0, length, fmt):
     stem = project.path("scores", unit["score"])
     d = _cached(stem + ".npz", FR.load, (stem + "_focus.npz", stem + "_subject.npz"))
     d = dict(d) if d is not None else None                 # (the extras below are per call)
-    yf = _cached(project.path("scores", f"faces_{unit['id']}.npz"), lambda f: dict(np.load(f)))
+    dense = project.path("scores", f"faces_dense_{unit['id']}.npz")    # the persons step's scan (every 0.5 s,
+    yf = _cached(dense if os.path.exists(dense) else project.path("scores", f"faces_{unit['id']}.npz"),   # multi-scale)
+                 lambda f: dict(np.load(f)))                            # over the people step's ~1 s one
     if d is not None and yf is not None and not unit.get("rotate"):   # the unit's face scan (people step)
         d["yf"] = yf
     rf = _cached(project.path("scores", f"role_{unit['id']}.npz"), lambda f: dict(np.load(f)))
