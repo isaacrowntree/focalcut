@@ -2846,6 +2846,11 @@ def in_point(s, beat):
     return clear_of_bans(t, L, u)
 
 
+def in_bans(t, L, u):
+    """A shot at [t, t + L] plays some of the editor's banned stretches (more than 0.1 s of one)."""
+    return any(min(t + L, b) - max(t, a) > 0.1 for a, b in u.get("bans") or [])
+
+
 def clear_of_bans(t, L, u):
     """A shot's in-point moved, as little as it can, so its window [t, t + L] stays out of the editor's banned
     stretches (picks "ban": a moment just outside a ban would otherwise bring the banned shot back). Unchanged when
@@ -3159,7 +3164,7 @@ def ensure_units(project, fmt, shots, moments, cfg, W=None):
             cands = [x for w in wins if w["ok"] for x in (w["t0"], w["t1"] - L, w["t0"] - SNAP_TOL,
                                                            w["t1"] - L + SNAP_TOL)]
             cands = [round(x, 3) for x in cands if u["t0"] <= x <= u["t1"] - L]
-            cands = [x for x in cands if clear_of_bans(x, L, u) == x and span_ok(wins, x, x + L) is True]
+            cands = [x for x in cands if not in_bans(x, L, u) and span_ok(wins, x, x + L) is True]
             return min(cands, key=lambda x: abs(x - src)) if cands else None
         at = {i: start(i) for i in idx}
         idx = [i for i in idx if at[i] is not None]
@@ -3379,7 +3384,7 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None):
 
     def fits_at(s, u, dt, a, L):                             # the shot moved by dt: inside the unit, clear, passing
         na = round(a + dt, 3)                                # as it will be stored
-        return (u["t0"] - 1e-6 <= na and na + L <= u["t1"] + 1e-6 and clear_of_bans(na, L, u) == na
+        return (u["t0"] - 1e-6 <= na and na + L <= u["t1"] + 1e-6 and not in_bans(na, L, u)
                 and span_ok(W.get(u["id"]), na, na + L) is True and free(u["id"], na, na + L, s))
 
     def passing(r):                                          # (the windows judge the exact span: assess's

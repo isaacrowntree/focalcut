@@ -234,3 +234,18 @@ def test_a_window_running_past_the_shots_end_doesnt_judge_its_end():
     assert plan.span_ok(W, 93.167, 94.769) is True            # 93.7-94.9 fails after the shot has ended
     W[1]["ok"] = False
     assert plan.span_ok(W, 93.167, 94.769) is False           # its own last stretch fails: it does
+
+
+def test_a_recast_never_lands_a_long_slot_on_a_picked_clip_s_banned_footage(fakes):
+    # EN: a 29 s slot recast onto C2103, whose footage outside Isaac's short picks only_picks bans; clear_of_bans
+    # hands back the in-point unchanged when nothing fits, so "unchanged" must not read as "clear"
+    W = {"A": grid(0.3, 40.0, bad=[(0.0, 40.0)]), "C": grid(0.3, 40.0), "P": grid(0.3, 60.0)}
+    slot = placed("A", 1.0)
+    slot.update(length=29.0, beats=60)
+    shots = [placed("C", 2.0), slot, placed("C", 20.0)]
+    p = rec("P", [1.5, 30.0])
+    p["unit"]["bans"] = [[-1.0, 28.0], [31.0, 61.0]]          # only 28-31 s is the editor's
+    plan.snap_windows(None, "portrait", shots, [rec("A", [10.7], ok=False), p], CFG, W)
+    s = shots[1]
+    assert s["unit"]["id"] != "P" or not plan.in_bans(s["src_in"], s["length"], s["unit"])
+    assert plan.in_bans(1.0, 29.0, p["unit"]) and not plan.in_bans(28.0, 3.0, p["unit"])
