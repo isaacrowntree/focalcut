@@ -2377,10 +2377,11 @@ def _reframe(project, unit, t0, length, fmt):
                       np.maximum(np.nan_to_num(pb[..., 0] / d["aw"], nan=9), bx[:, None] - cw / 2), 0, None) / cw
         fseen = FR.face_seen(d, pt[sel][inn], pb, d["kp"][ii])
         wall = (np.nan_to_num(y0n, nan=1) <= 0.03) & (np.nan_to_num(y1n) - np.nan_to_num(y0n) >= 0.75) & \
-            (cov >= 0.5) & ~fseen
+            (cov >= 0.5) & ~fseen & (fseen.mean(0) < WALL_FACE)[None, :]   # (a dancer mid-turn shows a face
+        # most of the shot: only someone with no face for nearly all of it is a wall)
         cut, body = sliced(d, ii, union[inn], bx, by, cw, ch)
         hide, head, back, torn = shown(pb / [d["aw"], d["ah"], d["aw"], d["ah"], 1], d["kp"][ii], fseen, who, seen.any(1),
-                                 bx, by, cw, ch)
+                                 bx, by, cw, ch, ah=d["ah"])
         stats = dict(present=float((ov >= 0.6).mean()), inside=float(((ov >= 0.92) & ~edge).mean()),
                      face=float((face[inn] & (ov >= 0.6)).mean()),
                      action=float(np.where(seen, act, 0).max(1).mean()), churn=churn,
@@ -2617,7 +2618,10 @@ def sliced(d, ii, union, bx, by, cw, ch):
     return float((others.max(1) > 0.5)[has].mean()), float(inside[:, [11, 12]].any(1)[has].mean())
 
 
-def shown(nb, kp, fseen, who, has, bx, by, cw, ch):
+WALL_FACE = 0.25         # a person showing a face in this share of a shot's frames or more is never a wall
+
+
+def shown(nb, kp, fseen, who, has, bx, by, cw, ch, ah=None):
     """Over a shot, as shares of the frames the crop has a subject: hide -- someone with no face to the camera (a back)
     covering most of a partner's box, and no face of either seen (a back-turned follow hiding the lead, whatever her
     hair is doing); head -- the subject's head (box top) inside the crop, not cut off by its top; back -- the subject
@@ -2641,6 +2645,11 @@ def shown(nb, kp, fseen, who, has, bx, by, cw, ch):
                 & ~fseen[:, i] & ~fseen[:, j]
     f = np.arange(F)
     top = y0[f, who]
+    if ah:                                                  # the head from its own points (nose, eyes, ears), less
+        hk = kp[f, who, :5]                                 # a forehead: a close dancer's raised arms put her box
+        hy = np.where(hk[..., 2] > 0.3, hk[..., 1] / float(ah), np.nan)   # top at the frame's edge, not her head
+        kt = np.nanmin(np.where(np.isnan(hy).all(1, keepdims=True), 9, hy), 1) - 0.04
+        top = np.where(kt < 8, kt, top)
     head = (top >= by - ch / 2 - 0.02) & (top > 0.01)       # (cut by the strip's top, or the camera's own)
     # the subject's own partner: anyone whose box overlaps the subject's by a third of its own -- their faces count,
     # bystanders' faces elsewhere in the strip don't

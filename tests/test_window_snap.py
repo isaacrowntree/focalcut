@@ -215,3 +215,15 @@ def test_daytime_footage_in_a_night_act_is_recast_with_night_footage(fakes):
     _, recast, _ = plan.snap_windows(None, "portrait", shots, [rec("A", [10.7]), rec("C", [30.0]), rec("D", [15.0])],
                                      CFG, W)
     assert recast == 1 and shots[1]["unit"]["id"] == "D"
+
+
+def test_a_close_dancer_with_arms_up_keeps_her_head_by_her_face_points():
+    import numpy as np
+    F = 5
+    nb = np.zeros((F, 1, 5))
+    nb[:, 0, :4] = (0.4, 0.0, 0.6, 1.0)                       # raised arms: the box touches the frame's top
+    kp = np.zeros((F, 1, 17, 3))
+    kp[:, 0, :5] = [500, 250, 0.9]                            # face points a quarter of the way down (ah = 1000)
+    args = (nb, kp, np.ones((F, 1), bool), np.zeros(F, int), np.ones(F, bool), np.full(F, 0.5), np.full(F, 0.5), 0.3, 1.0)
+    assert plan.shown(*args, ah=1000)[1] == 1.0
+    assert plan.shown(*args)[1] == 0.0                        # by the box top alone: cut off
