@@ -111,14 +111,18 @@ def measure(frame, faces, kp, boxes, sx, sy):
         B[s] = b[0] * sx / W, b[1] * sy / H, b[2] * sx / W, b[3] * sy / H
         _, _, _, _, sh = head_region(b, kp[i])
         own = np.array([kp[i][q, :2] for q in range(5) if kp[i][q, 2] >= 0.3])   # their face and ear points
+        front = np.array([kp[i][q, :2] for q in range(3) if kp[i][q, 2] >= 0.3])  # nose, eyes: the face side
         best, hits = None, 0
         for n, f in enumerate(faces):
-            if n in used or not len(own):
+            if n in used or not len(front):         # (only ears seen: from behind, whatever face shows past them)
                 continue
             gr = 0.6 * f[2]                         # a face of theirs holds their own face points (grown: the pose is
-            #                                         5 a second, a spinning head moves between)
+            #                                         5 a second, a spinning head moves between) -- a nose or an eye
             fx0, fy0, fx1, fy1 = (f[0] - gr) / sx, (f[1] - gr) / sy, (f[0] + f[2] + gr) / sx, (f[1] + f[3] + gr) / sy
-            k = int(((own[:, 0] >= fx0) & (own[:, 0] <= fx1) & (own[:, 1] >= fy0) & (own[:, 1] <= fy1)).sum())
+
+            def held(p):
+                return (p[:, 0] >= fx0) & (p[:, 0] <= fx1) & (p[:, 1] >= fy0) & (p[:, 1] <= fy1)   # noqa: B023
+            k = int(held(own).sum()) if held(front).any() else 0
             if k >= 1 and FACE_FIT[0] * sh <= f[2] / sx <= FACE_FIT[1] * sh and (k, f[14]) > (hits, faces[best][14] if best is not None else 0):
                 best, hits = n, k
         if best is None:

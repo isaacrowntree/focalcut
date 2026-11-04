@@ -66,3 +66,15 @@ def test_person_rules():
     assert WI.person_reasons(_track(True, yaw=4.0), 0, 2.5, {"yaw": 3.0})[0] == ["profile"]   # unless asked
     assert WI.person_reasons(_track(True, rel=0.03), 0, 2.5, {"rel": 0.01})[0] == []   # reel.json person_rules
     assert WI.person_reasons(None, 0, 2.5) == ([], {})
+
+
+def test_foreground_backs():
+    tr = _track(np.array([[0, 1]] * 6, bool), slots=2)               # someone at the lens, back to it; a smiling
+    tr["box"][:, 0] = [0.1, 0.0, 0.8, 1.0]                            # face well behind them
+    tr["box"][:, 1] = [0.8, 0.4, 0.9, 0.8]
+    assert "front" in WI.person_reasons(tr, 0, 2.5)[0]
+    tr = _track(np.array([[0, 1]] * 6, bool), slots=2)               # a couple of a size, her back to the camera
+    assert WI.person_reasons(tr, 0, 2.5)[0] == ["back"]               # the whole window: a back
+    tr = _track(np.array([[0, 1], [1, 1], [0, 1], [1, 1], [0, 1], [0, 1]], bool), slots=2)
+    assert WI.person_reasons(tr, 0, 2.5)[0] == []                     # turning through: fine
+

@@ -37,8 +37,10 @@ FORMATS = ("landscape", "portrait")
 # their partner does for "face" (else "back": a couple mid-turn passes, a back with nobody's face doesn't); the
 # subject's face turned no more than "yaw" eye-distances on the median (else "profile"; off by default, None: an
 # engaged face side-on is not a back -- concepts §19 -- and the landmark measure is rough); and the subject's face at least "rel" of the frame's sharpest detail on the median
-# (else "soft")
-PERSON = dict(face=0.4, subject=0.2, yaw=None, rel=0.12, present=0.5)
+# (else "soft"); and the biggest body in frame -- covering "front_area" of it and "front_ratio" times anyone beyond
+# them -- not a back for "front" of the window (else "front": behind a foreground back)
+PERSON = dict(face=0.4, subject=0.2, yaw=None, rel=0.12, present=0.5, front=0.4, front_area=0.12, front_ratio=1.8,
+              turned=0.1)
 
 
 def person_reasons(pr, t0, t1, rules=None):
@@ -60,6 +62,25 @@ def person_reasons(pr, t0, t1, rules=None):
     vals["face"] = [round(x, 2) for x in shares]
     if shares and (max(shares) < R["face"] or (shares[0] < R["subject"] and max(shares[1:], default=0) < R["face"])):
         why.append("back")
+    # behind a foreground back: the biggest body in frame (box area, at least "front_area" of the frame) shows no
+    # face of theirs in "front" of the samples or more -- whatever the people beyond them are doing (§19)
+    b = pr["box"][m]
+    area = np.nan_to_num((b[..., 2] - b[..., 0]) * (b[..., 3] - b[..., 1]))
+    big = area.argmax(1)
+    k = np.arange(len(big))
+    second = np.sort(area, 1)[:, -2] if area.shape[1] > 1 else np.zeros(len(big))
+    near = (second > 0) & (area[k, big] >= R["front_ratio"] * second)   # up at the lens, the others beyond: not a
+    fb = near & (area[k, big] >= R["front_area"]) & ~face[k, big]      # dancer mid-spin, nor one of a couple
+    vals["front"] = round(float(fb.mean()), 2)
+    if fb.mean() >= R["front"] and "back" not in why:
+        why.append("front")
+    # one of the pair, as near the camera as anyone, with their back to it for the whole window (an embrace with her
+    # back filling the frame; a lead's back throughout): a back, though their partner's face shows (§19)
+    med = np.array([np.median(area[present[:, s], s]) if present[:, s].any() else 0.0 for s in range(present.shape[1])])
+    for s in range(present.shape[1]):
+        if present[:, s].mean() >= R["present"] and face[present[:, s], s].mean() <= R["turned"] \
+                and med[s] >= R["front_ratio"] ** -1 * med.max() and med[s] >= R["front_area"] and "back" not in why:
+            why.append("back")
     seen = face[:, 0]
     if seen.any():
         yaw = float(np.nanmedian(np.abs(pr["yaw"][m][seen, 0])))
