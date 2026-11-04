@@ -43,3 +43,11 @@ def test_one_clip_can_be_paced_by_its_id():
     c["unit"].update(id="C1994-02", clip="C1994")
     P.pace_shots([a, b, c], {"pace": {"C1991": 1.2, "C1994": 1.2}})
     assert a["speed"] == 1.2 and "speed" not in b and c["speed"] == 1.2
+
+
+def test_pace_reports_what_changed_and_a_recast_slot_drops_the_old_pace():
+    a = shot("segments")
+    cfg = {"pace": {"segments": 1.15}}
+    assert P.pace_shots([a], cfg) == 1 and P.pace_shots([a], cfg) == 0
+    a["unit"] = dict(a["unit"], category="matinee")           # the slot now plays other footage
+    assert P.pace_shots([a], cfg) == 1 and "speed" not in a and a["src_in"] == round(10.7 - 0.7, 3)

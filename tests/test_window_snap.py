@@ -227,3 +227,10 @@ def test_a_close_dancer_with_arms_up_keeps_her_head_by_her_face_points():
     args = (nb, kp, np.ones((F, 1), bool), np.zeros(F, int), np.ones(F, bool), np.full(F, 0.5), np.full(F, 0.5), 0.3, 1.0)
     assert plan.shown(*args, ah=1000)[1] == 1.0
     assert plan.shown(*args)[1] == 0.0                        # by the box top alone: cut off
+
+
+def test_a_window_running_past_the_shots_end_doesnt_judge_its_end():
+    W = [win(92.7, 93.9, True), win(93.2, 94.4, True), win(93.7, 94.9, False), win(92.7, 95.1, True)]
+    assert plan.span_ok(W, 93.167, 94.769) is True            # 93.7-94.9 fails after the shot has ended
+    W[1]["ok"] = False
+    assert plan.span_ok(W, 93.167, 94.769) is False           # its own last stretch fails: it does

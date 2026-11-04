@@ -2904,10 +2904,12 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     if fmt == "portrait" and assess_shots:
         recast_placed(project, fmt, plan["shots"], moments, cfg)
     fm = [r for r in moments if fmt == "portrait" or r["orient"] == "landscape"]
+    pace_shots(plan["shots"], cfg)                            # first: a paced shot plays more source, judged so
     ensure_units(project, fmt, plan["shots"], fm, cfg)
     snap_windows(project, fmt, plan["shots"], fm, cfg)        # last: whichever pass placed it, on passing windows
     ensure_units(project, fmt, plan["shots"], fm, cfg)        # (a unit whose only shot that recast moves away)
-    pace_shots(plan["shots"], cfg)
+    if pace_shots(plan["shots"], cfg):                        # a slot that changed footage takes its own pace:
+        snap_windows(project, fmt, plan["shots"], fm, cfg)    # on passing windows at that length too
     end_clean(project, fmt, plan["shots"], fm, cfg)
     mo = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
     plan["units_total"] = len({r["id"] for r in mo})
@@ -3208,7 +3210,7 @@ def span_ok(wins, a, b, tol=SNAP_TOL):
         return None
     tol += 1e-3                                              # (in-points are kept to the millisecond)
     short = min(w["t1"] - w["t0"] for w in wins)
-    tail = [w for w in wins if w["t1"] - w["t0"] <= short + 1e-3 and w["t0"] >= a - tol and w["t1"] <= b + tol]
+    tail = [w for w in wins if w["t1"] - w["t0"] <= short + 1e-3 and w["t0"] >= a - tol and w["t1"] <= b + 0.05]
     if tail and short < b - a - tol and not max(tail, key=lambda w: w["t1"])["ok"]:
         return False                                         # it ends as the subject leaves: a long window passing
     cover = [w for w in wins if w["t0"] <= a + tol and w["t1"] >= b - tol]   # over it averages the pan-off away
@@ -3302,16 +3304,21 @@ def pace_shots(shots, cfg):
     on top of it, still never past the 1.5x cap. A plain shot reads its peak's moment as before (the source shifts
     so the move lands where it did); an editor's whole selection ("fit") plays as chosen."""
     rules = cfg.get("pace") or {}
+    changed = 0
     for s in shots:
-        s.pop("speed", None)
+        old = s.pop("speed", None) or 1.0
         p = next((float(v) for k, v in rules.items() if named(s["unit"], k) or fits(s["unit"], [k])), 1.0)
-        if p == 1.0 or "fit" in s["fx"]:
+        p = 1.0 if "fit" in s["fx"] else round(min(p, 1.5), 3)
+        if p != 1.0:
+            s["speed"] = p
+        if p == old:
             continue
-        s["speed"] = round(min(p, 1.5), 3)
+        changed += 1
         if not s.get("span") and not any(f in SPEED for f in s["fx"]):
-            u = s["unit"]
-            src = s["t"] - s["peak"] * s["speed"]                   # the peak's moment stays on the beat
-            s["src_in"] = round(min(max(src, u["t0"]), max(u["t1"] - s["length"] * s["speed"], u["t0"])), 3)
+            u = s["unit"]                                           # the peak's moment stays on the beat
+            src = s["t"] - s["peak"] * p
+            s["src_in"] = round(min(max(src, u["t0"]), max(u["t1"] - s["length"] * p, u["t0"])), 3)
+    return changed
 
 
 def played(s):
@@ -3468,7 +3475,7 @@ def window_report(project, fmt, plan):
     lines = []
     for i, s in mine:
         a, L = played(s)
-        lines.append(f"shot {i} {s['unit']['id']} {a:.2f}-{a + L:.2f}: every window there fails")
+        lines.append(f"shot {i} {s['unit']['id']} {a:.2f}-{a + L:.2f}: on failing windows (its end, or all that cover it)")
         print(f"[reel]   WARNING windows: {lines[-1]}")
     return lines
 
