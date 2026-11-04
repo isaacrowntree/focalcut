@@ -271,3 +271,18 @@ def test_the_unit_with_the_fewest_slots_it_fits_is_covered_first(fakes):
     e["moments"][0].update(score=0.9, score_p=0.9)            # the better unit: tried first by rank alone
     assert sorted(plan.ensure_units(None, "portrait", shots, [e, rec("D", [20.5])], CFG, W)) == ["D", "E"]
     assert short["unit"]["id"] == "D"
+
+
+def test_a_long_shot_no_stretch_passes_over_whole_is_cut_in_two_onto_passing_footage(fakes):
+    # Fiesta portrait arrival: 8-beat slots (3.7 s) on clips whose every 3.7 s stretch has a failing second
+    bad = [(t, t + 0.6) for t in range(2, 40, 3)]           # passing only in 2.4 s stretches
+    W = {"A": grid(0.3, 40.0, bad=bad), "C": grid(0.3, 40.0), "D": grid(0.3, 40.0, bad=bad)}
+    long_ = placed("A", 9.0)
+    long_.update(length=3.6, beats=8, frames=180, rec_in=10.0)
+    shots = [placed("C", 2.0), long_, placed("C", 20.0)]
+    plan.snap_windows(None, "portrait", shots, [rec("A", [10.0, 20.0]), rec("C", [5.0]), rec("D", [16.0])], CFG, W)
+    assert len(shots) == 4 and [s["beats"] for s in shots[1:3]] == [4, 4]
+    assert shots[1]["frames"] + shots[2]["frames"] == 180 and shots[2]["rec_in"] == round(10.0 + shots[1]["length"], 3)
+    assert shots[2]["unit"]["clip"] != shots[1]["unit"]["clip"]
+    for s in shots[1:3]:
+        assert plan.span_ok(W[s["unit"]["id"]], s["src_in"], s["src_in"] + s["length"]) is True

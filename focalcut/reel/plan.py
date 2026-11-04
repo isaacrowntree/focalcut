@@ -3469,14 +3469,15 @@ def window_fails(shots, W):
     return out
 
 
-def snap_windows(project, fmt, shots, moments, cfg, W=None):
+def snap_windows(project, fmt, shots, moments, cfg, W=None, split=True):
     """Every shot the planner chose (not the editor's picks, the ending, the opening) plays a stretch that passes
     the scrub in this format, whichever pass put it there (band inserts, people, quick cuts, landings, slides): one
     on failing windows moves along its own clip, as little as it can, onto passing ones (the move and its beat move
     with it); else it takes a passing moment of another unit of the same kind (a unit not in the reel yet first,
     never beside its own clip, day footage in the day; with song sets its own set's first), keeping its effect;
-    else it is logged. Returns
-    (slid, recast, stuck)."""
+    else a plain shot of SPLIT_BEATS or more is cut in two (the first half on its own clip, the second recast onto
+    another's), so a long slot no stretch passes over whole still plays footage that passes; else it is logged.
+    Returns (slid, recast, stuck)."""
     from . import shake
     W = load_windows(project, fmt) if W is None else W
     if not W:
@@ -3521,7 +3522,7 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None):
         return sorted({round(d, 3) for d in dts}, key=abs)
 
     slid = recast_n = 0
-    stuck = []
+    stuck, stuck_at = [], []
     todo = [(i, s) for i, s, why in window_fails(shots, W) if not why]
     late = [(i, s) for i, s in enumerate(shots) if s["unit"].get("day") and s["act"] not in DAY_ACTS
             and not window_exempt(s) and all(i != j for j, _ in todo)]     # daytime footage in a night act,
@@ -3530,7 +3531,7 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None):
         a, L = played(s)
         speedy = any(f in SPEED for f in s["fx"])
         rec = next((r for r in moments if r["id"] == u["id"]), None)
-        dt = None if (u.get("day") and s["act"] not in DAY_ACTS) else \
+        dt = None if (u.get("day") and s["act"] not in DAY_ACTS) or s.get("half") == 2 else \
             next((d for d in offsets(s, rec, u["id"], a, L, speedy) if fits_at(s, u, d, a, L)), None)
         if dt is not None:
             s.update(t=round(s["t"] + dt, 3), src_in=round(s["src_in"] + dt, 3), snapped=round(dt, 2))
@@ -3571,10 +3572,49 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None):
             recast_n += 1
             continue
         stuck.append(f"#{i} {u['id']}@{a:.1f}")
+        stuck_at.append(s)
+    halves = [s for s in stuck_at if split and s["beats"] >= SPLIT_BEATS and not s["fx"] and not s.get("velocity")
+              and "rec_in" in s and "frames" in s]                 # (placed shots only)
+    if halves:
+        for s in halves:
+            k = next(k for k, x in enumerate(shots) if x is s)
+            shots[k + 1:k + 1] = [split_shot(s)]
+        print(f"[reel] {fmt}: {len(halves)} long shots no stretch passes over whole cut in two")
+        d_slid, d_recast, stuck = snap_windows(project, fmt, shots, moments, cfg, W, split=False)
+        for k in range(len(shots) - 1, 0, -1):               # a second half nothing took: back into its first
+            x, prev = shots[k], shots[k - 1]
+            if x.get("half") == 2 and prev.get("half") == 1 and prev["unit"]["clip"] == x["unit"]["clip"]:
+                prev.update(beats=prev["beats"] + x["beats"], length=round(prev["length"] + x["length"], 4),
+                            frames=prev["frames"] + x["frames"])
+                del shots[k]
+        return slid + d_slid, recast_n + d_recast, stuck
     if slid or recast_n or stuck:
         print(f"[reel] {fmt}: {slid} shots slid onto passing windows, {recast_n} recast to another unit's"
               + (f"; none passes for {stuck}" if stuck else ""))
     return slid, recast_n, stuck
+
+
+SPLIT_BEATS = 4          # snap_windows: a stuck plain shot this long is cut in two
+
+
+def split_shot(s):
+    """Cut shot s in two on a beat, in place: s keeps the first half, the second (returned, half 2) plays on from
+    where it ends -- to be recast onto another clip (two halves of one clip side by side would cut to itself)."""
+    b1 = s["beats"] // 2
+    beat = s["beat"]
+    f1 = round((s["rec_in"] + b1 * beat) * FPS) - round(s["rec_in"] * FPS)
+    L1 = round(b1 * beat, 4)
+    t = dict(s, beats=s["beats"] - b1, length=round(s["length"] - L1, 4), frames=s["frames"] - f1,
+             rec_in=round(s["rec_in"] + L1, 3), src_in=round(s["src_in"] + L1, 3), half=2)
+    t["t"] = s["t"] if t["src_in"] <= s["t"] <= t["src_in"] + t["length"] else round(t["src_in"] + t["length"] / 2, 3)
+    t["peak"] = round(t["t"] - t["src_in"], 3)
+    s.update(beats=b1, length=L1, frames=f1, half=1)
+    if not s["src_in"] <= s["t"] <= s["src_in"] + L1:
+        s["t"] = round(s["src_in"] + L1 / 2, 3)
+    s["peak"] = round(s["t"] - s["src_in"], 3)
+    for x in (s, t):
+        x.pop("land", None); x.pop("land_fits", None)
+    return t
 
 
 def window_report(project, fmt, plan):
