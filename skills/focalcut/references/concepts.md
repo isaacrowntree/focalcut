@@ -220,6 +220,12 @@ the subject effects in `fx/subject.py` (`aura`, `neon`, `spotlight`, …).
   box within 0.3 s. ViTPose puts confident eyes on the backs of heads on the social floor, so the pose test
   `frame.faces(kp)` (nose and both eyes above 0.6, left eye right of right eye) is only the fallback. Run the
   `people` step (or at least its face scan) before planning a portrait cut of social dancing.
+- `plan.face_track`: when the body track's strip doesn't hold the shot's face (a crowd shot up close, where the pose
+  boxes lose the person or settle on the one beside them), the strip follows the face instead: the persons step's
+  dense face scan, only faces in the head of one of the shot's main people, and only one near the strip already
+  (the planner's subject, never a bigger face elsewhere). The face sits in the upper third; a second face that fits
+  shares the strip; a face too big for it zooms out. It takes over only when it holds a face for clearly more of
+  the shot (`FACE_GAIN` 0.25). On Electric Nation 2026's portrait reel it re-centred 45 of 142 shots.
 - `plan.reframe` returns the crop plus `present` (≥60% of the subject inside), `inside` (≥92% inside and not cut
   by the camera's edge) and `face`, each as a fraction of the shot.
   - The crop centre is smoothed over about 0.3 s in a narrow strip and 0.6 s otherwise.

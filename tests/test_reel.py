@@ -1694,3 +1694,21 @@ def test_the_close_ends_the_reel_when_picks_dont_fill_it():
     last = seq[-1]
     assert last["unit"]["id"] == "C9" and last["act"] == "finale" and last["fx"] == [] and last["beats"] == 8
     assert not close_last(seq, 0.5, ["C7", 1.0])
+
+
+def test_portrait_strip_moves_onto_the_subjects_face_when_the_body_track_misses_it():
+    from focalcut.reel import plan as P
+    grid = np.arange(0, 2.01, 0.1)
+    cw, ch = 0.32, 1.0
+    t = np.repeat(np.arange(-0.0, 2.01, 0.5), 2)
+    n = len(t) // 2
+    yf = dict(t=t, cx=np.tile([0.62, 0.15], n), cy=np.tile([0.3, 0.3], n), h=np.tile([0.2, 0.3], n),
+              score=np.full(len(t), 0.9))                   # the subject's face at x 0.62; a bigger one far left
+    x = np.full(len(grid), 0.45)                             # the body track's strip, left of the subject's face
+    y = np.full(len(grid), 0.5)
+    ft = P.face_track(yf, 0.0, 2.0, grid, x, y, cw, ch)
+    assert ft is not None and abs(float(np.median(ft["x"])) - 0.62) < 0.03   # onto their face, not the bigger one
+    assert ft["held"] >= 0.8
+    assert P.face_track(yf, 0.0, 2.0, grid, np.full(len(grid), 0.62), y, cw, ch) is None   # already on it: as is
+    far = dict(yf, cx=np.tile([0.9, 0.15], n))               # only faces far from the strip: someone else's
+    assert P.face_track(far, 0.0, 2.0, grid, x, y, cw, ch) is None

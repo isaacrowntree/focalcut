@@ -2444,6 +2444,13 @@ def _reframe(project, unit, t0, length, fmt):
     x = np.clip(smooth(sx, 3 if narrow else 6), cw / 2, 1 - cw / 2)   # ~0.3 / 0.6 s: like a camera operator
     # (the gaze shift is smoothed again on its own over ~1 s inside gaze(): a head turn doesn't whip the strip)
     y = np.clip(smooth(sy, 10), ch / 2, 1 - ch / 2)
+    ft = None
+    if narrow and person and not pan and "yf" in d:          # the strip off the face it should be on: follow the face
+        main = _cached(project.path("scores", f'persons_{unit["id"].replace("#", "-")}.npz'), lambda f: dict(np.load(f)))
+        ft = face_track(d["yf"], t0, length, grid, x, y, cw, ch, zz, main)
+        if ft is not None:
+            x, y, zz = ft["x"], ft["y"], zz * ft["zoom"]
+            cw, ch = cw0 / zz, ch0 / zz
     # how well the crop holds the subject over the shot itself: present (mostly in the crop), inside (wholly in it,
     # not cut by the crop or the camera's own edge) and face (a face to the camera, in the crop), as fractions
     inn = (pt[sel] >= t0) & (pt[sel] <= t0 + length)
@@ -2495,10 +2502,101 @@ def _reframe(project, unit, t0, length, fmt):
                      if not np.isnan(b[:, 1]).all() else 0.5)
         if pan:                                              # a pan passes people through its centre (cut-offs still
             stats.update(churn=0.0)                          # count: one person whole, never someone sliced)
-    return dict(w=round(cw, 4), h=round(ch, 4), z=round(zz, 3),
+    if ft is not None:                                       # on a face track: the face is the subject's, whatever
+        held = ft["held"]                                    # the body tracker made of the shot
+        stats.update(face=max(stats["face"], held), present=max(stats["present"], held),
+                     inside=max(stats["inside"], held), head=max(stats["head"], held))
+    return dict(w=round(cw, 4), h=round(ch, 4), z=round(zz, 3), **({"facetrack": True} if ft is not None else {}),
                 path=[[round(float(a), 2), round(float(b), 4), round(float(c), 4)]
                       for a, b, c in zip(grid[::2], x[::2], y[::2])],
                 **{k: round(v, 2) for k, v in stats.items()})
+
+
+FACE_SCORE, FACE_MIN_H = 0.75, 0.04   # face_track: a face this confident and this tall (of the frame) counts
+FACE_HELD = 0.8          # the strip already on the shot's main face this share of the scan: left as it is
+FACE_TOP = 0.32          # where the face sits down the strip (of its height): eyes in the upper third
+FACE_FIT = 0.4           # a face taller than this (of the strip) zooms out to fit, head and shoulders
+FACE_GAIN = 0.25         # the face track replaces the strip only if it holds a face this much more of the shot
+
+
+def face_tracks(yf, t0, t1, main=None):
+    """The faces of a stretch linked into tracks, one per person: [(times, cx, cy, h, score)], biggest first. A face
+    joins the track whose last face is near it (an eighth of the frame, a similar size), else starts its own. With
+    main (the persons step: t, box (K, 3, 4) frame fractions), only the faces of the people the shot is about count
+    -- in the head of one of their boxes -- never a bystander's face beside a subject whose own face is hidden."""
+    sel = (yf["t"] >= t0) & (yf["t"] <= t1) & (yf["score"] >= FACE_SCORE) & (yf["h"] >= FACE_MIN_H)
+    rows = sorted(zip(*(np.asarray(yf[k])[sel] for k in ("t", "cx", "cy", "h", "score"))))
+    if main is not None and len(main["t"]):
+        def theirs(t, cx, cy):
+            j = int(np.argmin(np.abs(main["t"] - t)))
+            if abs(main["t"][j] - t) > 0.3:
+                return False
+            for x0, y0, x1, y1 in main["box"][j]:
+                if not np.isnan(x0) and x0 <= cx <= x1 and y0 - 0.05 <= cy <= y0 + 0.4 * (y1 - y0):
+                    return True
+            return False
+        rows = [r for r in rows if theirs(r[0], r[1], r[2])]
+    tracks = []
+    for t, cx, cy, h, s in rows:
+        best, bd = None, 0.125
+        for tr in tracks:
+            lt, lx, ly, lh, _ = tr[-1]
+            dd = np.hypot(cx - lx, cy - ly)
+            if t > lt and t - lt <= 1.5 and dd < bd and 0.6 <= h / lh <= 1.6:
+                best, bd = tr, dd
+        (best.append if best is not None else lambda r: tracks.append([r]))((t, cx, cy, h, s))
+    tracks = [tuple(np.array(v) for v in zip(*tr)) for tr in tracks]
+    return sorted(tracks, key=lambda tr: -float((tr[3] * tr[4]).sum()))
+
+
+def face_track(yf, t0, length, grid, x, y, cw, ch, zz=1.0, main=None):
+    """The portrait strip onto the shot's main face, when the body tracker's strip misses it (concepts §12): a crowd
+    shot up close, where the pose boxes lose the person or settle on the one beside them. Only the faces of the
+    shot's main people count (the persons step, when it has run). The main face is the
+    biggest, steadiest one over the shot (size x confidence x time seen); a second face that fits beside it shares
+    the strip (a couple, two friends), the main one weighted. The face sits in the upper third; one too big for the
+    strip zooms out. Only a face near the strip already (the planner's subject: three quarters of its width) is
+    followed; a bigger face elsewhere is someone else. None when the strip already holds the main face (FACE_HELD of the scan), no face is seen, or the
+    new strip doesn't hold a face for clearly more of the shot (FACE_GAIN) than the old one.
+    Returns x, y on grid, the zoom factor (<= 1: out), and held: the share of the shot the face is in the new strip."""
+    tr = face_tracks(yf, t0 - 0.25, t0 + length + 0.25, main)
+    near = [k for k in tr if (np.abs(k[1] - np.interp(k[0] - t0, grid, x)) <= 0.75 * cw).mean() >= 0.5]
+    if not near:                                             # the planner's subject keeps the shot: only their own
+        return None                                          # face re-centres it, never someone else's beside them
+    t, cx, cy, h, _ = near[0]
+    if len(t) < max(1, 0.4 * (length / 0.5)):                 # seen for under ~40% of the shot: not the shot's face
+        return None
+    tt = t - t0
+    held = (np.abs(cx - np.interp(tt, grid, x)) <= cw / 2 - h * 0.35) & (np.abs(cy - np.interp(tt, grid, y)) <= ch / 2 - h * 0.6)
+    if held.mean() >= FACE_HELD:
+        return None
+    zoom = max(min(1.0, FACE_FIT * ch / max(float(np.median(h)), 1e-3)), 1 / zz)   # a big close face: the strip
+    #                                                         widens to fit it, as far as the frame allows
+    cw2, ch2 = cw / zoom, ch / zoom
+    mx = cx.copy()
+    for t2, cx2, _cy2, h2, _ in near[1:2]:                    # a partner beside them, both in the strip
+        near = np.interp(tt, t2 - t0, cx2, left=np.nan, right=np.nan)
+        ok = ~np.isnan(near) & (np.abs(near - cx) + (h + np.interp(tt, t2 - t0, h2)) * 0.5 < 0.85 * cw2)
+        if ok.mean() >= 0.5 and float(np.median(h2)) >= 0.6 * float(np.median(h)):
+            mx = np.where(ok, 0.6 * cx + 0.4 * np.nan_to_num(near), cx)
+    k = np.exp(-0.5 * (np.arange(-9, 10) / 3) ** 2); k /= k.sum()   # ~0.3 s, as the body track is smoothed
+    xs = np.convolve(np.pad(np.interp(grid, tt, mx), 9, mode="edge"), k, mode="valid")
+    ys = np.convolve(np.pad(np.interp(grid, tt, cy + (0.5 - FACE_TOP) * ch2), 9, mode="edge"), k, mode="valid")
+    xs, ys = np.clip(xs, cw2 / 2, 1 - cw2 / 2), np.clip(ys, ch2 / 2, 1 - ch2 / 2)
+    shot = max(1, int(round(length / 0.5)))
+
+    def cover(xp, yp, cwp, chp):                             # share of the shot a confident face is in the strip
+        seen = set()
+        for t2, cx2, cy2, h2, _ in tr:
+            tt2 = t2 - t0
+            on = (tt2 >= 0) & (tt2 <= length) & (np.abs(cx2 - np.interp(tt2, grid, xp)) <= cwp / 2 - h2 * 0.35) & \
+                (np.abs(cy2 - np.interp(tt2, grid, yp)) <= chp / 2 - h2 * 0.6)
+            seen.update(np.round(tt2[on] * 2).astype(int).tolist())
+        return min(1.0, len(seen) / shot)
+    was, now = cover(x, y, cw, ch), cover(xs, ys, cw2, ch2)
+    if now < was + FACE_GAIN:                                # no clear gain: the body tracker's strip stays
+        return None
+    return dict(x=xs, y=ys, zoom=zoom, held=round(now, 2))
 
 
 FILL_GOOD = 0.55         # window_ok: a subject this tall in the crop (of its height) or more scores in full

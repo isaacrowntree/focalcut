@@ -21,6 +21,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Portrait strips follow the subject's face when the body track misses it (`plan.face_track`): on close crowd shots
+  the pose boxes lost the person or settled on the one beside them, and the strip showed a shoulder, a back or the
+  gap between people. Only the shot's main people's faces count, and only one near the strip already, so a bigger
+  face beside a masked or turned subject never takes the shot.
+
 - Effect masks keep what the matte joins to the subject. BiRefNet's edge was clipped to SAM 3's "person" mask, which
   stops at the arm, so a skirt flung out, a fan or a serpentine dancer's wing on its wand was cut out of the glow,
   outline and aura. Matte pieces joined to the subject now stay in, within the crop around it; pieces apart from it
