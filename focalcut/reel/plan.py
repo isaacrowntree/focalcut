@@ -3539,6 +3539,8 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None, split=True):
     todo = [(i, s) for i, s, why in window_fails(shots, W) if not why]
     late = [(i, s) for i, s in enumerate(shots) if s["unit"].get("day") and s["act"] not in DAY_ACTS
             and not window_exempt(s) and all(i != j for j, _ in todo)]     # daytime footage in a night act,
+    late += [(i, s) for i, s in enumerate(shots) if not window_exempt(s) and in_bans(*played(s), s["unit"])
+             and all(i != j for j, _ in todo + late)]                      # or footage banned since it was placed
     for i, s in sorted(todo + late, key=lambda x: x[0]):                    # whichever pass put it there
         u = s["unit"]
         a, L = played(s)
@@ -3785,10 +3787,44 @@ def coverage_report(project, fmt, plan):
         print(f"[reel]     left out {r['id']}: {why}")
 
 
+def refill(project, fmt, base):
+    """Re-cut by refilling an earlier plan (reel.json "refill"): every shot stays where it was, except those whose
+    footage is banned now (the editor's bans and "reject" stretches added since), which take passing footage --
+    their own clip a little earlier or later first, else another clip's -- the way snap_windows moves any shot. So
+    a review round replaces only what was rejected; a full re-plan reshuffles half the cut and brings in shots
+    nobody has looked at."""
+    picks = project.picks()
+    cfg = config(project, fmt)
+    portrait_rules(cfg)
+    moments = [r for r in copy.deepcopy(project.load("moments.json")) if project.in_cut(r["unit"])]
+    if picks:
+        apply_picks(moments, picks, only=cfg.get("only_picks", True))
+    picks_only(moments, project.config.get("picks_only", ()))
+    plan = copy.deepcopy(base)
+    units = {r["unit"]["id"]: r["unit"] for r in moments}
+    for s in plan["shots"]:
+        u = units.get(s["unit"]["id"])
+        if u is not None:
+            s["unit"] = dict(s["unit"], bans=u.get("bans") or [])
+    banned = sum(1 for s in plan["shots"] if not window_exempt(s) and in_bans(*played(s), s["unit"]))
+    fm = [r for r in moments if fmt == "portrait" or r["orient"] == "landscape"]
+    slid, recast_n, stuck = snap_windows(project, fmt, plan["shots"], fm, cfg)
+    print(f"[reel] {project.cut_name(fmt)}: refilled from the earlier plan: {banned} banned shots"
+          f" ({slid} slid, {recast_n} recast, {len(stuck)} stuck {stuck})")
+    return plan
+
+
 def run(project, fmt, stinger_len=0.0) -> dict:
     from .flow import Flow
     fl = Flow(project)
-    plan = build(project, fmt, project.load(project.music_file), project.load("moments.json"), stinger_len, fl.direction)
+    rf = project.config.get("refill")
+    rf = "plan_{fmt}_rendered.json" if rf is True else rf      # true: the last cut rendered
+    rf = rf and rf.format(fmt=project.cut_name(fmt))
+    if rf and os.path.exists(project.path(rf)):
+        plan = refill(project, fmt, project.load(rf))
+    else:
+        plan = build(project, fmt, project.load(project.music_file), project.load("moments.json"), stinger_len,
+                     fl.direction)
     fl.save()
     plan["format"] = fmt
     project.dump(f"plan_{project.cut_name(fmt)}.json", plan)

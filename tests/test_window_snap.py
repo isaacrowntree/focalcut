@@ -299,3 +299,42 @@ def test_portrait_recast_alternatives_keep_day_footage_out_of_the_night():
     assert [r["id"] for r, _ in plan._alternatives(seq, 1, [day, night], "portrait")] == ["NIGHT"]
     seq[1]["act"] = "arrival"
     assert [r["id"] for r, _ in plan._alternatives(seq, 1, [day, night], "portrait")] == ["DAY"]
+
+
+def test_a_shot_on_footage_banned_since_it_was_placed_moves_off_it(fakes):
+    W = {"A": grid(0.3, 40.0), "B": grid(0.3, 40.0)}
+    shots = [placed("B", 2.0), placed("A", 10.0), placed("B", 20.0)]
+    shots[1]["unit"]["bans"] = [[9.5, 12.5]]                  # passing windows, but the editor rejected it
+    slid, recast, stuck = plan.snap_windows(None, "portrait", shots, [rec("A", [30.0]), rec("B", [5.0])], CFG, W)
+    s = shots[1]
+    assert (slid, recast, stuck) == (1, 0, [])
+    assert s["unit"]["id"] == "A" and not plan.in_bans(s["src_in"], s["length"], s["unit"])
+
+
+def test_refill_replaces_only_the_rejected_shots_of_an_earlier_plan(fakes, monkeypatch):
+    W = {k: grid(0.3, 40.0) for k in "ABC"}
+    monkeypatch.setattr(plan, "load_windows", lambda pr, fmt: W)
+    monkeypatch.setattr(plan, "config", lambda pr, fmt: dict(CFG))
+
+    class P:
+        def __init__(self):
+            self.config = {}
+
+        def picks(self):
+            return {"A": {"ban": ["0:09.5-0:12.5"]}}
+
+        def load(self, name):
+            return [rec("A", [10.0, 30.0]), rec("B", [5.0]), rec("C", [5.0, 25.0])]
+
+        def in_cut(self, u):
+            return True
+
+        def cut_name(self, fmt):
+            return fmt
+
+    base = {"shots": [placed("B", 2.0), placed("A", 10.0), placed("C", 20.0), placed("A", 30.0)]}
+    out = plan.refill(P(), "portrait", base)["shots"]
+    assert [(s["unit"]["id"], s["src_in"]) for s in out if s is not out[1]] == [("B", 2.0), ("C", 20.0), ("A", 30.0)]
+    s = out[1]                                                # the rejected one alone took other footage
+    assert not (s["unit"]["id"] == "A" and plan.in_bans(s["src_in"], s["length"], {"bans": [[9.5, 12.5]]}))
+    assert base["shots"][1]["src_in"] == 10.0                 # the earlier plan itself is left as it was
