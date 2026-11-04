@@ -1373,6 +1373,23 @@ def test_pick_hold_cuts_picks_to_pieces_between_the_rest_of_the_footage(tmp_path
         assert any(not s.get("span") and s["unit"]["id"] in picks for s in plan["shots"])   # the rest of it too
 
 
+def test_an_act_of_picks_cut_to_pieces_never_piles_its_spare_beats_onto_one_shot(tmp_path):
+    # picks in most clips, cut to 3 beats, the rest of each picked clip out (only_picks): the beats a pick frees go to
+    # plain shots up to SPREAD_MAX, quick cuts of the picks' unseen parts and the picks' own whole in-outs -- never a
+    # 30 s filler (EN: a 60-beat shot)
+    pr, music, moments = fake_reel(tmp_path)
+    picks = {f"U{i:02d}": {"add": [f"0:{t:02d}-0:{t + 6}" for t in (10, 30, 50)]} for i in range(16) if i % 4 != 3}
+    for fmt in ("landscape", "portrait"):
+        pr.config["plan"] = {fmt: {"pick_hold": 3}}
+        plan = P.build(pr, fmt, music, moments, stinger_len=0.0, picks=picks, assess_shots=False)
+        shots, beat = plan["shots"], plan["beat"]
+        assert max(s["beats"] for s in shots if not s.get("span")) <= P.SPREAD_MAX
+        assert all(s["beats"] * beat <= (s.get("whole") or s["span"])[1] - (s.get("whole") or s["span"])[0] + beat
+                   for s in shots if s.get("span") and not s.get("reuse") and not s.get("ending"))
+        assert not any(not s.get("span") and s["unit"]["id"] in picks for s in shots)      # only the picks of them
+        assert sum(s["beats"] for s in shots) == round(plan["video_length"] / beat)
+
+
 def test_marking_a_pick_as_the_ending_overrides_reel_json(tmp_path):
     pr, music, moments = fake_reel(tmp_path)
     assert P.pick_ending({"_how": "x", "U02": {"end": "1:01.5-1:03", "add": ["1:01.5-1:03"]}}) == ("U02", 61.5, 63.0)

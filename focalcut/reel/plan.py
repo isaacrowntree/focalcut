@@ -472,9 +472,9 @@ def plain(x):
         and not x.get("logo") and not x.get("add") and not x.get("featured")
 
 
-def picks_once(seq):
+def picks_once(seq, beat=None):
     """The editor's picks take precedence: each plays once (a repeat's beats go to the shot before it, or after it at
-    an act's start), never sped up (slow motion is fine: FAST effects come off). A pick that is also the configured
+    an act's start; with picks cut to pieces, absorb keeps them off any one shot), never sped up (slow motion is fine: FAST effects come off). A pick that is also the configured
     ending plays as the ending: its other copies go. Changes seq in place."""
     seen = {(s["unit"]["id"], tuple(s["span"])) for s in seq if s.get("ending") and s.get("span")}
     i = 0
@@ -487,11 +487,65 @@ def picks_once(seq):
             k = (s["unit"]["id"], tuple(s["span"]))
             if k in seen and not s.get("ending") and len(seq) > 1:
                 j = i - 1 if i > 0 and seq[i - 1]["act"] == s["act"] else i + 1 if i + 1 < len(seq) else i - 1
+                if beat:                                     # picks cut to pieces: kept off any one shot
+                    seq.pop(i)
+                    absorb(seq, s, s["beats"], beat, at=min(i, len(seq) - 1))
+                    continue
                 seq[j]["beats"] += s["beats"]
                 seq.pop(i)
                 continue
             seen.add(k)
         i += 1
+
+
+SPREAD_MAX = 8           # a plain shot takes a pick's spare beats up to this; past it they go to quick cuts
+
+
+def spread(seq, near, n, cap=None, top=None):
+    """n beats given out one at a time to the shots near (nearest first) still under cap beats (PLAIN_HOLD); when all
+    are at cap, the cap goes up one, to top at most -- a pick's spare beats never pile onto one shot. Returns the
+    beats left over (top reached: none if top is None). Changes seq in place."""
+    cap = cap or PLAIN_HOLD
+    while n > 0 and near:
+        j = next((j for j in near if seq[j]["beats"] < cap), None)
+        if j is None:
+            if top is not None and cap >= top:
+                break
+            cap += 1
+            continue
+        seq[j]["beats"] += 1; n -= 1
+    return n
+
+
+def absorb(seq, s, n, beat, at=None):
+    """n spare beats freed beside shot s (an editor's pick, with picks cut to pieces), kept off any one
+    shot: spread over the act's plain shots up to SPREAD_MAX, then quick cuts of the picks' unseen parts, then more
+    of the act's cut-down picks themselves (back towards the editor's whole in-out, nearest first), and only then
+    evenly over the plain shots. at: where s is (or was, once taken out). Changes seq in place."""
+    act = s["act"]
+    if at is None:
+        at = next(k for k, x in enumerate(seq) if x is s)
+    order = lambda js: sorted(js, key=lambda j: abs(j - at))
+    left = spread(seq, order(j for j in range(len(seq)) if seq[j]["act"] == act and plain(seq[j])), n, top=SPREAD_MAX)
+    had = sum(x["beats"] for x in seq)
+    for size in (2, 1):
+        short = left - (sum(x["beats"] for x in seq) - had)
+        if short:
+            quick_cuts(seq, short, act, beat, min(at + 1, len(seq)), size=size, hold=False)
+    short = left - (sum(x["beats"] for x in seq) - had)
+    for j in order(j for j in range(len(seq)) if seq[j]["act"] == act and seq[j].get("whole") and not seq[j].get("reuse")):
+        if short <= 0:
+            break
+        x = seq[j]
+        grow = max(0, min(short, int((x["whole"][1] - x["whole"][0]) / beat) - x["beats"]))
+        if grow:
+            x["beats"] += grow; short -= grow
+            a = max(x["whole"][0], min(x["span"][0], x["whole"][1] - x["beats"] * beat))
+            x["span"] = [round(a, 3), round(min(x["whole"][1], a + x["beats"] * beat), 3)]
+    if short > 0:
+        near = order(j for j in range(len(seq)) if seq[j]["act"] == act and plain(seq[j])) or \
+            order(j for j in range(len(seq)) if seq[j]["act"] == act)
+        spread(seq, near, short)
 
 
 def fit_pick(seq, i, beat, floor=1):
@@ -515,8 +569,12 @@ def fit_pick(seq, i, beat, floor=1):
         d = want - s["beats"]
         if not near:
             return
-        if d < 0:
+        if d < 0 and floor < 2:
             seq[near[0]]["beats"] -= d; s["beats"] += d
+            return
+        if d < 0:                                            # picks cut to pieces: its spare beats kept off any
+            s["beats"] += d                                  # one shot (absorb)
+            absorb(seq, s, -d, beat)
             return
         weak = sorted(near, key=lambda j: seq[j].get("rank", 0))
         j = next((j for j in weak if seq[j]["beats"] > 2), None)
@@ -706,7 +764,7 @@ QUICK_DROP = ("beats", "act", "fx", "effect", "logo", "logo_image", "band", "rea
               "featured", "share", "add", "open", "person", "span", "whole", "reuse")   # a quick cut is footage, not a role
 
 
-def quick_cuts(seq, n, act, beat, at=None, size=1):
+def quick_cuts(seq, n, act, beat, at=None, size=1, hold=True):
     """n beats of quick cuts, size beats each, from the editor's picks, put into act at at (default: spread through
     it, never at its ends): first the ends that pick_beat trimmed off them (footage not seen yet), then the openings
     of picks two acts or more away (never footage seen moments ago); daytime footage (unit "day") never into a night
@@ -724,7 +782,12 @@ def quick_cuts(seq, n, act, beat, at=None, size=1):
                                          s["unit"]["role"] != "transition", s["act"] != act,
                                          -(s["span"][1] - s["span"][0])))
     tails = [(s, [s["span"][0] + s["beats"] * beat, s["span"][1]]) for s in order]
-    srcs = [(s, sp) for s, sp in tails if sp[1] - sp[0] >= 0.8 * beat * size] + \
+    shown = [(x["unit"]["id"], x["span"]) for x in seq if x.get("span")]
+    rest = [(s, sp) for s in order if s.get("whole")                 # a pick cut to its best part: the rest of it,
+            for sp in ([s["whole"][0], s["span"][0]], [s["span"][1], s["whole"][1]])   # what isn't in the reel yet
+            if sp[1] - sp[0] >= 0.8 * beat * size
+            and not any(u == s["unit"]["id"] and min(b, sp[1]) - max(a, sp[0]) > 0.1 for u, (a, b) in shown)]
+    srcs = rest + [(s, sp) for s, sp in tails if sp[1] - sp[0] >= 0.8 * beat * size] + \
         [(s, [s["span"][0], min(s["span"][1], s["span"][0] + beat * size)]) for s in order
          if s["act"] not in near and s["span"][1] - s["span"][0] >= 0.8 * beat * size]
     srcs = [(s, sp) for s, sp in srcs if (s["unit"]["id"], round(sp[0], 2)) not in used]
@@ -742,9 +805,13 @@ def quick_cuts(seq, n, act, beat, at=None, size=1):
                  beats=min(size, n - sum(c["beats"] for c in out)), act=act, fx=[], effect=None, reuse=True)
         out.append(c)
         last = s["unit"]["clip"]
-    if out:
-        out[-1]["beats"] += n - sum(c["beats"] for c in out)   # (fewer sources than beats: the last cut holds)
     seq[at:at] = out
+    left = n - sum(c["beats"] for c in out)                   # fewer sources than beats: the cuts and the plain
+    if out and left and hold:                                 # shots round them share the rest, none piling up
+        mine = {id(c) for c in out}
+        near = sorted((j for j in range(len(seq)) if seq[j]["act"] == act and (id(seq[j]) in mine or plain(seq[j]))),
+                      key=lambda j: abs(j - at))
+        spread(seq, near, spread(seq, near, left, top=SPREAD_MAX))   # (past the top: still evenly)
 
 
 def spread_picks(seq, recs, home, beat, budget, full=0.9):
@@ -844,7 +911,7 @@ def include_adds(P, seq, recs, home, beat=None, budget=None, insert=False):
             if near:
                 if m.get("span"):
                     seq[near[0]].update(span=m["span"], add=True)
-                    fit_pick(seq, near[0], beat)
+                    fit_pick(seq, near[0], beat, floor=2 if insert else 1)
                 continue
             act = moved.get((r["id"], m["t"])) or home.get(r["id"], "night" if r["role"] == "transition" else "climax")
             if not any(x["act"] == act and plain(x) for x in seq) and act in ACT_NAMES:
@@ -903,7 +970,7 @@ def include_adds(P, seq, recs, home, beat=None, budget=None, insert=False):
                 i = j + 1
                 seq.insert(i, P.take(r, m, beats=1, act=seq[j]["act"]))
             seq[i]["add"] = True
-            fit_pick(seq, i, beat)
+            fit_pick(seq, i, beat, floor=2 if insert else 1)       # (picks cut to pieces: absorb their spare)
 
 
 SPOT_MIN = 0.35          # cover_people never takes a spot that plays worse than this: any one of assess's penalties
@@ -2054,9 +2121,11 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
         a, b = seq[k - 1], seq[k]
         if a["act"] != b["act"] and a["fx"] and b["fx"] and b["effect"] in ("hero", "spotlight", "neon"):
             b["fx"], b["effect"] = [], None
-    picks_once(seq)
+    picks_once(seq, music["beat"] if cfg.get("pick_hold") else None)
     for s in [s for s in seq if s.get("span")]:            # later passes may have moved beats: the editor's picks last
-        fit_pick(seq, seq.index(s), pbeat, floor=2 if cfg.get("pick_hold") else 1)
+        if not any(x is s for x in seq):                     # (a quick cut a fit before this one took out)
+            continue
+        fit_pick(seq, next(k for k, x in enumerate(seq) if x is s), pbeat, floor=2 if cfg.get("pick_hold") else 1)
         if pbeat != music["beat"]:
             s["share"] = round(music["beat"] / pbeat, 3)     # (pick_beat: all of them in, each this share)
     balance_picks(seq, pbeat, budget)
