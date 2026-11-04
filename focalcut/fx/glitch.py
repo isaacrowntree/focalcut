@@ -6,6 +6,7 @@ Subject (on the dancer only, through the SAM 3 masks; the room stays clean):
   g_sort       pixel-sorted silhouette: streaks of sorted colour pour off the dancer
   g_ghost      scanline ghost trails: tinted echoes a few frames behind, drawn in lines
   g_dissolve   digital disintegrate: the dancer breaks into blocks that drift off, then fly back together
+  g_sandstorm  a small sand storm: fine grains of the dancer's colours swirl round them and settle; dancer untouched
   g_slitscan   slit-scan: each row of the dancer from a different moment, so a turn bends through the body
   g_damage     block damage: macroblocks inside the dancer shift and colour-break, on hits
 Transitions (apply(a_tail, b_head): the cut stays on its beat):
@@ -246,6 +247,95 @@ class Dissolve(Effect):
                     a = (1 - age[gy, gx] / 0.6) * mb[..., None]
                     img[y1:y1 + b, x1:x1 + b] = to_u8(img[y1:y1 + b, x1:x1 + b] * (1 - a) + blk * a)
             out.append(img)
+        return out
+
+
+@register
+class Sandstorm(Effect):
+    """A small sand storm round the dancer: from the peak, a few thousand fine grains (2-4 px at 1080 wide, tinted
+    from the dancer's own colours with a touch of the film's cyan / magenta) lift off the silhouette's edge and swirl
+    round them -- a vortex about the dancer's centre with curl-noise turbulence, mostly behind and around the body,
+    a few passing in front -- then slow, drop and fade, the storm settling within about a second. The dancer is never
+    touched (whole, sharp, at full speed); only the grains are drawn over the frame."""
+    name = "g_sandstorm"; needs_masks = True
+    TINTS = (np.array([90, 255, 255], np.float32), np.array([255, 90, 255], np.float32))
+    STORM, FRONT, GLITCH = 0.85, 0.15, 0.25            # seconds; share of grains in front; share glitch-tinted
+    GAIN = 5.0                                         # how hard the storm blows (against the drag)
+
+    def apply(self, frames, ctx):
+        n = len(frames); M = masks_of(frames, ctx); p = ctx.peak_frame(n)
+        H, W = frames[0].shape[:2]
+        dur = int(min(self.STORM * ctx.fps, max(6, 0.85 * (n - 1))))
+        s0 = max(0, min(p, n - 1 - dur - int(0.1 * ctx.fps)))     # all settled before the shot ends
+        m0 = M[s0] > 0.5
+        if dur < 6 or m0.sum() < 50:
+            return list(frames)
+        rng, k = ctx.rng, W / 1080
+        N = int(np.clip(6000 * np.sqrt(H * W / (1080 * 1920)), 1500, 8000))
+        edge = m0 & ~cv2.erode(m0.astype(np.uint8), np.ones((9, 9), np.uint8)).astype(bool)
+        ey, ex = np.nonzero(edge if edge.sum() > 20 else m0)
+        pick = rng.integers(0, len(ey), N)
+        pos = np.c_[ex[pick], ey[pick]].astype(np.float32)
+        iy, ix = np.nonzero(m0)                                   # colour: the dancer's own pixels
+        ci = rng.integers(0, len(iy), N)
+        col = frames[s0][iy[ci], ix[ci]].astype(np.float32) * 1.25 + 45
+        g = rng.random(N) < self.GLITCH
+        col[g] = 0.55 * col[g] + 0.45 * np.array(self.TINTS)[rng.integers(0, 2, g.sum())]
+        col = np.clip(col, 0, 255)
+        size = np.maximum(2, np.round(rng.choice([2, 3, 3, 4], N) * k)).astype(int)
+        front = rng.random(N) < self.FRONT
+        born = s0 + (rng.random(N) * 0.3 * dur).astype(int)       # lifting off over the storm's first third
+        life = (dur * rng.uniform(0.6, 1.0, N)).astype(int)
+        spin = rng.choice([-1.0, 1.0]) * rng.uniform(0.4, 1.6, N)  # one way round, at many speeds
+        orbit = rng.uniform(1.0, 1.45, N)                        # each grain its own distance from the body
+        ph = rng.uniform(0, 2 * np.pi, (3, 4))                    # curl noise: sums of sines, seeded
+        fq = rng.uniform(1.5, 4.0, (3, 2)) / max(H, W)
+        vel = np.zeros_like(pos)
+        out = []
+        for i, f in enumerate(frames):
+            if i < s0 or i > s0 + dur + 1:
+                out.append(f); continue
+            m = M[i] > 0.5
+            ys, xs = np.nonzero(m)
+            if len(ys):                                           # the body's centre and half extents: the
+                c = np.array([(xs.min() + xs.max()) / 2, (ys.min() + ys.max()) / 2], np.float32)   # storm is an
+                ax = np.array([max(0.5 * (xs.max() - xs.min()), 20.0), max(0.5 * (ys.max() - ys.min()), 20.0)],
+                              np.float32)                         # ellipse round them, as tall as they are
+                R = float(ax.min())
+            age = (i - born) / np.maximum(life, 1)
+            live = (i >= born) & (age < 1)
+            d = (pos - c) / ax                                    # body-normalised: 1 = the silhouette's extent
+            r = np.linalg.norm(d, axis=1) + 1e-3
+            tang = np.c_[-d[:, 1], d[:, 0]] / r[:, None] * ax     # round the ellipse, in pixels
+            env = np.clip(age * 4, 0, 1) * np.clip((1 - age) * 2.2, 0, 1)   # quick rise, then settle
+            burst = np.clip(1 - age * 5, 0, 1)                    # thrown clear of the body at lift-off
+            radial = ((orbit - r) * 2.0 + 3.0 * burst)[:, None] * d / r[:, None] * ax
+            x, y = pos[:, 0], pos[:, 1]
+            curl = np.c_[np.sin(fq[0, 0] * y + ph[1, 0] + 3 * i / ctx.fps) + np.sin(fq[1, 1] * y + ph[1, 1]),
+                         np.cos(fq[0, 1] * x + ph[2, 0] + 2 * i / ctx.fps) + np.cos(fq[2, 0] * x + ph[2, 1])]
+            acc = (tang * (spin * 2.6)[:, None] + radial + curl * 0.9 * R) * (self.GAIN * env)[:, None]
+            acc[:, 1] += np.where(age < 0.35, -0.8 * R, 1.6 * R * np.clip(age - 0.55, 0, 1) * 2)   # lift, then fall
+            acc += rng.normal(0, 1.4 * R, (N, 2)) * env[:, None]                 # gusts: no two grains alike
+            dt = 1 / ctx.fps
+            vel = vel * (0.86 if i < s0 + 0.6 * dur else 0.78) + acc * dt * live[:, None]  # drag slows them to rest
+            pos = pos + vel * dt * live[:, None]
+            alpha = np.where(live, np.clip(age * 6, 0, 1) * np.clip((1 - age) * 3, 0, 1), 0) * 0.9
+            img = f.astype(np.float32)
+            A = np.zeros((H, W), np.float32); C = np.zeros((H, W, 3), np.float32)
+            for sz in np.unique(size):
+                sel = live & (size == sz) & (alpha > 0.02)
+                px, py = pos[sel, 0].astype(int), pos[sel, 1].astype(int)
+                for dy in range(sz):
+                    for dx in range(sz):
+                        qx, qy = px + dx, py + dy
+                        ok = (qx >= 0) & (qx < W) & (qy >= 0) & (qy < H)
+                        a = alpha[sel][ok]
+                        a = np.where(front[sel][ok], a, a * (~m[qy[ok], qx[ok]]))   # behind: hidden by the dancer
+                        C[qy[ok], qx[ok]] = col[sel][ok]
+                        np.maximum.at(A, (qy[ok], qx[ok]), a)
+            glow = cv2.GaussianBlur(C * A[..., None], (0, 0), max(1.5, 2.5 * k))
+            img = img * (1 - A[..., None]) + C * A[..., None] + 0.35 * glow
+            out.append(to_u8(img))
         return out
 
 
@@ -651,7 +741,7 @@ class Punch(Effect):
 LOOKS = {
     "clean": dict(title="Clean Signal", mood="modern, premium: natural footage, glitches only on hits, blocky "
                   "digital damage and colour chunks on the peaks",
-                  base=[], subject=["g_outline", "g_damage", "g_dissolve"],
+                  base=[], subject=["g_outline", "g_damage", "g_sandstorm"],
                   transitions=["g_tear", "g_slices", "g_sortwipe", "g_blocks"],
                   accents=["g_freeze", "g_punch", "g_jpeg"],
                   use="a glitch transition on the cut nearest every 4-bar phrase, plus the cuts with a reason; outline and "
@@ -662,7 +752,7 @@ LOOKS = {
                   reasons={"spin": "g_blocks", "swipe": "g_slices", "flash": "g_tear", "zoom": "g_tear",
                            "fade": "g_sortwipe", "glitch": "g_blocks", "dipwhite": "g_tear",
                            "lightleak": "g_sortwipe"},
-                  fx={"spotlight": "g_outline", "neon": "g_damage", "aura": "g_dissolve"},
+                  fx={"spotlight": "g_outline", "neon": "g_damage", "aura": "g_sandstorm"},
                   pulse=16,                         # beats: a glitch cut on the cut nearest each 4-bar phrase
                   extra=[("arrival", "g_outline", ("spin", "style", "pattern", "energy")),
                          ("shows", "g_outline", ("spin", "style", "pattern")),
@@ -681,7 +771,7 @@ LOOKS = {
                  accents=["g_jpeg", "g_diff", "g_swap"],
                  use="climax third only; one datamosh per act at most; opening and social floor stay clean"),
     "neon": dict(title="Neon Grid", mood="cyber, stylised: scanlines and bloom, sorted light",
-                 base=[("g_scanlines", dict(strength=0.1))], subject=["g_sort", "g_slitscan", "g_dissolve"],
+                 base=[("g_scanlines", dict(strength=0.1))], subject=["g_sort", "g_slitscan", "g_sandstorm"],
                  transitions=["g_sortwipe", "g_slices"], accents=["g_swap", "g_freeze"],
-                 use="subject effect at most once per 16 bars; pixel sort 3-4 times a film; dissolve for the exit"),
+                 use="subject effect at most once per 16 bars; pixel sort 3-4 times a film; sandstorm for the exit"),
 }
