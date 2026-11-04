@@ -2404,7 +2404,7 @@ def _reframe(project, unit, t0, length, fmt):
         x = np.interp(grid, ts, v)
         k = np.exp(-0.5 * (np.arange(-3 * sig, 3 * sig + 1) / sig) ** 2); k /= k.sum()
         return np.convolve(np.pad(x, 3 * sig, mode="edge"), k, mode="valid")
-    crowd, pan = one in (FR.PAN, FR.CENTRE), one == FR.PAN  # a group: a slow pan or whoever is in its middle
+    pan = one == FR.PAN                                     # a group panned (reel.json "group": "pan")
     if narrow and person and not pan:                       # never through someone the subject's size beside them
         zz, sx = clean_centre(d, pt[sel][ok], union[ok], sx, zz, cw0, ch0)
         cw, ch = cw0 / zz, ch0 / zz
@@ -2469,8 +2469,8 @@ def _reframe(project, unit, t0, length, fmt):
                      else 0.0,
                      low=float(np.nanmedian(((b[:, 1] + b[:, 3]) / 2 - (by - ch / 2)) / ch))
                      if not np.isnan(b[:, 1]).all() else 0.5)
-        if crowd:                                            # a group always has someone at the strip's edge, and a
-            stats.update(split=0.0, torn=0.0, churn=0.0 if pan else churn)   # pan passes people through its centre
+        if pan:                                              # a pan passes people through its centre (cut-offs still
+            stats.update(churn=0.0)                          # count: one person whole, never someone sliced)
     return dict(w=round(cw, 4), h=round(ch, 4), z=round(zz, 3),
                 path=[[round(float(a), 2), round(float(b), 4), round(float(c), 4)]
                       for a, b, c in zip(grid[::2], x[::2], y[::2])],
