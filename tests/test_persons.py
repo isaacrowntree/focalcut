@@ -62,6 +62,7 @@ def test_person_rules():
     turn = np.array([[0, 1], [0, 1], [0, 0], [0, 1], [1, 1], [0, 1]], bool)
     assert WI.person_reasons(_track(turn, slots=2), 0, 2.5)[0] == []             # a couple mid-turn, her face on
     assert WI.person_reasons(_track(True, rel=0.03), 0, 2.5)[0] == ["soft"]      # a face smeared, something sharp
-    assert WI.person_reasons(_track(True, yaw=4.0), 0, 2.5)[0] == ["profile"]
+    assert WI.person_reasons(_track(True, yaw=4.0), 0, 2.5)[0] == []                 # side-on is not a back
+    assert WI.person_reasons(_track(True, yaw=4.0), 0, 2.5, {"yaw": 3.0})[0] == ["profile"]   # unless asked
     assert WI.person_reasons(_track(True, rel=0.03), 0, 2.5, {"rel": 0.01})[0] == []   # reel.json person_rules
     assert WI.person_reasons(None, 0, 2.5) == ([], {})

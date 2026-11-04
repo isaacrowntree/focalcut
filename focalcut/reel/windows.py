@@ -35,10 +35,10 @@ FORMATS = ("landscape", "portrait")
 # the pick rules on the people a shot is about (persons.py), reel.json "person_rules" overrides: someone the shot is
 # about shows their own face for at least "face" of it, and the subject (the tallest) for at least "subject" unless
 # their partner does for "face" (else "back": a couple mid-turn passes, a back with nobody's face doesn't); the
-# subject's face turned no more than "yaw" eye-distances on the median (else "profile": only a face fully side-on --
-# the landmark measure is rough); and the subject's face at least "rel" of the frame's sharpest detail on the median
+# subject's face turned no more than "yaw" eye-distances on the median (else "profile"; off by default, None: an
+# engaged face side-on is not a back -- concepts §19 -- and the landmark measure is rough); and the subject's face at least "rel" of the frame's sharpest detail on the median
 # (else "soft")
-PERSON = dict(face=0.4, subject=0.2, yaw=3.0, rel=0.12, present=0.5)
+PERSON = dict(face=0.4, subject=0.2, yaw=None, rel=0.12, present=0.5)
 
 
 def person_reasons(pr, t0, t1, rules=None):
@@ -65,7 +65,7 @@ def person_reasons(pr, t0, t1, rules=None):
         yaw = float(np.nanmedian(np.abs(pr["yaw"][m][seen, 0])))
         rel = float(np.nanmedian(pr["rel"][m][seen, 0])) if not np.isnan(pr["rel"][m][seen, 0]).all() else np.nan
         vals.update(yaw=round(yaw, 2), rel=None if np.isnan(rel) else round(rel, 3))
-        if yaw > R["yaw"]:
+        if R["yaw"] is not None and yaw > R["yaw"]:
             why.append("profile")
         if not np.isnan(rel) and rel < R["rel"]:
             why.append("soft")
