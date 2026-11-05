@@ -876,6 +876,26 @@ def spread_picks(seq, recs, home, beat, budget, full=0.9):
     return out
 
 
+def home_picks(seq, recs, home):
+    """An editor's pick in an act its footage may not play in (daytime footage in a night act, night footage in the
+    arrival) -- whichever pass put it there (the night's B-roll takes from every pick) -- moves to the end of its home
+    act (home: record id -> act); balance_picks then fits the acts to their beats. Changes seq in place."""
+    if not any(r["unit"].get("day") for r in recs):        # no daytime footage: the arrival plays what there is
+        return
+    hm = {r["unit"]["id"]: home.get(r["id"]) for r in recs}
+    for s in [s for s in seq if s.get("span") and s.get("add") and not s.get("reuse")]:
+        day, a = bool(s["unit"].get("day")), s["act"]
+        if a == "teaser" or day == (a in DAY_ACTS) or not (day or a == "arrival"):
+            continue
+        h = hm.get(s["unit"]["id"])
+        if h not in ACT_NAMES or h == a:
+            continue
+        seq.remove(s)
+        k = max((i for i, x in enumerate(seq) if ACT_NAMES.index(x["act"]) <= ACT_NAMES.index(h)), default=-1)
+        s["act"] = h
+        seq.insert(k + 1, s)
+
+
 def balance_picks(seq, beat, budget):
     """The editor's picks take precedence: every selection gets its full length (to the nearest beat), and an act
     they overfill passes its last shot on into the next act while the acts after it have beats to spare (the order
@@ -898,9 +918,15 @@ def balance_picks(seq, beat, budget):
                 break
             later = order[order.index(a) + 1:]
             spare = sum(budget.get(c, 0) - used(c) for c in later)
-            last = mine[-1]
+            stays = lambda x, a=a, b=b: x["unit"].get("day") and a in DAY_ACTS and b not in DAY_ACTS   # daytime footage
+            last = next((x for x in reversed(mine) if not stays(x)), mine[-1])                   # never into the night
+            if stays(last):
+                b = None
             if b and spare > 0 and not any(last.get(k) for k in ("ending", "open", "logo")) \
                     and (spare >= last["beats"] or over >= last["beats"]):
+                if last is not mine[-1]:                     # (a daytime shot after it stays: it moves to the
+                    seq.remove(last)                          # act's end first, so the acts stay in one piece)
+                    seq.insert(seq.index(mine[-1]) + 1, last)
                 last["act"] = b
                 continue
             other = sorted((x for x in mine if not any(x.get(k) for k in keep)), key=lambda x: x.get("rank", 0))
@@ -929,6 +955,7 @@ def include_adds(P, seq, recs, home, beat=None, budget=None, insert=False):
     the act's other picks as it can (so picks and the rest of the footage take turns), and its beats come from the
     act's weakest plain shots."""
     moved = spread_picks(seq, recs, home, beat, budget, PIECE_FULL if insert else 0.9)
+    has_day = any(r["unit"].get("day") for r in recs)
     for r in recs:
         for m in [m for m in r["moments"] if m.get("add")]:
             near = [k for k, x in enumerate(seq) if x["unit"]["id"] == r["unit"]["id"] and abs(x["t"] - m["t"]) < 1.5
@@ -966,12 +993,16 @@ def include_adds(P, seq, recs, home, beat=None, budget=None, insert=False):
                         and clip not in (seq[i - 1]["unit"]["clip"], seq[i + 1]["unit"]["clip"])
                         and not (r["role"] == "transition" and "transition" in (seq[i - 1]["unit"]["role"],
                                                                                 seq[i + 1]["unit"]["role"])))
+            day = bool(r["unit"].get("day"))                 # elsewhere only where its footage may play: day
+            may = lambda a, day=day, act=act: a != "teaser" and (   # footage in the day, night never in the
+                not has_day or day == (a in DAY_ACTS) or not (day or a == "arrival")) and (   # arrival, and never
+                a not in ACT_NAMES or act not in ACT_NAMES or ACT_NAMES.index(a) >= ACT_NAMES.index(act))   # before its act
             # a pick comes before "use everything": with no other place free, it takes a clip's only shot
             idx = next((ix for ix in (                       # (its own act first, even a clip's only shot)
                 [i for i, x in enumerate(seq) if x["act"] == act and fits(i)],
                 [i for i, x in enumerate(seq) if x["act"] == act and fits(i, lone=True)],
-                [i for i, x in enumerate(seq) if x["act"] != "teaser" and fits(i)],
-                [i for i, x in enumerate(seq) if x["act"] != "teaser" and fits(i, lone=True)]) if ix), [])
+                [i for i, x in enumerate(seq) if may(x["act"]) and fits(i)],
+                [i for i, x in enumerate(seq) if may(x["act"]) and fits(i, lone=True)]) if ix), [])
             if idx:
                 i = max(idx, key=lambda i: (seq[i]["act"] == act, P.load(seq[i]["unit"]["clip"]), -seq[i]["rank"]))
                 old = seq[i]
@@ -979,16 +1010,17 @@ def include_adds(P, seq, recs, home, beat=None, budget=None, insert=False):
                 seq[i] = P.take(r, m, beats=old["beats"], act=old["act"])   # (the act's grid stays exact)
             else:                                            # split the longest plain shot that is not beside its clip
                 long = [i for i, x in enumerate(seq) if plain(x) and x["beats"] >= 3 and 0 < i < len(seq) - 1
-                        and x["act"] not in ("teaser", "finale") and clip not in (x["unit"]["clip"],
-                                                                                   seq[i + 1]["unit"]["clip"])]
+                        and x["act"] != "finale" and may(x["act"]) and clip not in (x["unit"]["clip"],
+                                                                                     seq[i + 1]["unit"]["clip"])]
                 if long:
                     j = max(long, key=lambda i: seq[i]["beats"])
                     seq[j]["beats"] -= 1
                 else:                                        # no plain shot left to give way: in after any shot
-                    gaps = [j for j in range(len(seq) - 1) if seq[j]["act"] != "teaser"   # of its act not beside
+                    gaps = [j for j in range(len(seq) - 1) if may(seq[j]["act"])   # of its act not beside
                             and clip not in (seq[j]["unit"]["clip"], seq[j + 1]["unit"]["clip"])]   # its clip;
                     gaps = [j for j in gaps if seq[j]["act"] == act] or gaps   # the grid is evened out at the end
-                    if not gaps:
+                    gaps = gaps or [j for j in range(len(seq) - 1) if may(seq[j]["act"])]   # (beside its clip
+                    if not gaps:                                                           # before left out)
                         print(f"[reel] no room for the pick {r['unit']['id']} {m['t']:.1f}")
                         continue
                     j = gaps[len(gaps) // 2]
@@ -2154,6 +2186,8 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
         a, b = seq[k - 1], seq[k]
         if a["act"] != b["act"] and a["fx"] and b["fx"] and b["effect"] in ("hero", "spotlight", "neon"):
             b["fx"], b["effect"] = [], None
+    if not cfg.get("pick_hold"):                             # (picks cut to pieces are spread on purpose)
+        home_picks(seq, recs, home)
     picks_once(seq, music["beat"] if cfg.get("pick_hold") else None)
     for s in [s for s in seq if s.get("span")]:            # later passes may have moved beats: the editor's picks last
         if not any(x is s for x in seq):                     # (a quick cut a fit before this one took out)
