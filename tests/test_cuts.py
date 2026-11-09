@@ -95,3 +95,14 @@ def test_profiles_mix_into_cuts_and_the_main_reel(tmp_path):
     json.dump(raw, open(tmp_path / "focalcut" / "reel" / "reel.json", "w"))
     with pytest.raises(ValueError):
         Project(folder, "bad")
+
+
+def test_picks_go_to_the_reels_the_editor_ticked(tmp_path):
+    folder = project(tmp_path, dict(short=dict(length=90)))
+    d = tmp_path / "focalcut" / "reel"
+    json.dump({"C3": {"add": ["0:01.00-0:02.00", "0:05.00-0:06.00", "0:08-0:09"], "end": "0:05.00-0:06.00",
+                      "only": {"0:05-0:06": ["main"], "0:08.00-0:09.00": ["short"]}}}, open(d / "picks.json", "w"))
+    main, short = Project(folder).picks()["C3"], Project(folder, "short").picks()["C3"]
+    assert main["add"] == ["0:01.00-0:02.00", "0:05.00-0:06.00"] and main["end"] == "0:05.00-0:06.00"
+    assert short["add"] == ["0:01.00-0:02.00", "0:08-0:09"] and "end" not in short and "only" not in short
+    assert len(Project(folder).picks(reel=False)["C3"]["add"]) == 3

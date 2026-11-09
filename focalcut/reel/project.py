@@ -185,10 +185,20 @@ class Project:
         shifts = px[1] if px and len(px) > 1 else []
         return t - sum(d for at, d in shifts if t + d >= at)
 
-    def picks(self, rejects=True) -> dict:
+    @property
+    def reel_id(self) -> str:
+        """This reel's name in picks.json's per-selection "only" lists: the cut, or "main" for the project's reels."""
+        return self.cut or "main"
+
+    def picks(self, rejects=True, reel=True) -> dict:
         """The editor's picks: focalcut/reel/picks.json, with reel.json's "picks" merged over it, and its "reject"
-        stretches added to their files' bans (rejects=False: the editor's own calls only)."""
+        stretches added to their files' bans (rejects=False: the editor's own calls only). A clip's "only" maps a
+        selection ("add" range, as written) to the reels it is for (["main"], ["short"], ...); one not listed is for
+        every reel. reel=True keeps this reel's selections only; reel=False leaves them all (the source page)."""
         out = {**self._picks_file(), **(self.config.get("picks") or {})}
+        if reel:
+            out = {k: only_reel(v, self.reel_id) if isinstance(v, dict) and not k.startswith("_") else v
+                   for k, v in out.items()}
         for k, spans in (self.config.get("reject") or {}).items() if rejects else ():
             e = dict(out.get(k) or {})
             e["ban"] = [*e.get("ban", []), *spans]
@@ -261,3 +271,37 @@ class Project:
         with open(self.path(name), "w") as f:
             json.dump(obj, f, indent=1)
         return self.path(name)
+
+
+def only_reel(entry: dict, reel: str) -> dict:
+    """A clip's picks for one reel: its "add" selections without those its "only" gives to other reels."""
+    only = entry.get("only")
+    if not only:
+        return entry
+    keyed = {_span_key(k): v for k, v in only.items() if isinstance(v, list)}
+
+    def ours(v):
+        return reel in keyed.get(_span_key(v), [reel])
+    e = {k: v for k, v in entry.items() if k != "only"}
+    if "add" in e:
+        e["add"] = [v for v in e["add"] if ours(v)]
+        if not e["add"]:
+            del e["add"]
+    for f in ("open", "end"):                       # the opening / ending pick goes with its selection
+        if isinstance(e.get(f), str) and not ours(e[f]):
+            del e[f]
+    return e
+
+
+def _span_key(v) -> tuple | None:
+    """A range ("1:12.40-1:15.10", or seconds) as a rounded (in, out), so differently written ones match."""
+    def secs(x):
+        return sum(float(p) * 60 ** i for i, p in enumerate(reversed(str(x).strip().split(":"))))
+    try:
+        s = str(v).strip()
+        i = s.find("-", 1)
+        a, b = (secs(s[:i]), secs(s[i + 1:])) if i > 0 else (secs(s), secs(s))
+        return round(a, 2), round(b, 2)
+    except ValueError:
+        return None
+

@@ -102,9 +102,10 @@ def preview(video, out, wh):
     return False
 
 
-def clips(project, page_dir, plans):
+def clips(project, page_dir, plans, reels=None):
     """Every unit with an export file: its video and filmstrip (relative to the page), clock time, the moments found
-    in it and the shots each reel takes from it, all in the export's own timeline."""
+    in it and the shots each reel takes from it, all in the export's own timeline. reels: {reel: {fmt: plan}} for
+    every reel the picks serve (the project's own as "main", each cut by name): their shots as R[reel] = {L, P}."""
     units = project.load("units.json")
     moments = {r["unit"]["id"]: r for r in project.load("moments.json")} if os.path.exists(
         project.path("moments.json")) else {}
@@ -135,21 +136,30 @@ def clips(project, page_dir, plans):
         c = created(src) if os.path.exists(src) else None
         clock = (c + dt.timedelta(hours=clock_shift, seconds=u["t0"])).strftime("%H:%M") if c else ""
         ms = moments.get(u["id"], {}).get("moments", [])
-        uses = {fmt: [[round(s["src_in"] - x0, 2), round(s["src_in"] - x0 + s["length"], 2), i + 1]
-                      for i, s in enumerate(p["shots"]) if s["unit"]["id"] == u["id"]] for fmt, p in plans.items()}
+        uses = _uses(plans, u["id"], x0)
+        R = {r: dict(zip("LP", (lambda m: (m.get("landscape", []), m.get("portrait", [])))(_uses(ps, u["id"], x0))))
+             for r, ps in (reels or {}).items()}
         out.append(dict(id=u["id"], cat=u.get("category", ""), tag=u.get("tag", ""), clock=clock,
                         sort=(c + dt.timedelta(seconds=u["t0"])).isoformat() if c else u["id"], dur=round(d, 2),
                         video=quote(os.path.relpath(plays[u["id"]], page_dir).replace(os.sep, "/")), ar=round(w / h, 4),
                         strip=strip, tile=[tw, th], step=step, n=n,
                         moments=[[round(m["t"] - x0, 2), m["kind"]] for m in ms if m["t"] - x0 >= 0],
-                        L=uses.get("landscape", []), P=uses.get("portrait", [])))
+                        L=uses.get("landscape", []), P=uses.get("portrait", []), R=R))
     out.sort(key=lambda c: c["sort"])
     return out
 
 
-def page(clips, picks=None, key="sources", title="Sources", root="", nav=""):
-    """root: the project folder relative to the page ("../../../"), so its API calls work under any server prefix."""
-    data = json.dumps(dict(clips=clips, picks=picks or {}, key=key, tile=TILE, root=root)).replace("</", "<\\/")
+def _uses(plans, uid, x0):
+    """{fmt: [[in, out, shot number], ...]}: the shots each plan takes from this unit, in its export's timeline."""
+    return {fmt: [[round(s["src_in"] - x0, 2), round(s["src_in"] - x0 + s["length"], 2), i + 1]
+                  for i, s in enumerate(p["shots"]) if s["unit"]["id"] == uid] for fmt, p in plans.items()}
+
+
+def page(clips, picks=None, key="sources", title="Sources", root="", nav="", reels=None):
+    """root: the project folder relative to the page ("../../../"), so its API calls work under any server prefix.
+    reels: [{"id", "label"}] of the reels picks can be given to (the page's reel switch; none: no switch)."""
+    data = json.dumps(dict(clips=clips, picks=picks or {}, key=key, tile=TILE, root=root,
+                           reels=reels or [])).replace("</", "<\\/")
     return PAGE.replace("%DATA%", data).replace("%TITLE%", html.escape(title)).replace("%NAV%", nav).replace("%MENU%", MENU_CSS)
 
 
@@ -182,17 +192,35 @@ def api_root(project) -> str:
     return os.path.relpath(project.folder, project.path("review")).replace(os.sep, "/") + "/"
 
 
+def reels(project, plans) -> list[dict]:
+    """The reels one set of picks serves: the project's own ("main", from these plans) and each of reel.json's cuts
+    that has been planned, labelled with their length ("Main 2:46", "Short 1:30")."""
+    def label(name, ps):
+        n = max((p.get("music_length") or p.get("video_length") or 0) for p in ps.values()) if ps else 0
+        m, sec = divmod(int(round(n)), 60)
+        return name.capitalize() + (f" {m}:{sec:02d}" if n else "")
+    out = [{"id": "main", "plans": plans, "label": label("main", plans)}]
+    for cut in (project.config.get("cuts") or {}):
+        ps = {f: project.load(f"plan_{cut}_{f}.json") for f in ("landscape", "portrait")
+              if os.path.exists(project.path(f"plan_{cut}_{f}.json"))}
+        if ps:
+            out.append({"id": cut, "plans": ps, "label": label(cut, ps)})
+    return out
+
+
 def run(project, plans=None) -> str:
     page_dir = project.path("review")
     os.makedirs(page_dir, exist_ok=True)
     if plans is None:
         plans = {f: project.load(f"plan_{f}.json") for f in ("landscape", "portrait")
                  if os.path.exists(project.path(f"plan_{f}.json"))}
-    cs = clips(project, page_dir, plans)
+    rs = reels(project, plans)
+    cs = clips(project, page_dir, plans, {r["id"]: r["plans"] for r in rs})
     path = os.path.join(page_dir, "sources.html")
     with open(path, "w") as f:
-        f.write(page(cs, project.picks(), key=project.name, title=title_of(project), root=api_root(project),
-                     nav=menu(project, "sources")))
+        f.write(page(cs, project.picks(reel=False), key=project.name, title=title_of(project), root=api_root(project),
+                     nav=menu(project, "sources"),
+                     reels=[{"id": r["id"], "label": r["label"]} for r in rs] if len(rs) > 1 else None))
     print(f"[reel] sources: {path}  ({len(cs)} clips; `focalcut reel serve {project.folder}` saves picks itself)")
     return path
 
@@ -260,6 +288,11 @@ letter-spacing:.05em}
 .blk{top:3px;bottom:3px;border-radius:4px;background:color-mix(in srgb,var(--sel) 45%,transparent);
 border:2px solid var(--sel);cursor:grab;font-size:11px;color:var(--fg);padding-left:4px;overflow:hidden;
 white-space:nowrap;font-weight:600}.blk.act{background:color-mix(in srgb,var(--sel) 75%,transparent);color:#000}
+.blk.away{opacity:.35;border-style:dashed;background:transparent}
+#reelsw{display:inline-flex;gap:2px;align-items:center;padding-left:8px;border-left:1px solid var(--line)}#reelsw:empty{display:none}
+#reelsw button{padding:2px 8px;font-size:12px}#reelsw b{font-size:11px;color:var(--mut);font-weight:500;margin-right:4px}
+.rk{font-size:11px;color:var(--mut);margin-right:8px;white-space:nowrap;cursor:pointer}.rk input{vertical-align:-2px}
+#preels button.on{background:var(--sel);color:#000;border-color:var(--sel)}
 .blk .h{position:absolute;top:0;bottom:0;width:5px;cursor:ew-resize;background:var(--sel);opacity:0}.blk .h.l{left:0}.blk .h.r{right:0}
 #lsel .blk:hover .h{opacity:.9}
 .pend{top:3px;bottom:3px;border:2px dashed var(--io);background:color-mix(in srgb,var(--io) 22%,transparent);
@@ -324,7 +357,7 @@ font:12px ui-monospace,monospace;pointer-events:none}.frl b{color:var(--io)}
 .fk{top:1px;bottom:1px;width:6px;margin-left:-3px;background:var(--io);border-radius:2px;pointer-events:none;z-index:2}
 </style>
 <header><h1>%TITLE%</h1>%NAV%
-<div id=views><button id=v1 class=on title="every clip, one at a time">Clips</button><button id=v2 title="the cut, shot by shot, with your picks in it">Cut &amp; picks</button></div><span id=counts></span>
+<div id=views><button id=v1 class=on title="every clip, one at a time">Clips</button><button id=v2 title="the cut, shot by shot, with your picks in it">Cut &amp; picks</button></div><span id=reelsw title="which reel you're picking for: its shots show in the lanes; picks for other reels fade; new picks go in this reel only (All: every reel)"></span><span id=counts></span>
 <span class=sp></span><span id=saved></span>
 <span class=pj><button id=copy title="copy picks.json to the clipboard">Copy</button><button id=dl title="download picks.json">Download</button></span>
 </header>
@@ -384,7 +417,7 @@ Each selection goes in the reel starting at its in-point.</div>
 <button data-n="slip:0.02">f ▶</button><button data-n="slip:0.5" title="move the whole pick later (.)">½s ▶</button></span>
 <button id=pframe class=frt title="portrait crop; drag on the picture to set a focal point (F)">▯ Portrait <kbd>F</kbd></button>
 <button id=pfclr title="remove this pick's focal points">Clear focus</button>
-<span class=grp><button id=pfirst title="open the reel on this pick, under the event's logo (one opening per reel)">★ Opening</button><button id=plast title="end the reel on this pick (one ending per reel)">⚑ Ending</button></span><span class=sp></span><button id=popen title="open this clip in Clips">Open in Clips</button><button id=pdel title="remove (Backspace)">✕ Remove</button></div>
+<span class=grp><button id=pfirst title="open the reel on this pick, under the event's logo (one opening per reel)">★ Opening</button><button id=plast title="end the reel on this pick (one ending per reel)">⚑ Ending</button></span><span class=grp id=preels></span><span class=sp></span><button id=popen title="open this clip in Clips">Open in Clips</button><button id=pdel title="remove (Backspace)">✕ Remove</button></div>
 <div id=pt class=tl><div id=pruler></div><div id=pstrip title="drag the edges to trim or lengthen, the block to slip it, anywhere else to scrub; scroll to zoom"><canvas></canvas></div></div>
 <p style="color:var(--mut);font-size:12px;margin:6px 0 0">Drag the pick's edges to lengthen or trim, drag the block to slip it, click
 elsewhere to scrub · tick cards (<kbd>X</kbd>, shift-click for a range, <kbd>A</kbd> all the planner's) then <kbd>Delete</kbd> drops them all · <kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> previous / next pick · <kbd>I</kbd>/<kbd>O</kbd> in / out
@@ -411,6 +444,8 @@ const ls={get(k){try{return JSON.parse(localStorage.getItem(LS+k))}catch(e){retu
 let P=JSON.parse(JSON.stringify(D.picks)),server=false,timer=null;
 const ent=id=>(P[id]&&typeof P[id]==="object"&&!Array.isArray(P[id]))?P[id]:(P[id]={});
 function tidy(){for(const k in P){const e=P[k];if(k[0]=="_"||!e||typeof e!=="object"||Array.isArray(e))continue;
+ if(e.only){const ss=(e.add||[]).map(span);for(const q in e.only){const[u,v]=span(q);
+  if(!ss.some(([a,b])=>near2(a,u)&&near2(b,v)))delete e.only[q]}if(!Object.keys(e.only).length)delete e.only}
  for(const f of["ban","prefer","add","portrait"])if(e[f]&&!e[f].length)delete e[f];if(e.more===0)delete e.more;
  if(!Object.keys(e).length)delete P[k]}}
 function status(t,c){const s=$("saved");s.textContent=t;s.className=c||""}
@@ -430,8 +465,30 @@ function sels(id){return((P[id]||{}).add||[]).filter(isRange).map(span).sort((x,
 function points(id){return((P[id]||{}).add||[]).filter(v=>!isRange(v)).map(v=>span(v)[0])}
 function setSels(id,list){const e=ent(id);const pts=(e.add||[]).filter(v=>!isRange(v));
  list=list.map(([a,b])=>[Math.max(0,Math.min(a,b)),Math.max(a,b)]).filter(([a,b])=>b-a>=0.1).sort((x,y)=>x[0]-y[0]);
+ const old=sels(id).map(([a,b])=>[a,b,onlyOf(id,a,b)]),only={};   // (each keeps its reels; a new one: this reel's)
+ list.forEach(([a,b])=>{let best=null,ov=0;old.forEach(([u,v,o])=>{const x=Math.min(b,v)-Math.max(a,u);if(x>ov){ov=x;best=o}});
+  const tags=ov>0?best:(reel=="all"?null:[reel]);if(tags&&RID.length>1&&!RID.every(r=>tags.includes(r)))only[rkey(a,b)]=tags});
+ if(Object.keys(only).length)e.only=only;else delete e.only;
  e.add=[...pts,...list.map(([a,b])=>fmt(a)+"-"+fmt(b))];save()}
 function banned(id){return((P[id]||{}).ban||[])}
+// reels: one picks.json serves the project's reel ("main") and its cuts (reel.json "cuts"); a clip's "only" maps a
+// selection to the reels it is for, and one not listed is for every reel
+const RS=D.reels||[],RID=RS.map(r=>r.id),rlab=r=>(RS.find(x=>x.id==r)||{label:r}).label;
+let reel=ls.get("reel")||"all";if(!RID.includes(reel))reel="all";
+const rkey=(a,b)=>fmt(a)+"-"+fmt(b),near2=(u,v)=>Math.abs(u-v)<0.006;
+function onlyOf(id,a,b){const o=(P[id]||{}).only;if(!o)return null;for(const k in o){const[u,v]=span(k);
+ if(near2(u,a)&&near2(v,b))return Array.isArray(o[k])?o[k]:null}return null}
+function inReel(id,a,b,r=reel){if(r=="all")return true;const v=onlyOf(id,a,b);return!v||v.includes(r)}
+function setIn(id,a,b,r,on){const e=ent(id);let v=onlyOf(id,a,b)||RID.slice();
+ v=on?[...new Set([...v,r])]:v.filter(x=>x!=r);if(!v.length){status("a pick is in one reel at least — ✕ removes it","err");return renderAll()}
+ const o={};for(const k in e.only||{}){const[u,w]=span(k);if(!(near2(u,a)&&near2(w,b)))o[k]=e.only[k]}
+ if(!RID.every(x=>v.includes(x)))o[rkey(a,b)]=RID.filter(x=>v.includes(x));e.only=o;save()}
+function useReel(){const r=reel=="all"?"main":reel;D.clips.forEach(c=>{const u=(c.R||{})[r];if(u){c.L=u.L;c.P=u.P}});
+ $("reelsw").innerHTML=RS.length>1?"<b>Reel</b>"+[["all","All"],...RS.map(x=>[x.id,x.label])].map(([k,l])=>
+  `<button data-reel="${esc(k)}" class="${k==reel?"on":""}">${esc(l)}</button>`).join(""):""}
+$("reelsw").onclick=ev=>{const b=ev.target.closest("[data-reel]");if(!b)return;reel=b.dataset.reel;ls.set("reel",reel);useReel();place.clear();
+ status(reel=="all"?"all reels: new picks go in every reel":`${rlab(reel)}: its shots in the lanes; new picks go in this reel only`,"ok");renderAll()}
+useReel();
 // one pick opens the reel and one ends it: the clip's "open" / "end" is that pick's in-out (it stays a selection too)
 const same=(v,a,b)=>{if(!v)return false;const[u,w]=span(v);return Math.abs(u-a)<0.01&&Math.abs(w-b)<0.01};
 function roleOf(id,a,b){const e=P[id]||{};return same(e.open,a,b)?"open":same(e.end,a,b)?"end":null}
@@ -455,7 +512,8 @@ const tileOf=c=>c.tile||[TW,TH];
 const thumbAt=(c,t,h,W)=>{const[tw,th]=tileOf(c),k=Math.min(c.n-1,Math.max(0,Math.floor(t/c.step))),s=h/th,pad=W?Math.max(0,(W-tw*s)/2):0;
  return`background-image:url('${c.strip}');background-size:${c.n*tw*s}px ${h}px;background-position:-${k*tw*s}px 0`+
   (pad?`;box-sizing:border-box;padding-left:${pad}px;padding-right:${pad}px;background-origin:content-box;background-clip:content-box`:"")};
-function list(){$("list").innerHTML=visible().map(i=>{const c=D.clips[i],n=sels(c.id).length,
+const mine=id=>sels(id).filter(([a,b])=>inReel(id,a,b));
+function list(){$("list").innerHTML=visible().map(i=>{const c=D.clips[i],n=mine(c.id).length,
  tot=sels(c.id).reduce((a,[x,y])=>a+y-x,0),bn=banned(c.id).includes("all");
  return`<div class="ci${i==cur?" cur":""}${seen.has(c.id)?" seen":""}" data-i=${i} style="${bn?"opacity:.4":""}">
  <div class=th style="${thumbAt(c,c.dur*0.3,54,96)}">${n?`<b>${n}</b>`:""}</div><div><div class=nm>${esc(c.id)}</div>
@@ -501,8 +559,8 @@ function draw(){const c=C();if(!c)return;const W=vb-va,t=now();
  S.insertAdjacentHTML("beforeend",s);
  // selections lane
  const L=$("lsel");L.querySelectorAll("i").forEach(e=>e.remove());s="";
- sels(c.id).forEach(([a,b],k)=>{if(b>va&&a<vb)s+=`<i class="blk${k==act?" act":""}" data-k=${k} style="${wspan(a,b)}"
-  title="${fmt(a)} – ${fmt(b)} (${(b-a).toFixed(2)} s)"><i class="h l"></i>${k+1} · ${(b-a).toFixed(1)}s<i class="h r"></i></i>`});
+ sels(c.id).forEach(([a,b],k)=>{const o=onlyOf(c.id,a,b);if(b>va&&a<vb)s+=`<i class="blk${k==act?" act":""}${inReel(c.id,a,b)?"":" away"}" data-k=${k} style="${wspan(a,b)}"
+  title="${fmt(a)} – ${fmt(b)} (${(b-a).toFixed(2)} s)${RS.length>1?" · "+(o?o.map(rlab).join(" + ")+" only":"every reel"):""}"><i class="h l"></i>${k+1} · ${(b-a).toFixed(1)}s<i class="h r"></i></i>`});
  points(c.id).forEach(p=>{if(p>=va&&p<=vb)s+=`<i class=pt style="left:${X(p)}" title="marked moment ${fmt(p)}"></i>`});
  const io=pend();if(io)s+=`<i class=pend style="${wspan(...io)}"></i>`;
  if(!sels(c.id).length&&!io)s+=`<i class=empty>drag here to pick a range · or I / O then Enter · or click a reel shot below to take it</i>`;
@@ -536,9 +594,11 @@ function pend(){if(inPt===null&&outPt===null)return null;const a=inPt??now(),b=o
 function mysel(){const c=C(),ss=sels(c.id);
  $("mysel").innerHTML=ss.length?`<table><tr><th>#</th><th>in</th><th>out</th><th>length</th><th></th></tr>`+ss.map(([a,b],k)=>
   `<tr class="${k==act?"act":""}"><td>${k+1}</td><td>${fmt(a)}</td><td>${fmt(b)}</td><td>${(b-a).toFixed(2)} s</td>
-  <td><button data-p=${k}>▶ play</button> <button data-l=${k}>↻ loop</button> <button data-d=${k}>✕</button></td></tr>`).join("")+
+  <td>${RS.length>1?RS.map(r=>`<label class=rk><input type=checkbox data-r="${esc(r.id)}" data-k=${k}${inReel(c.id,a,b,r.id)?" checked":""}> ${esc(r.label)}</label>`).join(""):""}<button data-p=${k}>▶ play</button> <button data-l=${k}>↻ loop</button> <button data-d=${k}>✕</button></td></tr>`).join("")+
   `</table>`:`<p style="color:var(--mut);margin:0">No selections in this clip yet: <kbd>I</kbd> at the start, <kbd>O</kbd>
   at the end, <kbd>Enter</kbd> — or drag in the selections lane.</p>`}
+$("mysel").onchange=ev=>{const i=ev.target;if(!i.dataset.r)return;const ss=sels(C().id),x=ss[+i.dataset.k];
+ if(x)setIn(C().id,x[0],x[1],i.dataset.r,i.checked)};
 $("mysel").onclick=ev=>{const b=ev.target.closest("button");if(!b)return;const ss=sels(C().id);
  if(b.dataset.d!==undefined){ss.splice(+b.dataset.d,1);act=-1;setSels(C().id,ss)}
  else{const k=+(b.dataset.p??b.dataset.l);act=k;loop=b.dataset.l!==undefined;seek(ss[k][0]);vid.play();renderAll()}};
@@ -546,12 +606,12 @@ function renderAll(){list();draw();mysel();selview();
  counts()}
 // what's in play: the planner's shots per reel, and the editor's own calls
 function counts(){const n=f=>D.clips.reduce((a,c)=>a+f(c),0),L=n(c=>c.L.length),Pn=n(c=>c.P.length),
-  my=n(c=>sels(c.id).length+points(c.id).length),fk=n(c=>fkeys(c.id).length),
+  my=n(c=>mine(c.id).length+points(c.id).length),fk=n(c=>fkeys(c.id).length),
   bc=n(c=>banned(c.id).includes("all")?1:0),br=n(c=>banned(c.id).filter(v=>v!="all").length),
   more=n(c=>(P[c.id]||{}).more?1:0),unseen=D.clips.length-D.clips.filter(c=>seen.has(c.id)).length;
  const it=(v,t,cls="")=>`<span class="${cls}" title="${t}"><b>${v}</b> ${t.split(":")[0]}</span>`;
  $("counts").innerHTML=[it(L,"landscape shots: in the current landscape cut"),it(Pn,"portrait shots: in the current portrait cut"),
-  it(my,"your picks: selections and marked moments the next re-plan must use","y"),
+  it(my,"your picks"+(reel=="all"?"":" for "+rlab(reel))+": selections and marked moments the next re-plan must use","y"),
   fk?it(fk,"focus points: where the portrait crop goes","f"):"",
   bc+br?it(bc+br,"bans: "+bc+" whole clips, "+br+" stretches","x"):"",more?it(more,"clips asked for more"):"",
   it(unseen,"clips not looked at yet")].filter(Boolean).join(" · ")}
@@ -660,7 +720,7 @@ function shotOf(c,a,b){for(const[fmt,arr]of(pfmt=="P"?[["P",c.P],["L",c.L]]:[["L
   arr.forEach(([x,y,n])=>{const o=Math.min(b,y)-Math.max(a,x);if(o>ov+1e-6){ov=o;best=n}});
   if(best!==null&&ov>=Math.min(0.3,(b-a)/2))return{fmt,n:best}}return null}
 // the chosen cut's shots come in too (k -1: not a pick yet): editing one makes it a pick, removing one bans its stretch
-function allSels(){const out=[];D.clips.forEach((c,i)=>sels(c.id).forEach(([a,b],k)=>{const key=pfmt+"|"+pkey(c.id,a);
+function allSels(){const out=[];D.clips.forEach((c,i)=>sels(c.id).forEach(([a,b],k)=>{if(!inReel(c.id,a,b))return;const key=pfmt+"|"+pkey(c.id,a);
   if(!place.has(key))place.set(key,shotOf(c,a,b));out.push({c,i,k,a,b,shot:place.get(key)})}));
  if(pfmt!="picks"){const have=new Set(out.filter(x=>x.shot&&x.shot.fmt==pfmt).map(x=>x.shot.n));
   D.clips.forEach((c,i)=>{const bans=banned(c.id).map(v=>v=="all"?[-1,1e9]:span(v));
@@ -702,7 +762,7 @@ function selview(){order=allSels();
  let h="",sep=false;order.forEach((x,k)=>{if(!x.shot&&!sep){sep=true;h+=`<div class=catgrp>Not in the cut yet — placed on the next re-plan</div>`}
   const ck=chosen.has(ckey(x));
   h+=`<div class="card${k==j?" act":""}${x.cut?" cut":""}${ck?" chk":""}" data-j=${k}><div class=th data-j=${k}></div>
-  <div class=bd><div><b>${x.shot?(x.shot.fmt=="L"?"Shot ":"Portrait shot ")+x.shot.n:"New"}</b> ${x.cut?"":"<span class=tag>pick</span> "}${{open:"<span class=tag>★ opening</span> ",end:"<span class=tag>⚑ ending</span> "}[roleOf(x.c.id,x.a,x.b)]||""}· ${esc(x.c.id)}<br>
+  <div class=bd><div><b>${x.shot?(x.shot.fmt=="L"?"Shot ":"Portrait shot ")+x.shot.n:"New"}</b> ${x.cut?"":"<span class=tag>pick</span> "}${!x.cut&&reel=="all"&&onlyOf(x.c.id,x.a,x.b)?`<span class=tag>${esc(onlyOf(x.c.id,x.a,x.b).map(rlab).join(" + "))} only</span> `:""}${{open:"<span class=tag>★ opening</span> ",end:"<span class=tag>⚑ ending</span> "}[roleOf(x.c.id,x.a,x.b)]||""}· ${esc(x.c.id)}<br>
   <small>${fmt(x.a)} – ${fmt(x.b)} · <b>${(x.b-x.a).toFixed(2)} s</b> · ${esc(x.c.clock)}</small></div>
   <div><button data-del=${k} title="${x.cut?"take this shot out of the cut (bans its stretch)":"remove this pick"}">✕</button></div></div></div>`});
  $("cards").innerHTML=h||`<p style="color:var(--mut)">No picks yet — choose footage in Sources.</p>`;
@@ -711,7 +771,9 @@ function selview(){order=allSels();
   el.setAttribute("style",thumbAt(x.c,x.a,hh,tw0));
   el.innerHTML=`<span>${k1(el)}</span><input type=checkbox class=ck data-ck=${el.dataset.j} title="select (shift-click: a range)"${chosen.has(ckey(x))?" checked":""}>`});
  function k1(el){const x=order[+el.dataset.j];return (+el.dataset.j+1)+" · "+(x.b-x.a).toFixed(1)+"s"}
- $("ped").style.display=PX()?"block":"none";if(PX())pdraw()}
+ $("ped").style.display=PX()?"block":"none";const px=PX();
+ $("preels").innerHTML=px&&px.k>=0&&RS.length>1?"In "+RS.map(r=>`<button data-reel="${esc(r.id)}" class="${inReel(px.c.id,px.a,px.b,r.id)?"on":""}" title="put this pick in / take it out of the ${esc(r.label)} reel">${esc(r.label)}</button>`).join(""):"";
+ if(px)pdraw()}
 $("cards").onclick=ev=>{const c=ev.target.closest("[data-ck]");
  if(c){ev.stopPropagation();ev.preventDefault();tick(+c.dataset.ck,ev.shiftKey);return}
  const cd=ev.target.closest(".card");if(cd&&(ev.shiftKey||ev.ctrlKey||ev.metaKey)&&!ev.target.closest("[data-del]")){tick(+cd.dataset.j,ev.shiftKey);return}
@@ -789,6 +851,8 @@ $("ped").onclick=ev=>{const b=ev.target.closest("button");if(!b)return;const x=P
  else if(b.id=="pprev")pick(Math.max(0,pj()-1),!pv.paused);else if(b.id=="pnext")pick(Math.min(order.length-1,pj()+1),!pv.paused)
  else if(b.id=="pin")edit(Math.min(pnow(),x.b-0.1),x.b);else if(b.id=="pout")edit(x.a,Math.max(pnow(),x.a+0.1))
  else if(b.id=="popen"){view(1);go(x.i);act=x.k;vid.addEventListener("loadedmetadata",()=>seek(x.a),{once:true})}
+ else if(b.dataset.reel){if(x.k>=0){const r=b.dataset.reel,on=!inReel(x.c.id,x.a,x.b,r);
+  if(!on&&r==reel&&(onlyOf(x.c.id,x.a,x.b)||RID).length>1){pk=null;pv.pause()}setIn(x.c.id,x.a,x.b,r,on)}}
  else if(b.id=="pfirst")setRole(x,"open");else if(b.id=="plast")setRole(x,"end")
  else if(b.id=="pdel"){const j=pj();pk=null;pv.pause();drop(x);if(order[j])pick(j,false)}};
 // a pick goes; a shot of the cut is banned, so the next re-plan puts something else there

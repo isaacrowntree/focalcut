@@ -7,6 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Picks per reel.** One `picks.json` serves the project's reel and its `cuts` (a 90 s version, say): a clip's
+  `only` gives a selection to some reels only. The source page has a Reel switch (each reel's shots in the lanes,
+  other reels' picks faded, new picks for the reel being picked for) and a tick per reel on every pick; the
+  planner takes each reel's own. The source page also shows the cuts' shots, and a cut's review step refreshes it.
+
 ### Docs
 
 - **Docs site** at https://isaacrowntree.com/focalcut/ (mdBook from `docs/`, `book.toml`, rebuilt by

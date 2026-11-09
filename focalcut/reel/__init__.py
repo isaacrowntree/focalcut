@@ -80,9 +80,9 @@ def run(folder: str, steps=None, formats=None, workers: int = 2, draft: bool = F
         elif step in ("xml", "review"):
             for f in formats:
                 mod.run(project, f, cut=project.cut_name(f))
-            if step == "review" and not cut:
+            if step == "review":                    # the one source page serves every reel (a cut's too)
                 from . import browse
-                browse.run(project)
+                browse.run(Project(folder) if cut else project)
         elif step in ("shake", "focus"):
             mod.run(project, workers=max(workers, 1) + 1)
         else:                                       # units, subject, semantic, moments, faces, people, role
