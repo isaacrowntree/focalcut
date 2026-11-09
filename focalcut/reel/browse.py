@@ -155,12 +155,49 @@ def _uses(plans, uid, x0):
                   for i, s in enumerate(p["shots"]) if s["unit"]["id"] == uid] for fmt, p in plans.items()}
 
 
+TAGS_JS = r"""// per-reel picks: one picks.json serves the project's reel ("main") and its cuts. A clip's "only" gives a value to
+// some reels: its key is the "add" range as written, or "<field>:<value>" (ban, prefer, open, end; "more:"); a value
+// not listed is in every reel. R is the reel a page edits for ("all": every reel).
+const RS=D.reels||[],RID=RS.map(r=>r.id),near2=(u,v)=>Math.abs(u-v)<0.006;
+const TF=/^(ban|prefer|open|end|more):(.*)$/;
+function valEq(f,x,v){if(f=="more")return true;if(x=="all"||v=="all")return x==v;const[a,b]=span(x),[c,d]=span(v);return near2(a,c)&&near2(b,d)}
+function tagParts(k){const m=TF.exec(k);return m?[m[1],m[2]]:["add",k]}
+function tagsOf(id,f,v){const o=(P[id]||{}).only;if(!o)return null;
+ for(const k in o){const[kf,kv]=tagParts(k);if(kf==f&&valEq(f,kv,v))return Array.isArray(o[k])?o[k]:null}return null}
+function setTags(id,f,v,list){const e=ent(id),o={};
+ for(const k in e.only||{}){const[kf,kv]=tagParts(k);if(!(kf==f&&valEq(f,kv,v)))o[k]=e.only[k]}
+ if(list&&RID.length>1&&!RID.every(r=>list.includes(r)))o[f=="add"?v:f+":"+(f=="more"?"":v)]=RID.filter(r=>list.includes(r));
+ if(Object.keys(o).length)e.only=o;else delete e.only}
+function isIn(id,f,v,R){if(R=="all")return true;const t=tagsOf(id,f,v);return!t||t.includes(R)}
+function vals(id,f,R){return((P[id]||{})[f]||[]).filter(x=>isIn(id,f,x,R))}
+// add a value for reel R (already there for other reels: R joins them); take it out of R (gone when no reel is left)
+function addVal(id,f,v,R){const e=ent(id),L=e[f]=e[f]||[],x=L.find(y=>valEq(f,y,v));
+ if(x===undefined){L.push(v);setTags(id,f,v,R=="all"?null:[R]);return true}
+ const t=tagsOf(id,f,x);if(R=="all"){setTags(id,f,x,null);return!!t}
+ if(t&&!t.includes(R)){setTags(id,f,x,[...t,R]);return true}return false}
+function delVal(id,f,v,R){const e=P[id];if(!e||!e[f])return;const k=e[f].findIndex(y=>valEq(f,y,v));if(k<0)return;
+ const x=e[f][k],t=(tagsOf(id,f,x)||RID).filter(r=>r!=R);
+ if(R=="all"||!t.length){e[f].splice(k,1);setTags(id,f,x,null)}else setTags(id,f,x,t)}
+// "more" (more shots from the clip) and "open" / "end" (the pick a reel opens / ends on: one value per clip)
+function moreIn(id,R){const e=P[id]||{};return e.more&&isIn(id,"more","",R)?e.more:0}
+function addMore(id,d,R){const e=ent(id),had=e.more||0,t=tagsOf(id,"more","");e.more=Math.max(0,had+d);
+ if(!had)setTags(id,"more","",R=="all"?null:[R]);else if(d>0&&t&&R!="all"&&!t.includes(R))setTags(id,"more","",[...t,R])}
+function roleIn(id,f,R){const e=P[id]||{};return typeof e[f]=="string"&&isIn(id,f,e[f],R)?e[f]:null}
+function clearRole(id,f,R){const e=P[id];if(!e||typeof e[f]!="string")return;const t=(tagsOf(id,f,e[f])||RID).filter(r=>r!=R);
+ if(R=="all"||!t.length){setTags(id,f,e[f],null);delete e[f]}else setTags(id,f,e[f],t)}
+// a clip's tags whose value is gone go too
+function pruneTags(e){if(!e.only)return;for(const k in e.only){const[f,v]=tagParts(k);
+ const live=f=="more"?!!e.more:(f=="open"||f=="end")?typeof e[f]=="string"&&valEq(f,e[f],v):(e[f]||[]).some(x=>valEq(f,x,v));
+ if(!live)delete e.only[k]}if(!Object.keys(e.only).length)delete e.only}
+"""
+
+
 def page(clips, picks=None, key="sources", title="Sources", root="", nav="", reels=None):
     """root: the project folder relative to the page ("../../../"), so its API calls work under any server prefix.
     reels: [{"id", "label"}] of the reels picks can be given to (the page's reel switch; none: no switch)."""
     data = json.dumps(dict(clips=clips, picks=picks or {}, key=key, tile=TILE, root=root,
                            reels=reels or [])).replace("</", "<\\/")
-    return PAGE.replace("%DATA%", data).replace("%TITLE%", html.escape(title)).replace("%NAV%", nav).replace("%MENU%", MENU_CSS)
+    return PAGE.replace("%DATA%", data).replace("%TAGS%", TAGS_JS).replace("%TITLE%", html.escape(title)).replace("%NAV%", nav).replace("%MENU%", MENU_CSS)
 
 
 MENU_CSS = """.menu{display:inline-flex;gap:12px;flex-wrap:wrap;font-size:13px;margin-right:8px}
@@ -357,7 +394,7 @@ font:12px ui-monospace,monospace;pointer-events:none}.frl b{color:var(--io)}
 .fk{top:1px;bottom:1px;width:6px;margin-left:-3px;background:var(--io);border-radius:2px;pointer-events:none;z-index:2}
 </style>
 <header><h1>%TITLE%</h1>%NAV%
-<div id=views><button id=v1 class=on title="every clip, one at a time">Clips</button><button id=v2 title="the cut, shot by shot, with your picks in it">Cut &amp; picks</button></div><span id=reelsw title="which reel you're picking for: its shots show in the lanes; picks for other reels fade; new picks go in this reel only (All: every reel)"></span><span id=counts></span>
+<div id=views><button id=v1 class=on title="every clip, one at a time">Clips</button><button id=v2 title="the cut, shot by shot, with your picks in it">Cut &amp; picks</button></div><span id=reelsw title="which reel you're picking for: its shots show in the lanes; picks for other reels fade; new picks, bans, the opening and the ending are for this reel only, and removing one takes it out of this reel only (All: every reel)"></span><span id=counts></span>
 <span class=sp></span><span id=saved></span>
 <span class=pj><button id=copy title="copy picks.json to the clipboard">Copy</button><button id=dl title="download picks.json">Download</button></span>
 </header>
@@ -443,9 +480,9 @@ const ls={get(k){try{return JSON.parse(localStorage.getItem(LS+k))}catch(e){retu
  set(k,v){try{localStorage.setItem(LS+k,JSON.stringify(v))}catch(e){}}};
 let P=JSON.parse(JSON.stringify(D.picks)),server=false,timer=null;
 const ent=id=>(P[id]&&typeof P[id]==="object"&&!Array.isArray(P[id]))?P[id]:(P[id]={});
+%TAGS%
 function tidy(){for(const k in P){const e=P[k];if(k[0]=="_"||!e||typeof e!=="object"||Array.isArray(e))continue;
- if(e.only){const ss=(e.add||[]).map(span);for(const q in e.only){const[u,v]=span(q);
-  if(!ss.some(([a,b])=>near2(a,u)&&near2(b,v)))delete e.only[q]}if(!Object.keys(e.only).length)delete e.only}
+ pruneTags(e);
  for(const f of["ban","prefer","add","portrait"])if(e[f]&&!e[f].length)delete e[f];if(e.more===0)delete e.more;
  if(!Object.keys(e).length)delete P[k]}}
 function status(t,c){const s=$("saved");s.textContent=t;s.className=c||""}
@@ -463,38 +500,47 @@ async function boot(){try{const r=await fetch(D.root+"api/picks",{cache:"no-stor
 // selections of a clip: [[a,b],...] sorted; written back as "m:ss.ss-m:ss.ss" (single times stay as they were)
 function sels(id){return((P[id]||{}).add||[]).filter(isRange).map(span).sort((x,y)=>x[0]-y[0])}
 function points(id){return((P[id]||{}).add||[]).filter(v=>!isRange(v)).map(v=>span(v)[0])}
-function setSels(id,list){const e=ent(id);const pts=(e.add||[]).filter(v=>!isRange(v));
- list=list.map(([a,b])=>[Math.max(0,Math.min(a,b)),Math.max(a,b)]).filter(([a,b])=>b-a>=0.1).sort((x,y)=>x[0]-y[0]);
- const old=sels(id).map(([a,b])=>[a,b,onlyOf(id,a,b)]),only={};   // (each keeps its reels; a new one: this reel's)
- list.forEach(([a,b])=>{let best=null,ov=0;old.forEach(([u,v,o])=>{const x=Math.min(b,v)-Math.max(a,u);if(x>ov){ov=x;best=o}});
-  const tags=ov>0?best:(reel=="all"?null:[reel]);if(tags&&RID.length>1&&!RID.every(r=>tags.includes(r)))only[rkey(a,b)]=tags});
- if(Object.keys(only).length)e.only=only;else delete e.only;
- e.add=[...pts,...list.map(([a,b])=>fmt(a)+"-"+fmt(b))];save()}
-function banned(id){return((P[id]||{}).ban||[])}
+function setSels(id,list,quiet){const e=ent(id);const pts=(e.add||[]).filter(v=>!isRange(v));
+ list=list.map(([a,b])=>[Math.max(0,Math.min(a,b)),Math.max(a,b)]).filter(([a,b])=>b-a>=0.1);
+ // each keeps its reels (the old selection it overlaps most: moved or trimmed); a new one is for the reel being picked
+ // for; one taken away while picking for a reel leaves that reel only, and stays in the others
+ const old=sels(id).map(([a,b])=>[a,b,onlyOf(id,a,b)]);
+ const items=list.map(([a,b])=>{let best=null,ov=0;old.forEach(([u,v,o])=>{const x=Math.min(b,v)-Math.max(a,u);if(x>ov){ov=x;best=o}});
+  return{a,b,t:ov>0?best:(reel=="all"?null:[reel])}});
+ if(reel!="all")old.forEach(([u,v,o])=>{if(list.some(([a,b])=>Math.min(b,v)-Math.max(a,u)>0))return;
+  const t=(o||RID).filter(r=>r!=reel);if(t.length&&RID.length>1)items.push({a:u,b:v,t})});
+ items.sort((x,y)=>x.a-y.a);
+ if(e.only)for(const k in e.only)if(tagParts(k)[0]=="add"&&isRange(k))delete e.only[k];
+ e.add=[...pts,...items.map(x=>fmt(x.a)+"-"+fmt(x.b))];items.forEach(x=>setTags(id,"add",fmt(x.a)+"-"+fmt(x.b),x.t));
+ if(!quiet)save()}
+function banned(id){return vals(id,"ban",reel)}
 // reels: one picks.json serves the project's reel ("main") and its cuts (reel.json "cuts"); a clip's "only" maps a
 // selection to the reels it is for, and one not listed is for every reel
-const RS=D.reels||[],RID=RS.map(r=>r.id),rlab=r=>(RS.find(x=>x.id==r)||{label:r}).label;
+const rlab=r=>(RS.find(x=>x.id==r)||{label:r}).label;
 let reel=ls.get("reel")||"all";if(!RID.includes(reel))reel="all";
-const rkey=(a,b)=>fmt(a)+"-"+fmt(b),near2=(u,v)=>Math.abs(u-v)<0.006;
-function onlyOf(id,a,b){const o=(P[id]||{}).only;if(!o)return null;for(const k in o){const[u,v]=span(k);
- if(near2(u,a)&&near2(v,b))return Array.isArray(o[k])?o[k]:null}return null}
-function inReel(id,a,b,r=reel){if(r=="all")return true;const v=onlyOf(id,a,b);return!v||v.includes(r)}
-function setIn(id,a,b,r,on){const e=ent(id);let v=onlyOf(id,a,b)||RID.slice();
+const rkey=(a,b)=>fmt(a)+"-"+fmt(b);
+const onlyOf=(id,a,b)=>tagsOf(id,"add",rkey(a,b));
+const inReel=(id,a,b,r=reel)=>isIn(id,"add",rkey(a,b),r);
+function setIn(id,a,b,r,on){let v=onlyOf(id,a,b)||RID.slice();
  v=on?[...new Set([...v,r])]:v.filter(x=>x!=r);if(!v.length){status("a pick is in one reel at least — ✕ removes it","err");return renderAll()}
- const o={};for(const k in e.only||{}){const[u,w]=span(k);if(!(near2(u,a)&&near2(w,b)))o[k]=e.only[k]}
- if(!RID.every(x=>v.includes(x)))o[rkey(a,b)]=RID.filter(x=>v.includes(x));e.only=o;save()}
+ // (its opening / ending role follows it out of a reel)
+ if(!on)for(const f of["open","end"]){const w=roleIn(id,f,r);if(w&&same(w,a,b))clearRole(id,f,r)}
+ setTags(id,"add",rkey(a,b),v);save()}
 function useReel(){const r=reel=="all"?"main":reel;D.clips.forEach(c=>{const u=(c.R||{})[r];if(u){c.L=u.L;c.P=u.P}});
  $("reelsw").innerHTML=RS.length>1?"<b>Reel</b>"+[["all","All"],...RS.map(x=>[x.id,x.label])].map(([k,l])=>
   `<button data-reel="${esc(k)}" class="${k==reel?"on":""}">${esc(l)}</button>`).join(""):""}
 $("reelsw").onclick=ev=>{const b=ev.target.closest("[data-reel]");if(!b)return;reel=b.dataset.reel;ls.set("reel",reel);useReel();place.clear();
- status(reel=="all"?"all reels: new picks go in every reel":`${rlab(reel)}: its shots in the lanes; new picks go in this reel only`,"ok");renderAll()}
+ status(reel=="all"?"all reels: picks and bans go in every reel":`${rlab(reel)}: picks, bans, opening and ending are for this reel only`,"ok");renderAll()}
 useReel();
 // one pick opens the reel and one ends it: the clip's "open" / "end" is that pick's in-out (it stays a selection too)
 const same=(v,a,b)=>{if(!v)return false;const[u,w]=span(v);return Math.abs(u-a)<0.01&&Math.abs(w-b)<0.01};
-function roleOf(id,a,b){const e=P[id]||{};return same(e.open,a,b)?"open":same(e.end,a,b)?"end":null}
-function setRole(x,f){const on=same((P[x.c.id]||{})[f],x.a,x.b);
- for(const k in P){const e=P[k];if(k[0]!="_"&&e&&typeof e=="object"&&!Array.isArray(e))delete e[f]}
- if(!on){const e=ent(x.c.id);e[f]=fmt(x.a)+"-"+fmt(x.b);if(x.k<0){const ss=sels(x.c.id);ss.push([x.a,x.b]);return setSels(x.c.id,ss)}}
+function roleOf(id,a,b){return same(roleIn(id,"open",reel),a,b)?"open":same(roleIn(id,"end",reel),a,b)?"end":null}
+// (per reel: picking for one reel sets or clears that reel's; a clip holds one opening and one ending)
+function setRole(x,f){const on=same(roleIn(x.c.id,f,reel),x.a,x.b);
+ for(const k in P){const e=P[k];if(k[0]!="_"&&e&&typeof e=="object"&&!Array.isArray(e)&&roleIn(k,f,reel))clearRole(k,f,reel)}
+ if(!on){const e=ent(x.c.id);if(typeof e[f]=="string"){setTags(x.c.id,f,e[f],null);delete e[f]}
+  e[f]=fmt(x.a)+"-"+fmt(x.b);setTags(x.c.id,f,e[f],reel=="all"?null:[reel]);
+  if(x.k<0){const ss=sels(x.c.id);ss.push([x.a,x.b]);return setSels(x.c.id,ss)}}
  save();status(on?`no ${f=="open"?"opening":"ending"} pick: the planner chooses`:`${x.c.id} ${fmt(x.a)} ${f=="open"?"opens":"ends"} the reel`,"ok")}
 // --- clip list ---
 let cur=0,cat="all",onlySel=false,rub=null;const seen=new Set(ls.get("seen")||[]);
@@ -608,7 +654,7 @@ function renderAll(){list();draw();mysel();selview();
 function counts(){const n=f=>D.clips.reduce((a,c)=>a+f(c),0),L=n(c=>c.L.length),Pn=n(c=>c.P.length),
   my=n(c=>mine(c.id).length+points(c.id).length),fk=n(c=>fkeys(c.id).length),
   bc=n(c=>banned(c.id).includes("all")?1:0),br=n(c=>banned(c.id).filter(v=>v!="all").length),
-  more=n(c=>(P[c.id]||{}).more?1:0),unseen=D.clips.length-D.clips.filter(c=>seen.has(c.id)).length;
+  more=n(c=>moreIn(c.id,reel)?1:0),unseen=D.clips.length-D.clips.filter(c=>seen.has(c.id)).length;
  const it=(v,t,cls="")=>`<span class="${cls}" title="${t}"><b>${v}</b> ${t.split(":")[0]}</span>`;
  $("counts").innerHTML=[it(L,"landscape shots: in the current landscape cut"),it(Pn,"portrait shots: in the current portrait cut"),
   it(my,"your picks"+(reel=="all"?"":" for "+rlab(reel))+": selections and marked moments the next re-plan must use","y"),
@@ -656,8 +702,7 @@ L.addEventListener("pointerup",ev=>{if(!drag||drag.el)return;const c=C();
 addEventListener("pointerup",()=>{if(drag&&drag.el){drag=null;draw()}});
 // the reel lanes: ✕ on a shot takes it out of the cut; drag along either lane to take out every landscape and portrait
 // shot in the range (bans their stretches; one undo step; the ends snap to the playhead); a plain click makes it a pick
-function banShots(c,list){const e=ent(c.id);e.ban=e.ban||[];let n=0;
- list.forEach(([a,b])=>{const v=fmt(a)+"-"+fmt(b);if(!e.ban.includes(v)){e.ban.push(v);n++}});if(n)save();return n}
+function banShots(c,list){let n=0;list.forEach(([a,b])=>{if(addVal(c.id,"ban",fmt(a)+"-"+fmt(b),reel))n++});if(n)save();return n}
 for(const id of["lland","lport"]){const el=$(id);
  el.addEventListener("pointerdown",ev=>{if(ev.button||ev.target.closest(".ux"))return;el.setPointerCapture(ev.pointerId);
   rub={t0:snapT(el,ev),t1:snapT(el,ev),x:ev.clientX,moved:false}});
@@ -703,10 +748,9 @@ function addSel(){const io=pend();if(!io)return status("mark an in (I) and an ou
  ss.push(io);inPt=outPt=null;setSels(c.id,ss);act=sels(c.id).findIndex(([a])=>Math.abs(a-io[0])<0.01);renderAll()}
 function delHere(){const c=C(),ss=sels(c.id),t=now();let k=act>=0&&ss[act]&&t>=ss[act][0]-0.05&&t<=ss[act][1]+0.05?act:
  ss.findIndex(([a,b])=>t>=a-0.05&&t<=b+0.05);if(k<0)return;ss.splice(k,1);act=-1;setSels(c.id,ss)}
-function banIO(){const io=pend();if(!io)return status("mark an in–out to ban first","err");const e=ent(C().id);
- e.ban=e.ban||[];e.ban.push(short(io[0])+"-"+short(io[1]));inPt=outPt=null;save()}
-$("banc").onclick=()=>{const e=ent(C().id);e.ban=e.ban||[];const k=e.ban.indexOf("all");
- if(k>=0)e.ban.splice(k,1);else e.ban.push("all");save()};
+function banIO(){const io=pend();if(!io)return status("mark an in–out to ban first","err");
+ addVal(C().id,"ban",short(io[0])+"-"+short(io[1]),reel);inPt=outPt=null;save()}
+$("banc").onclick=()=>{const id=C().id;if(banned(id).includes("all"))delVal(id,"ban","all",reel);else addVal(id,"ban","all",reel);save()};
 $("bin").onclick=()=>{inPt=now();draw()};$("bout").onclick=()=>{outPt=now();draw()};$("badd").onclick=addSel;
 function marks(){const c=C();return[...sels(c.id).flat(),...points(c.id),...c.moments.map(m=>m[0])].sort((a,b)=>a-b)}
 function jump(d){const t=now(),p=marks();const x=d>0?p.find(v=>v>t+0.03):p.reverse().find(v=>v<t-0.03);if(x!==undefined)seek(x)}
@@ -736,10 +780,9 @@ function tick(j,range){const x=order[j];if(!x)return;const on=!chosen.has(ckey(x
  for(let k=lo;k<=hi;k++){const y=order[k];if(y)on?chosen.add(ckey(y)):chosen.delete(ckey(y))}lastCk=j;selview()}
 function dropMany(xs){const gone=new Map();
  xs.forEach(x=>{if(x.k>=0){if(!gone.has(x.c.id))gone.set(x.c.id,[]);gone.get(x.c.id).push([x.a,x.b])}
-  else{const e=ent(x.c.id);e.ban=e.ban||[];e.ban.push(fmt(x.a)+"-"+fmt(x.b))}});
- gone.forEach((ab,id)=>{const e=ent(id),pts=(e.add||[]).filter(v=>!isRange(v));
-  const keep=sels(id).filter(([a,b])=>!ab.some(([u,v])=>Math.abs(a-u)<0.002&&Math.abs(b-v)<0.002));
-  e.add=[...pts,...keep.map(([a,b])=>fmt(a)+"-"+fmt(b))]});
+  else addVal(x.c.id,"ban",fmt(x.a)+"-"+fmt(x.b),reel)});
+ gone.forEach((ab,id)=>{for(const[a,b]of ab)for(const f of["open","end"])if(same(roleIn(id,f,reel),a,b))clearRole(id,f,reel);
+  setSels(id,sels(id).filter(([a,b])=>!ab.some(([u,v])=>Math.abs(a-u)<0.002&&Math.abs(b-v)<0.002)),true)});
  save()}
 $("bulkall").onclick=()=>{order.forEach(x=>{if(x.cut)chosen.add(ckey(x))});selview()};
 $("bulkclr").onclick=()=>{chosen.clear();lastCk=-1;selview()};
@@ -792,7 +835,8 @@ function pick(j,play){const x=order[j];if(!x)return stopAll();pk={id:x.c.id,a:x.
 // change the current pick's in / out (lengthen, trim, slip); it keeps its place in the cut
 function edit(a,b){const x=PX();if(!x)return;const L=x.c.dur;if(b-a<0.1)return;
  if(a<0){b-=a;a=0}if(b>L){a-=b-L;b=L}a=Math.max(0,a);
- const e0=P[x.c.id]||{};for(const f of["open","end"])if(same(e0[f],x.a,x.b))e0[f]=fmt(a)+"-"+fmt(b);   // (its role goes with it)
+ const e0=P[x.c.id]||{};for(const f of["open","end"])if(same(e0[f],x.a,x.b)){const t=tagsOf(x.c.id,f,e0[f]);   // (its role goes with it)
+  setTags(x.c.id,f,e0[f],null);e0[f]=fmt(a)+"-"+fmt(b);setTags(x.c.id,f,e0[f],t)}
  const ss=sels(x.c.id);if(x.k>=0)ss[x.k]=[a,b];else ss.push([a,b]);place.set(pfmt+"|"+pkey(x.c.id,a),x.shot);pk={id:x.c.id,a};
  if(a<pa||b>pb){const ctx=Math.max(2,(b-a)*0.75);pa=Math.max(0,a-ctx);pb=Math.min(L,b+ctx)}
  setSels(x.c.id,ss)}
@@ -856,9 +900,9 @@ $("ped").onclick=ev=>{const b=ev.target.closest("button");if(!b)return;const x=P
  else if(b.id=="pfirst")setRole(x,"open");else if(b.id=="plast")setRole(x,"end")
  else if(b.id=="pdel"){const j=pj();pk=null;pv.pause();drop(x);if(order[j])pick(j,false)}};
 // a pick goes; a shot of the cut is banned, so the next re-plan puts something else there
-function drop(x){if(x.k>=0){const e=P[x.c.id]||{};for(const f of["open","end"])if(same(e[f],x.a,x.b))delete e[f];
+function drop(x){if(x.k>=0){for(const f of["open","end"])if(same(roleIn(x.c.id,f,reel),x.a,x.b))clearRole(x.c.id,f,reel);
   const ss=sels(x.c.id);ss.splice(x.k,1);setSels(x.c.id,ss)}
- else{const e=ent(x.c.id);e.ban=e.ban||[];e.ban.push(fmt(x.a)+"-"+fmt(x.b));save()}}
+ else{addVal(x.c.id,"ban",fmt(x.a)+"-"+fmt(x.b),reel);save()}}
 $("playall").onclick=()=>{mode="all";const j=Math.max(0,pj());pick(j,true)};
 $("stopall").onclick=stopAll;
 // --- portrait framing: the crop the planner derives (served by /api/crop) and the editor's focal points, picks

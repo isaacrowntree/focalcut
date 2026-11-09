@@ -274,23 +274,35 @@ class Project:
 
 
 def only_reel(entry: dict, reel: str) -> dict:
-    """A clip's picks for one reel: its "add" selections without those its "only" gives to other reels."""
+    """A clip's picks for one reel. Its "only" gives values to some reels: keyed by the "add" range as written, or
+    "<field>:<value>" for "ban", "prefer", "open" and "end" ("more:" for "more"); a value not listed is in every reel."""
     only = entry.get("only")
     if not only:
         return entry
-    keyed = {_span_key(k): v for k, v in only.items() if isinstance(v, list)}
+    keyed = {}
+    for k, v in only.items():
+        if isinstance(v, list):
+            f, _, val = k.partition(":") if k.split(":", 1)[0] in TAGGED else ("add", "", k)
+            keyed[(f, "*" if f == "more" else val.strip() if val.strip() == "all" else _span_key(val))] = v
 
-    def ours(v):
-        return reel in keyed.get(_span_key(v), [reel])
+    def ours(f, v):
+        key = (f, "*" if f == "more" else "all" if str(v).strip() == "all" else _span_key(v))
+        return reel in keyed.get(key, [reel])
     e = {k: v for k, v in entry.items() if k != "only"}
-    if "add" in e:
-        e["add"] = [v for v in e["add"] if ours(v)]
-        if not e["add"]:
-            del e["add"]
-    for f in ("open", "end"):                       # the opening / ending pick goes with its selection
-        if isinstance(e.get(f), str) and not ours(e[f]):
+    for f in ("add", "ban", "prefer"):
+        if isinstance(e.get(f), list):
+            e[f] = [v for v in e[f] if ours(f, v)]
+            if not e[f]:
+                del e[f]
+    for f in ("open", "end"):                       # the opening / ending a reel was given
+        if isinstance(e.get(f), str) and not (ours(f, e[f]) and ours("add", e[f])):   # (and goes with its pick)
             del e[f]
+    if e.get("more") and not ours("more", None):
+        del e["more"]
     return e
+
+
+TAGGED = ("ban", "prefer", "open", "end", "more")
 
 
 def _span_key(v) -> tuple | None:

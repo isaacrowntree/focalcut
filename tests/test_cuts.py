@@ -106,3 +106,17 @@ def test_picks_go_to_the_reels_the_editor_ticked(tmp_path):
     assert main["add"] == ["0:01.00-0:02.00", "0:05.00-0:06.00"] and main["end"] == "0:05.00-0:06.00"
     assert short["add"] == ["0:01.00-0:02.00", "0:08-0:09"] and "end" not in short and "only" not in short
     assert len(Project(folder).picks(reel=False)["C3"]["add"]) == 3
+
+
+def test_bans_prefers_more_and_roles_go_to_their_reels_too(tmp_path):
+    folder = project(tmp_path, dict(short=dict(length=90)))
+    d = tmp_path / "focalcut" / "reel"
+    json.dump({"C3": {"ban": ["all", "0:10-0:12", "0:20-0:22"], "prefer": ["0:30-0:31"], "more": 2,
+                      "open": "0:01-0:02", "add": ["0:01-0:02"],
+                      "only": {"ban:all": ["short"], "ban:0:10.00-0:12.00": ["main"], "prefer:0:30-0:31": ["short"],
+                               "more:": ["short"], "open:0:01-0:02": ["main"]}}}, open(d / "picks.json", "w"))
+    main, short = Project(folder).picks(rejects=False)["C3"], Project(folder, "short").picks(rejects=False)["C3"]
+    assert main["ban"] == ["0:10-0:12", "0:20-0:22"] and "prefer" not in main and "more" not in main
+    assert main["open"] == "0:01-0:02" and main["add"] == ["0:01-0:02"]
+    assert short["ban"] == ["all", "0:20-0:22"] and short["prefer"] == ["0:30-0:31"] and short["more"] == 2
+    assert short["open"] == "0:00-0:03" and short["add"] == ["0:01-0:02"]   # (reel.json's opening, as no pick is)

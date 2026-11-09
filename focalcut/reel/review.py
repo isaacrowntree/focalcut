@@ -18,6 +18,7 @@ import subprocess
 from urllib.parse import quote
 
 from . import browse
+from .project import Project
 
 
 def mmss(x):
@@ -32,11 +33,12 @@ def pick_line(s):
     return f'"{u["id"]}": {{"ban": ["{mmss(a)}-{mmss(a + s["length"])}"]}}'
 
 
-def page(plan, fmt, thumbs, sources=None, picks=None, key="review", root="", nav="", project=""):
+def page(plan, fmt, thumbs, sources=None, picks=None, key="review", root="", nav="", project="", reel="main", reels=None):
     """The review page's HTML; thumbs[i] is shot i's image path relative to the page (or None). sources: per unit id,
     {"video": its export file relative to the page, "moments": [[t, kind, rank], ...]} in the export's own timeline;
     picks: the current picks.json, which the page starts from; root: the project folder relative to the page, where
-    `focalcut reel serve` answers api/picks (served, the page saves picks.json itself)."""
+    `focalcut reel serve` answers api/picks (served, the page saves picks.json itself); reel: the reel this cut is
+    (picks made here are for it alone), reels: [{"id", "label"}] of every reel the picks serve."""
     w = 320 if fmt == "landscape" else 180
     cards, shots = [], []
     for i, s in enumerate(plan["shots"]):
@@ -52,10 +54,11 @@ def page(plan, fmt, thumbs, sources=None, picks=None, key="review", root="", nav
                      f'<button data-act=ban>Ban</button><button data-act=more>More +</button></span>'
                      f'<span class=st></span></figcaption></figure>')
         shots.append(dict(id=u["id"], a=round(a, 2), b=round(a + s["length"], 2), kind=s["kind"]))
-    data = json.dumps(dict(shots=shots, sources=sources or {}, picks=picks or {}, key=key, root=root)).replace("</", "<\\/")
+    data = json.dumps(dict(shots=shots, sources=sources or {}, picks=picks or {}, key=key, root=root, reel=reel,
+                           reels=reels or [])).replace("</", "<\\/")
     return (TEMPLATE.replace("%W%", str(w)).replace("%FMT%", html.escape(fmt)).replace("%N%", str(len(shots)))
             .replace("%CARDS%", "".join(cards)).replace("%DATA%", data).replace("%NAV%", nav).replace("%PROJECT%", html.escape(project))
-            .replace("%MENU%", browse.MENU_CSS))
+            .replace("%MENU%", browse.MENU_CSS).replace("%TAGS%", browse.TAGS_JS))
 
 
 TEMPLATE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
@@ -152,9 +155,11 @@ const store={get(){try{return JSON.parse(localStorage.getItem("picks:"+D.key))}c
  del(){try{localStorage.removeItem("picks:"+D.key)}catch(e){}}};
 let P=store.get()||JSON.parse(JSON.stringify(D.picks));
 const ent=id=>(P[id]&&typeof P[id]==="object"&&!Array.isArray(P[id]))?P[id]:(P[id]={});
+%TAGS%
+const R=D.reel||"main";   // picks made on this page are for this reel; the others' are left alone
 const esc=x=>String(x).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
 function tidy(){for(const k in P){const e=P[k];if(k[0]=="_"||!e||typeof e!=="object"||Array.isArray(e))continue;
- for(const f of ["ban","prefer","add"])if(e[f]&&!e[f].length)delete e[f];if(e.more===0)delete e.more;
+ pruneTags(e);for(const f of ["ban","prefer","add"])if(e[f]&&!e[f].length)delete e[f];if(e.more===0)delete e.more;
  if(!Object.keys(e).length)delete P[k]}}
 // served by `focalcut reel serve`: picks.json is read and written directly; opened as a file: kept in this browser
 let server=false,timer=null;const saved=t=>{const e=document.getElementById("saved");if(e)e.textContent=t};
@@ -168,20 +173,19 @@ const secs=v=>{if(typeof v==="number")return v;const p=String(v).split(":");retu
 const span=v=>{if(Array.isArray(v))return v.map(secs);const s=String(v);const i=s.indexOf("-");
  return i>0?[secs(s.slice(0,i)),secs(s.slice(i+1))]:[secs(s),secs(s)]};
 function shotRange(i){const s=D.shots[i];return range(s.a,s.b)}
-function isBanned(i){const s=D.shots[i],e=P[s.id];return !!(e&&Array.isArray(e.ban)&&(e.ban.includes("all")||
- e.ban.some(v=>{const[a,b]=span(v);return a<=s.a+0.05&&b>=s.b-0.05})))}
+function isBanned(i){const s=D.shots[i];return vals(s.id,"ban",R).some(v=>covers(v,s))}
 function covers(v,s){if(v=="all")return true;const[a,b]=span(v);return a<=s.a+0.05&&b>=s.b-0.05}
-function toggleBan(i){const s=D.shots[i],e=ent(s.id),r=shotRange(i);e.ban=e.ban||[];
- const k=e.ban.indexOf(r);if(k>=0)e.ban.splice(k,1);
- else if(isBanned(i)){const wide=e.ban.filter(v=>covers(v,s));                 // a wider ban ("all", a range)
-  if(!confirm("Lift the ban "+wide.join(", ")+" on "+s.id+"?"))return;e.ban=e.ban.filter(v=>!covers(v,s))}
- else e.ban.push(r);save()}
-function more(id,d){const e=ent(id);e.more=Math.max(0,(e.more||0)+d);save()}
+function toggleBan(i){const s=D.shots[i],r=shotRange(i),mine=vals(s.id,"ban",R);
+ if(mine.some(v=>valEq("ban",v,r)))delVal(s.id,"ban",r,R);
+ else if(isBanned(i)){const wide=mine.filter(v=>covers(v,s));                 // a wider ban ("all", a range)
+  if(!confirm("Lift the ban "+wide.join(", ")+" on "+s.id+"?"))return;wide.forEach(v=>delVal(s.id,"ban",v,R))}
+ else addVal(s.id,"ban",r,R);save()}
+function more(id,d){addMore(id,d,R);save()}
 function render(){
  document.querySelectorAll("figure").forEach(f=>{const i=+f.dataset.i,s=D.shots[i],e=P[s.id]||{};
   f.classList.toggle("banned",isBanned(i));
-  const bits=[];if(e.add&&e.add.length)bits.push("+"+e.add.length+" extra");if(e.more)bits.push("more ×"+e.more);
-  if(e.prefer&&e.prefer.length)bits.push("prefer "+e.prefer.join(", "));
+  const bits=[],ad=vals(s.id,"add",R),pr=vals(s.id,"prefer",R),mo=moreIn(s.id,R);
+  if(ad.length)bits.push("+"+ad.length+" extra");if(mo)bits.push("more ×"+mo);if(pr.length)bits.push("prefer "+pr.join(", "));
   f.classList.toggle("changed",!isBanned(i)&&bits.length>0);
   f.querySelector(".st").textContent=bits.join(" · ");
   f.querySelector("[data-act=ban]").textContent=isBanned(i)?"Unban":"Ban"});
@@ -221,13 +225,13 @@ function dur(){return vid.duration&&isFinite(vid.duration)?vid.duration:
 function zwin(){const L=dur(),w=Math.min(zoomW,L);let a=(drag&&drag.el===zt)?drag.a:now()-w/2;
  a=Math.min(Math.max(0,a),Math.max(0,L-w));return[a,a+w]}
 function marks(){const s=D.shots[cur],e=P[s.id]||{},L=dur(),out=[];
- (e.ban||[]).forEach(v=>out.push(v=="all"?["ban",0,L,"banned"]:["ban",...span(v),"banned "+v]));
- (e.prefer||[]).forEach(v=>out.push(["pre",...span(v),"prefer "+v]));
+ vals(s.id,"ban",R).forEach(v=>out.push(v=="all"?["ban",0,L,"banned"]:["ban",...span(v),"banned "+v]));
+ vals(s.id,"prefer",R).forEach(v=>out.push(["pre",...span(v),"prefer "+v]));
  D.shots.forEach((x,k)=>{if(x.id==s.id&&k!=cur)out.push(["oth",x.a,x.b,"shot "+(k+1)])});
  out.push(["cur",s.a,s.b,"this shot"]);
  if(inPt!==null||outPt!==null){const a=inPt??now(),b=outPt??now();out.push(["io",Math.min(a,b),Math.max(a,b),"in–out"])}
  ((D.sources[s.id]||{}).moments||[]).forEach(([t,k])=>out.push(["mom",t,null,k+" "+mmss(t)]));
- (e.add||[]).forEach(v=>out.push(["add",span(v)[0],null,"extra shot "+v]));
+ vals(s.id,"add",R).forEach(v=>out.push(["add",span(v)[0],null,"extra shot "+v]));
  return out}
 function paint(el,a,b,ticks){const W=b-a,pct=x=>(100*(x-a)/W).toFixed(3)+"%";let h="";
  if(ticks){const step=W<=4?0.2:W<=12?0.5:W<=40?1:5,lab=W<=4?1:W<=12?2:W<=40?5:30;
@@ -245,10 +249,10 @@ function draw(){if(cur===null)return;const s=D.shots[cur],e=P[s.id]||{};
  document.getElementById("speed").textContent=rew?"◀◀ "+rew.n+"×":shuttle>1?"▶▶ "+shuttle+"×":(inPt!==null||outPt!==null)?
   "in "+(inPt===null?"–":mmss(inPt))+" · out "+(outPt===null?"–":mmss(outPt)):"";
  document.querySelectorAll("#alts button").forEach(b=>b.classList.toggle("on",Math.abs(+b.dataset.t-now())<0.6));
- const m=document.getElementById("marks");const adds=e.add||[];
+ const m=document.getElementById("marks");const adds=vals(s.id,"add",R);
  m.innerHTML=(adds.length?`Extra shots (${adds.length}): `+adds.map((v,k)=>`<b class=jm data-t="${span(v)[0]}" style="cursor:pointer">${esc(v)}</b> <button data-k=${k} class=rm>✕</button>`).join(" "):"No extra shots marked — press M at each moment you want.")+
-  (e.more?` · more from this video ×${e.more}`:"")+(isBanned(cur)?" · <span style='color:var(--ban)'>this shot is banned</span>":"");
- m.querySelectorAll(".rm").forEach(b=>b.onclick=()=>{e.add.splice(+b.dataset.k,1);save()});
+  (moreIn(s.id,R)?` · more from this video ×${moreIn(s.id,R)}`:"")+(isBanned(cur)?" · <span style='color:var(--ban)'>this shot is banned</span>":"");
+ m.querySelectorAll(".rm").forEach(b=>b.onclick=()=>{delVal(s.id,"add",adds[+b.dataset.k],R);save()});
  m.querySelectorAll(".jm").forEach(b=>b.onclick=()=>seek(+b.dataset.t))}
 // drag to scrub: the overview maps the whole video; the zoomed strip holds its window still while you drag
 function at(el,ev){const r=el.getBoundingClientRect(),f=Math.min(Math.max((ev.clientX-r.left)/r.width,0),1);
@@ -273,7 +277,7 @@ function playJ(){vid.pause();shuttle=0;const n=rew?Math.min(rew.n*2,8):1;if(rew)
 function pause(){vid.pause();stopShuttle();draw()}
 const step=d=>{pause();seek(now()+d)};
 function pts(){const s=D.shots[cur],e=P[s.id]||{};return[...D.shots.filter(x=>x.id==s.id).map(x=>x.a),
- ...((D.sources[s.id]||{}).moments||[]).map(m=>m[0]),...(e.add||[]).map(v=>span(v)[0])].sort((a,b)=>a-b)}
+ ...((D.sources[s.id]||{}).moments||[]).map(m=>m[0]),...vals(s.id,"add",R).map(v=>span(v)[0])].sort((a,b)=>a-b)}
 function jump(dir){const t=now(),p=pts();const x=dir>0?p.find(v=>v>t+0.05):p.reverse().find(v=>v<t-0.05);if(x!==undefined)seek(x)}
 document.getElementById("back").onclick=()=>step(-1);document.getElementById("fwd").onclick=()=>step(1);
 document.getElementById("fb").onclick=()=>step(-FR);document.getElementById("ff").onclick=()=>step(FR);
@@ -284,18 +288,17 @@ document.getElementById("goshot").onclick=()=>seek(D.shots[cur].a);
 document.getElementById("helpb").onclick=()=>document.getElementById("help").scrollIntoView({block:"nearest"});
 document.getElementById("close").onclick=()=>dlg.close();
 dlg.addEventListener("close",()=>{pause();hov.style.display="none"});
-function addHere(){const e=ent(D.shots[cur].id);e.add=e.add||[];const n=now(),m=Math.floor(n/60);
+function addHere(){const id=D.shots[cur].id,e=ent(id);e.add=e.add||[];const n=now(),m=Math.floor(n/60);
  const t=m+":"+(n-60*m).toFixed(2).padStart(5,"0");                              // frame-accurate
- if(!e.add.some(v=>Math.abs(span(v)[0]-now())<0.15))e.add.push(t);e.add.sort((a,b)=>span(a)[0]-span(b)[0]);save()}
-function delHere(){const e=P[D.shots[cur].id];if(!e||!e.add)return;let k=-1,best=0.6;
- e.add.forEach((v,j)=>{const d=Math.abs(span(v)[0]-now());if(d<best){best=d;k=j}});if(k>=0){e.add.splice(k,1);save()}}
+ const near=e.add.find(v=>Math.abs(span(v)[0]-now())<0.15);addVal(id,"add",near===undefined?t:near,R);
+ e.add.sort((a,b)=>span(a)[0]-span(b)[0]);save()}
+function delHere(){const id=D.shots[cur].id;let k=null,best=0.6;
+ vals(id,"add",R).forEach(v=>{const d=Math.abs(span(v)[0]-now());if(d<best){best=d;k=v}});if(k!==null){delVal(id,"add",k,R);save()}}
 function io(){if(inPt===null&&outPt===null)return null;const a=inPt??now(),b=outPt??now();
  return Math.abs(b-a)<0.2?null:[Math.min(a,b),Math.max(a,b)]}
-function swapHere(){const s=D.shots[cur],e=ent(s.id),r=io()||[Math.max(0,now()-0.6),now()+0.6];
- e.ban=e.ban||[];e.prefer=e.prefer||[];if(!e.ban.includes(shotRange(cur)))e.ban.push(shotRange(cur));
- e.prefer.push(range(...r));inPt=outPt=null;save()}
-function preferIO(){const r=io();if(!r)return;const e=ent(D.shots[cur].id);e.prefer=e.prefer||[];e.prefer.push(range(...r));
- inPt=outPt=null;save()}
+function swapHere(){const s=D.shots[cur],r=io()||[Math.max(0,now()-0.6),now()+0.6];
+ addVal(s.id,"ban",shotRange(cur),R);addVal(s.id,"prefer",range(...r),R);inPt=outPt=null;save()}
+function preferIO(){const r=io();if(!r)return;addVal(D.shots[cur].id,"prefer",range(...r),R);inPt=outPt=null;save()}
 document.getElementById("add").onclick=addHere;document.getElementById("swap").onclick=swapHere;
 document.getElementById("pref").onclick=preferIO;
 document.getElementById("bandlg").onclick=()=>toggleBan(cur);
@@ -365,8 +368,12 @@ def run(project, fmt, cut=None) -> str:
         thumbs.append(f"{cut}/{i + 1:03d}.jpg" if r.returncode == 0 and os.path.exists(jpg) else None)
     path = project.path("review", f"{cut}.html")
     with open(path, "w") as f:
-        f.write(page(plan, fmt, thumbs, sources(project, plan, fmt, os.path.dirname(path)), project.picks(),
+        main = Project(project.folder)
+        rs = browse.reels(main, {f: main.load(f"plan_{f}.json") for f in ("landscape", "portrait")
+                                 if os.path.exists(main.path(f"plan_{f}.json"))})
+        f.write(page(plan, fmt, thumbs, sources(project, plan, fmt, os.path.dirname(path)), project.picks(reel=False),
                      key=f"{project.name}/{cut}", root=browse.api_root(project),
-                     nav=browse.menu(project, cut), project=browse.title_of(project)))
+                     nav=browse.menu(project, cut), project=browse.title_of(project), reel=project.reel_id,
+                     reels=[{"id": r["id"], "label": r["label"]} for r in rs]))
     print(f"[reel] review: {path}")
     return path
