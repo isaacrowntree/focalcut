@@ -100,7 +100,7 @@ def run(project, fmt, cut=None) -> str:
     W, H = SIZE[fmt]
     media = project.path("out", f"{cut}_media"); os.makedirs(media, exist_ok=True)
     files = Files()
-    v1, v2, n, rec = [], [], 0, 0
+    v1, v2, n, rec, written = [], [], 0, 0, set()
     for i, s in enumerate(plan["shots"]):
         u = s["unit"]
         start = round(s["rec_in"] * FPS)
@@ -115,6 +115,7 @@ def run(project, fmt, cut=None) -> str:
                                        f'{"_" + "+".join(s["fx"]) if s.get("fx") else ""}'
                                        f'{"_" + s["transition"] if s.get("transition") else ""}.mp4')
             hw.retag(project.path(manifest[i]), keep)
+            written.add(os.path.basename(keep))
             n += 1; v1.append(clip(f"v1-{n}", files, keep, start, end, 0, label))
             n += 1; v2.append(clip(f"v2-{n}", files, src, start, end, round(s["src_in"] * FPS), f"{label} (source)",
                                    fmt=fmt, enabled=False))
@@ -122,6 +123,9 @@ def run(project, fmt, cut=None) -> str:
             n += 1; v1.append(clip(f"v1-{n}", files, src, start, end, round(s["src_in"] * FPS), label, fmt=fmt))
         rec = end
     total = rec
+    for f in os.listdir(media):                    # an earlier cut's shots go: the folder is this cut's media alone
+        if f.endswith(".mp4") and f not in written:
+            os.remove(os.path.join(media, f))
     a2 = ""
     sting = project.stinger(fmt) if plan.get("stinger") else None
     if sting:                                      # stinger closes V1; its sound on A2

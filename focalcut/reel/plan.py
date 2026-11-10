@@ -1296,8 +1296,18 @@ PIECE_FULL = 0.55        # picks cut to pieces fill at most this share of an act
 PIECE_KEEP = 0.7         # a pick's second piece goes in only if it plays at least this well against its best one
 
 
+def pick_like(project, cfg):
+    """The picks another format kept (cfg "pick_like": "landscape"), as [unit id, from, to] source seconds of the
+    parts its plan plays, or None (no such key, or that format not planned yet)."""
+    other = cfg.get("pick_like")
+    f = other and project.path(f"plan_{project.cut_name(other)}.json")
+    if not f or not os.path.exists(f):
+        return None
+    return [[s["unit"]["id"], s["src_in"], s["src_in"] + s["length"]] for s in json.load(open(f))["shots"] if s.get("add")]
+
+
 def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None, close=None, clip_share=None,
-                grow=None, whole=(), by=None):
+                grow=None, whole=(), by=None, like=None):
     """Long picks cut down to their best part (reel.json plan.<fmt> "pick_hold": beats): each in-out longer than
     hold beats becomes its best hold-beat window, scored on the moment curve (moments.curve: moves, quality, framing
     in this format, activity, face) -- the editor chose the stretch, the planner the best of it. Then the picks are
@@ -1312,7 +1322,9 @@ def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None,
     seen) and drops the least clear picks first, whichever clip they're from, in place of a share per clip -- B-roll
     (no dancer to be clear) ranked among the B-roll on its own score, the people shots among themselves, each by its
     place in its own group, so neither crowds the other out. Stars (picks "stars": {range: 1-5}, unrated 3) come
-    first either way: the most starred are lengthened first and dropped last. Each piece is a
+    first either way: the most starred are lengthened first and dropped last. like (cfg "pick_like": another format,
+    planned first): that format's choice -- the picks it kept, each at the part it plays -- in place of choosing
+    again, so both formats show the same picks. Each piece is a
     shot of its own (include_adds spreads them through the act, between the rest of the footage). The ending (cfg
     "ending": [file, from, to, ...]) and the close (cfg "close": [unit id, time]) are left whole and aren't counted.
     With a scrub (windows_<fmt>.json), the parts are scored on its windows instead (rank x score; a window that fails
@@ -1380,7 +1392,21 @@ def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None,
     for c in cands:
         load[c["subject"]] += n(c["wins"][0])
     dropped = []
-    while True:                                              # over its share, or the picks over theirs: the subject
+    if like is not None:                                     # the other format chose: the same picks, the same parts
+        for c in cands:
+            a, b = c["m"]["span"]
+            uid = c["r"]["unit"]["id"]
+            z = [(1.0, max(a, x), min(b, y)) for u, x, y in like if u == uid and min(b, y) - max(a, x) > 0.1]
+            if z:
+                keep[id(c)] = [max(z, key=lambda q: q[2] - q[1])]
+            else:
+                keep.pop(id(c))
+                dropped.append(c)
+        load = Counter()
+        for c in cands:
+            if id(c) in keep:
+                load[c["subject"]] += n(keep[id(c)][0])
+    while like is None:                                      # over its share, or the picks over theirs: the subject
         total = sum(load.values())                           # with the most drops its weakest pick
         over = [s for s in subj if load[s] > cap and subj[s] > 1] or \
             ([s for s in subj if subj[s] > 1] if total > room else [])
@@ -1395,7 +1421,7 @@ def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None,
         c = min((c for c in cands if c["subject"] == s and id(c) in keep), key=lambda c: (star(c), keep[id(c)][0][0]))
         load[s] -= n(keep.pop(id(c))[0]); subj[s] -= 1
         dropped.append(c)
-    if grow and grow > hold:                                 # room left: the best picks play grow beats
+    if grow and grow > hold and like is None:                # room left: the best picks play grow beats
         g = grow * beat
         for c in sorted((c for c in cands if id(c) in keep), key=lambda c: (-star(c), -c.get("q", 0), -keep[id(c)][0][0])):
             a, b = c["m"]["span"]
@@ -1409,7 +1435,7 @@ def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None,
             if more > 0 and sum(load.values()) + more <= room:
                 keep[id(c)] = [z]
                 load[c["subject"]] += more
-    extra = [] if grow else sorted(((z, c) for c in cands if id(c) in keep for z in c["wins"][1:]
+    extra = [] if grow or like is not None else sorted(((z, c) for c in cands if id(c) in keep for z in c["wins"][1:]
                     if z[0] >= PIECE_KEEP * c["wins"][0][0]), key=lambda zc: -zc[0][0])
     for z, c in extra:                                       # room left: a long pick's next best part
         if load[c["subject"]] + n(z) <= cap and sum(load.values()) + n(z) <= room:
@@ -3217,7 +3243,7 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
         b = music.get("beat") or float(np.median(np.diff(music["beats"])))
         condensed = pick_pieces(project, moments, fmt, b, cfg["pick_hold"], music["length"] / b, cfg.get("pick_share"),
                                  cfg.get("ending"), cfg.get("close"), cfg.get("pick_clip_share"), cfg.get("pick_grow"),
-                                 cfg.get("pick_whole") or (), cfg.get("pick_by"))
+                                 cfg.get("pick_whole") or (), cfg.get("pick_by"), pick_like(project, cfg))
     kp = project.config.get("keep")
     kp = "plan_{fmt}_rendered.json" if kp is True else kp    # true: the last cut rendered (render.run saves it)
     kp = kp and kp.format(fmt=project.cut_name(fmt))
