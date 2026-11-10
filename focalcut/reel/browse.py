@@ -325,6 +325,8 @@ letter-spacing:.05em}
 .blk{top:3px;bottom:3px;border-radius:4px;background:color-mix(in srgb,var(--sel) 45%,transparent);
 border:2px solid var(--sel);cursor:grab;font-size:11px;color:var(--fg);padding-left:4px;overflow:hidden;
 white-space:nowrap;font-weight:600}.blk.act{background:color-mix(in srgb,var(--sel) 75%,transparent);color:#000}
+.stars{white-space:nowrap;margin-right:6px}.stars b{cursor:pointer;color:var(--io);font-size:15px;padding:0 1px}
+.stars b:hover{transform:scale(1.2);display:inline-block}.stars sub{font-size:9px;color:var(--mut);font-weight:400;margin-left:1px}
 .blk.away{opacity:.35;border-style:dashed;background:transparent}
 #reelsw{display:inline-flex;gap:2px;align-items:center;padding-left:8px;border-left:1px solid var(--line)}#reelsw:empty{display:none}
 #reelsw button{padding:2px 8px;font-size:12px}#reelsw b{font-size:11px;color:var(--mut);font-weight:500;margin-right:4px}
@@ -391,6 +393,9 @@ font-size:11px}.card .bd{padding:6px 8px;display:flex;justify-content:space-betw
 .fdot{width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;border:2px solid #000;background:var(--io)}
 .frl{position:absolute;left:8px;bottom:8px;background:#000c;color:#fff;padding:3px 8px;border-radius:4px;
 font:12px ui-monospace,monospace;pointer-events:none}.frl b{color:var(--io)}
+.fpin{width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;border:3px solid var(--port);box-shadow:0 0 0 2px #000a}
+.fr.follow{cursor:copy}button.fol.on{background:var(--port);color:#fff;border-color:var(--port)}
+.fk.fl{background:var(--port)}
 .fk{top:1px;bottom:1px;width:6px;margin-left:-3px;background:var(--io);border-radius:2px;pointer-events:none;z-index:2}
 </style>
 <header><h1>%TITLE%</h1>%NAV%
@@ -415,7 +420,8 @@ font:12px ui-monospace,monospace;pointer-events:none}.frl b{color:var(--io)}
 <button id=zfit title="whole clip (0)">Fit <kbd>0</kbd></button><button id=zin>Zoom +</button><button id=zout>Zoom −</button>
 <button id=banc title="never use this clip">Ban clip</button></div>
 <div class=row><button id=bframe class=frt title="show the portrait reel's crop here; drag on the picture to set a focal point (F)">▯ Portrait frame <kbd>F</kbd></button>
-<button id=fclr title="remove the focal points around the playhead (this selection, reel shot or 3 s)">Clear focus here</button>
+<button id=bfollow class=fol title="then click a dancer: the portrait crop follows that person through the shot (G)">👤 Follow person <kbd>G</kbd></button>
+<button id=fclr title="remove the focal points and the followed person around the playhead (this selection, reel shot or 3 s)">Clear focus here</button>
 <span id=fhelp style="color:var(--mut);font-size:12px" hidden>dashed pink: what the planner works out · yellow: what the portrait reel shows — drag to set a focal point at the playhead; set more at other times and the crop glides between them</span></div>
 <div id=ov class=tl title="the whole clip; the yellow box is what the timeline below shows — click or drag to move"><canvas></canvas></div>
 <div id=tl class=tl>
@@ -429,7 +435,7 @@ font:12px ui-monospace,monospace;pointer-events:none}.frl b{color:var(--io)}
 <kbd>←</kbd><kbd>→</kbd> frame (<kbd>Shift</kbd> 1 s) · <kbd>I</kbd> in · <kbd>O</kbd> out · <kbd>Enter</kbd> add
 selection · <kbd>X</kbd> clear in–out · <kbd>Backspace</kbd> delete selection at playhead · <kbd>[</kbd><kbd>]</kbd>
 previous / next mark · <kbd>\</kbd> loop selection · <kbd>↑</kbd><kbd>↓</kbd> previous / next clip ·
-<kbd>=</kbd><kbd>−</kbd> zoom · <kbd>0</kbd> fit · <kbd>B</kbd> ban in–out · <kbd>F</kbd> portrait frame · <kbd>Tab</kbd> Cut &amp; picks<br>
+<kbd>=</kbd><kbd>−</kbd> zoom · <kbd>0</kbd> fit · <kbd>B</kbd> ban in–out · <kbd>1</kbd>–<kbd>5</kbd> star the selection at the playhead · <kbd>F</kbd> portrait frame · <kbd>G</kbd> follow a person (then click them) · <kbd>Tab</kbd> Cut &amp; picks<br>
 Or drag in the <b style="color:var(--sel)">selections</b> lane to mark a range directly; drag a block to move it,
 its edges to trim. <span style="color:var(--land)">■</span> landscape and <span style="color:var(--port)">■</span>
 portrait show what the current reels use; <span style="color:var(--mom)">|</span> moments the planner found.
@@ -453,8 +459,9 @@ Each selection goes in the reel starting at its in-point.</div>
 <span class=grp>Slip <button data-n="slip:-0.5" title="move the whole pick earlier (,)">◀ ½s</button><button data-n="slip:-0.02">◀ f</button>
 <button data-n="slip:0.02">f ▶</button><button data-n="slip:0.5" title="move the whole pick later (.)">½s ▶</button></span>
 <button id=pframe class=frt title="portrait crop; drag on the picture to set a focal point (F)">▯ Portrait <kbd>F</kbd></button>
-<button id=pfclr title="remove this pick's focal points">Clear focus</button>
-<span class=grp><button id=pfirst title="open the reel on this pick, under the event's logo (one opening per reel)">★ Opening</button><button id=plast title="end the reel on this pick (one ending per reel)">⚑ Ending</button></span><span class=grp id=preels></span><span class=sp></span><button id=popen title="open this clip in Clips">Open in Clips</button><button id=pdel title="remove (Backspace)">✕ Remove</button></div>
+<button id=pfollow class=fol title="then click a dancer: the portrait crop follows that person through the pick (G)">👤 Follow</button>
+<button id=pfclr title="remove this pick's focal points and followed person">Clear focus</button>
+<span class=grp><button id=pfirst title="open the reel on this pick, under the event's logo (one opening per reel)">★ Opening</button><button id=plast title="end the reel on this pick (one ending per reel)">⚑ Ending</button></span><span class=grp id=pstars></span><span class=grp id=preels></span><span class=sp></span><button id=popen title="open this clip in Clips">Open in Clips</button><button id=pdel title="remove (Backspace)">✕ Remove</button></div>
 <div id=pt class=tl><div id=pruler></div><div id=pstrip title="drag the edges to trim or lengthen, the block to slip it, anywhere else to scrub; scroll to zoom"><canvas></canvas></div></div>
 <p style="color:var(--mut);font-size:12px;margin:6px 0 0">Drag the pick's edges to lengthen or trim, drag the block to slip it, click
 elsewhere to scrub · tick cards (<kbd>X</kbd>, shift-click for a range, <kbd>A</kbd> all the planner's) then <kbd>Delete</kbd> drops them all · <kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> previous / next pick · <kbd>I</kbd>/<kbd>O</kbd> in / out
@@ -482,8 +489,9 @@ let P=JSON.parse(JSON.stringify(D.picks)),server=false,timer=null;
 const ent=id=>(P[id]&&typeof P[id]==="object"&&!Array.isArray(P[id]))?P[id]:(P[id]={});
 %TAGS%
 function tidy(){for(const k in P){const e=P[k];if(k[0]=="_"||!e||typeof e!=="object"||Array.isArray(e))continue;
- pruneTags(e);
- for(const f of["ban","prefer","add","portrait"])if(e[f]&&!e[f].length)delete e[f];if(e.more===0)delete e.more;
+ pruneTags(e);if(e.stars){const ss=(e.add||[]).map(span);for(const q in e.stars){const[u,v]=span(q);
+  if(!ss.some(([a,b])=>near2(a,u)&&near2(b,v)))delete e.stars[q]}if(!Object.keys(e.stars).length)delete e.stars}
+ for(const f of["ban","prefer","add","portrait","follow"])if(e[f]&&!e[f].length)delete e[f];if(e.more===0)delete e.more;
  if(!Object.keys(e).length)delete P[k]}}
 function status(t,c){const s=$("saved");s.textContent=t;s.className=c||""}
 const hist=[];let lastSnap=JSON.stringify(P);
@@ -491,7 +499,8 @@ function save(){tidy();{const now_=JSON.stringify(P);if(now_!==lastSnap){hist.pu
  else{ls.set("picks",P);status("kept in this browser — run `focalcut reel serve` to save to picks.json","err")}
  renderAll()}
 async function push(){try{const r=await fetch(D.root+"api/picks",{method:"PUT",headers:{"Content-Type":"application/json"},
- body:JSON.stringify(P,null,1)});if(!r.ok)throw new Error(r.status);status("saved to picks.json ✓","ok")}
+ body:JSON.stringify(P,null,1)});if(!r.ok)throw new Error(r.status);status("saved to picks.json ✓","ok");
+ if(staleCrop){const id=staleCrop;staleCrop=null;for(const k of[...crops.keys()])if(k.startsWith(id+"|"))crops.delete(k);lastCrop.delete(id);draw();pdraw()}}
  catch(e){status("could not save: "+e.message,"err")}}
 async function boot(){try{const r=await fetch(D.root+"api/picks",{cache:"no-store"});if(!r.ok)throw 0;P=await r.json();
  server=true;lastSnap=JSON.stringify(P);($("allp")||{}).hidden=false;status("picks.json — saves as you go","ok")}catch(e){const l=ls.get("picks");if(l)P=l;
@@ -504,14 +513,16 @@ function setSels(id,list,quiet){const e=ent(id);const pts=(e.add||[]).filter(v=>
  list=list.map(([a,b])=>[Math.max(0,Math.min(a,b)),Math.max(a,b)]).filter(([a,b])=>b-a>=0.1);
  // each keeps its reels (the old selection it overlaps most: moved or trimmed); a new one is for the reel being picked
  // for; one taken away while picking for a reel leaves that reel only, and stays in the others
- const old=sels(id).map(([a,b])=>[a,b,onlyOf(id,a,b)]);
+ const old=sels(id).map(([a,b])=>[a,b,onlyOf(id,a,b),starsOf(id,a,b)]);
  const items=list.map(([a,b])=>{let best=null,ov=0;old.forEach(([u,v,o])=>{const x=Math.min(b,v)-Math.max(a,u);if(x>ov){ov=x;best=o}});
-  return{a,b,t:ov>0?best:(reel=="all"?null:[reel])}});
+  let st=0,ov2=0;old.forEach(([u,v,,n])=>{const x=Math.min(b,v)-Math.max(a,u);if(x>ov2){ov2=x;st=n}});
+  return{a,b,t:ov>0?best:(reel=="all"?null:[reel]),st}});
  if(reel!="all")old.forEach(([u,v,o])=>{if(list.some(([a,b])=>Math.min(b,v)-Math.max(a,u)>0))return;
-  const t=(o||RID).filter(r=>r!=reel);if(t.length&&RID.length>1)items.push({a:u,b:v,t})});
+  const t=(o||RID).filter(r=>r!=reel);if(t.length&&RID.length>1)items.push({a:u,b:v,t,st:starsOf(id,u,v)})});
  items.sort((x,y)=>x.a-y.a);
  if(e.only)for(const k in e.only)if(tagParts(k)[0]=="add"&&isRange(k))delete e.only[k];
  e.add=[...pts,...items.map(x=>fmt(x.a)+"-"+fmt(x.b))];items.forEach(x=>setTags(id,"add",fmt(x.a)+"-"+fmt(x.b),x.t));
+ const so={};items.forEach(x=>{if(x.st)so[fmt(x.a)+"-"+fmt(x.b)]=x.st});if(Object.keys(so).length)e.stars=so;else delete e.stars;
  if(!quiet)save()}
 function banned(id){return vals(id,"ban",reel)}
 // reels: one picks.json serves the project's reel ("main") and its cuts (reel.json "cuts"); a clip's "only" maps a
@@ -526,6 +537,14 @@ function setIn(id,a,b,r,on){let v=onlyOf(id,a,b)||RID.slice();
  // (its opening / ending role follows it out of a reel)
  if(!on)for(const f of["open","end"]){const w=roleIn(id,f,r);if(w&&same(w,a,b))clearRole(id,f,r)}
  setTags(id,"add",rkey(a,b),v);save()}
+// stars: how much the editor wants a pick (1-5; a clip's "stars": {range: n}, every reel): the planner keeps and
+// lengthens the most starred first and drops the least starred first (unrated counts as 3)
+function starsOf(id,a,b){const o=(P[id]||{}).stars;if(!o)return 0;for(const k in o){const[u,v]=span(k);if(near2(u,a)&&near2(v,b))return o[k]}return 0}
+function setStars(id,a,b,n){const e=ent(id),o={};for(const k in e.stars||{}){const[u,v]=span(k);if(!(near2(u,a)&&near2(v,b)))o[k]=e.stars[k]}
+ if(n)o[rkey(a,b)]=n;if(Object.keys(o).length)e.stars=o;else delete e.stars;save();
+ status(n?`${"★".repeat(n)} ${fmt(a)}–${fmt(b)}`:"stars cleared","ok")}
+const starBar=(id,a,b,attr)=>{const n=starsOf(id,a,b);return`<span class=stars title="how much you want it (1–5; click again to clear)">`+
+ [1,2,3,4,5].map(i=>`<b data-star=${i} ${attr} title="${i} star${i>1?"s":""} — key ${i}">${i<=n?"★":"☆"}<sub>${i}</sub></b>`).join("")+`</span>`};
 function useReel(){const r=reel=="all"?"main":reel;D.clips.forEach(c=>{const u=(c.R||{})[r];if(u){c.L=u.L;c.P=u.P}});
  $("reelsw").innerHTML=RS.length>1?"<b>Reel</b>"+[["all","All"],...RS.map(x=>[x.id,x.label])].map(([k,l])=>
   `<button data-reel="${esc(k)}" class="${k==reel?"on":""}">${esc(l)}</button>`).join(""):""}
@@ -606,7 +625,7 @@ function draw(){const c=C();if(!c)return;const W=vb-va,t=now();
  // selections lane
  const L=$("lsel");L.querySelectorAll("i").forEach(e=>e.remove());s="";
  sels(c.id).forEach(([a,b],k)=>{const o=onlyOf(c.id,a,b);if(b>va&&a<vb)s+=`<i class="blk${k==act?" act":""}${inReel(c.id,a,b)?"":" away"}" data-k=${k} style="${wspan(a,b)}"
-  title="${fmt(a)} – ${fmt(b)} (${(b-a).toFixed(2)} s)${RS.length>1?" · "+(o?o.map(rlab).join(" + ")+" only":"every reel"):""}"><i class="h l"></i>${k+1} · ${(b-a).toFixed(1)}s<i class="h r"></i></i>`});
+  title="${fmt(a)} – ${fmt(b)} (${(b-a).toFixed(2)} s)${RS.length>1?" · "+(o?o.map(rlab).join(" + ")+" only":"every reel"):""}"><i class="h l"></i>${k+1} · ${(b-a).toFixed(1)}s${starsOf(c.id,a,b)?" "+"★".repeat(starsOf(c.id,a,b)):""}<i class="h r"></i></i>`});
  points(c.id).forEach(p=>{if(p>=va&&p<=vb)s+=`<i class=pt style="left:${X(p)}" title="marked moment ${fmt(p)}"></i>`});
  const io=pend();if(io)s+=`<i class=pend style="${wspan(...io)}"></i>`;
  if(!sels(c.id).length&&!io)s+=`<i class=empty>drag here to pick a range · or I / O then Enter · or click a reel shot below to take it</i>`;
@@ -617,6 +636,7 @@ function draw(){const c=C();if(!c)return;const W=vb-va,t=now();
  if(rub&&rub.moved){const[a,b]=[Math.min(rub.t0,rub.t1),Math.max(rub.t0,rub.t1)];
   for(const id of["lland","lport"])$(id).insertAdjacentHTML("beforeend",`<i class=rub style="${wspan(a,b)}"></i>`)}
  fkeys(c.id).forEach(([k])=>{if(k>=va&&k<=vb)$("lport").insertAdjacentHTML("beforeend",`<i class=fk style="left:${X(k)}" title="focal point ${fmt(k)}"></i>`)});
+ folkeys(c.id).forEach(([k])=>{if(k>=va&&k<=vb)$("lport").insertAdjacentHTML("beforeend",`<i class="fk fl" style="left:${X(k)}" title="following a person from ${fmt(k)}"></i>`)});
  // markers spanning the timeline
  tl.querySelectorAll(":scope>i").forEach(e=>e.remove());let m="";
  if(inPt!==null&&inPt>=va&&inPt<=vb)m+=`<i class=inm style="left:${X(inPt)}"></i>`;
@@ -640,12 +660,14 @@ function pend(){if(inPt===null&&outPt===null)return null;const a=inPt??now(),b=o
 function mysel(){const c=C(),ss=sels(c.id);
  $("mysel").innerHTML=ss.length?`<table><tr><th>#</th><th>in</th><th>out</th><th>length</th><th></th></tr>`+ss.map(([a,b],k)=>
   `<tr class="${k==act?"act":""}"><td>${k+1}</td><td>${fmt(a)}</td><td>${fmt(b)}</td><td>${(b-a).toFixed(2)} s</td>
-  <td>${RS.length>1?RS.map(r=>`<label class=rk><input type=checkbox data-r="${esc(r.id)}" data-k=${k}${inReel(c.id,a,b,r.id)?" checked":""}> ${esc(r.label)}</label>`).join(""):""}<button data-p=${k}>▶ play</button> <button data-l=${k}>↻ loop</button> <button data-d=${k}>✕</button></td></tr>`).join("")+
+  <td>${starBar(c.id,a,b,`data-k=${k}`)}${RS.length>1?RS.map(r=>`<label class=rk><input type=checkbox data-r="${esc(r.id)}" data-k=${k}${inReel(c.id,a,b,r.id)?" checked":""}> ${esc(r.label)}</label>`).join(""):""}<button data-p=${k}>▶ play</button> <button data-l=${k}>↻ loop</button> <button data-d=${k}>✕</button></td></tr>`).join("")+
   `</table>`:`<p style="color:var(--mut);margin:0">No selections in this clip yet: <kbd>I</kbd> at the start, <kbd>O</kbd>
   at the end, <kbd>Enter</kbd> — or drag in the selections lane.</p>`}
 $("mysel").onchange=ev=>{const i=ev.target;if(!i.dataset.r)return;const ss=sels(C().id),x=ss[+i.dataset.k];
  if(x)setIn(C().id,x[0],x[1],i.dataset.r,i.checked)};
-$("mysel").onclick=ev=>{const b=ev.target.closest("button");if(!b)return;const ss=sels(C().id);
+$("mysel").onclick=ev=>{const st=ev.target.closest("[data-star]");if(st){const ss=sels(C().id),x=ss[+st.dataset.k];
+  if(x){const n=+st.dataset.star;setStars(C().id,x[0],x[1],starsOf(C().id,x[0],x[1])==n?0:n)}return}
+ const b=ev.target.closest("button");if(!b)return;const ss=sels(C().id);
  if(b.dataset.d!==undefined){ss.splice(+b.dataset.d,1);act=-1;setSels(C().id,ss)}
  else{const k=+(b.dataset.p??b.dataset.l);act=k;loop=b.dataset.l!==undefined;seek(ss[k][0]);vid.play();renderAll()}};
 function renderAll(){list();draw();mysel();selview();
@@ -805,7 +827,7 @@ function selview(){order=allSels();
  let h="",sep=false;order.forEach((x,k)=>{if(!x.shot&&!sep){sep=true;h+=`<div class=catgrp>Not in the cut yet — placed on the next re-plan</div>`}
   const ck=chosen.has(ckey(x));
   h+=`<div class="card${k==j?" act":""}${x.cut?" cut":""}${ck?" chk":""}" data-j=${k}><div class=th data-j=${k}></div>
-  <div class=bd><div><b>${x.shot?(x.shot.fmt=="L"?"Shot ":"Portrait shot ")+x.shot.n:"New"}</b> ${x.cut?"":"<span class=tag>pick</span> "}${!x.cut&&reel=="all"&&onlyOf(x.c.id,x.a,x.b)?`<span class=tag>${esc(onlyOf(x.c.id,x.a,x.b).map(rlab).join(" + "))} only</span> `:""}${{open:"<span class=tag>★ opening</span> ",end:"<span class=tag>⚑ ending</span> "}[roleOf(x.c.id,x.a,x.b)]||""}· ${esc(x.c.id)}<br>
+  <div class=bd><div><b>${x.shot?(x.shot.fmt=="L"?"Shot ":"Portrait shot ")+x.shot.n:"New"}</b> ${x.cut?"":"<span class=tag>pick</span> "}${!x.cut&&starsOf(x.c.id,x.a,x.b)?`<span style="color:var(--io)">${"★".repeat(starsOf(x.c.id,x.a,x.b))}</span> `:""}${!x.cut&&reel=="all"&&onlyOf(x.c.id,x.a,x.b)?`<span class=tag>${esc(onlyOf(x.c.id,x.a,x.b).map(rlab).join(" + "))} only</span> `:""}${{open:"<span class=tag>★ opening</span> ",end:"<span class=tag>⚑ ending</span> "}[roleOf(x.c.id,x.a,x.b)]||""}· ${esc(x.c.id)}<br>
   <small>${fmt(x.a)} – ${fmt(x.b)} · <b>${(x.b-x.a).toFixed(2)} s</b> · ${esc(x.c.clock)}</small></div>
   <div><button data-del=${k} title="${x.cut?"take this shot out of the cut (bans its stretch)":"remove this pick"}">✕</button></div></div></div>`});
  $("cards").innerHTML=h||`<p style="color:var(--mut)">No picks yet — choose footage in Sources.</p>`;
@@ -815,6 +837,7 @@ function selview(){order=allSels();
   el.innerHTML=`<span>${k1(el)}</span><input type=checkbox class=ck data-ck=${el.dataset.j} title="select (shift-click: a range)"${chosen.has(ckey(x))?" checked":""}>`});
  function k1(el){const x=order[+el.dataset.j];return (+el.dataset.j+1)+" · "+(x.b-x.a).toFixed(1)+"s"}
  $("ped").style.display=PX()?"block":"none";const px=PX();
+ $("pstars").innerHTML=px&&px.k>=0?starBar(px.c.id,px.a,px.b,""):"";
  $("preels").innerHTML=px&&px.k>=0&&RS.length>1?"In "+RS.map(r=>`<button data-reel="${esc(r.id)}" class="${inReel(px.c.id,px.a,px.b,r.id)?"on":""}" title="put this pick in / take it out of the ${esc(r.label)} reel">${esc(r.label)}</button>`).join(""):"";
  if(px)pdraw()}
 $("cards").onclick=ev=>{const c=ev.target.closest("[data-ck]");
@@ -889,7 +912,9 @@ function stopAll(){pv.pause();mode=null;pdraw()}
 function nudge(which,d){const x=PX();if(!x)return;let[a,b]=[x.a,x.b];
  if(which=="in")a=Math.min(a+d,b-0.1);else if(which=="out")b=Math.max(b+d,a+0.1);else{a+=d;b+=d}
  edit(a,b);pv.currentTime=which=="out"?b:a}
-$("ped").onclick=ev=>{const b=ev.target.closest("button");if(!b)return;const x=PX();
+$("ped").onclick=ev=>{const st=ev.target.closest("[data-star]");if(st){const x=PX();if(x&&x.k>=0){const n=+st.dataset.star;
+  setStars(x.c.id,x.a,x.b,starsOf(x.c.id,x.a,x.b)==n?0:n)}return}
+ const b=ev.target.closest("button");if(!b)return;const x=PX();
  if(b.dataset.n){const[w,d]=b.dataset.n.split(":");nudge(w,+d*(ev.shiftKey?10:1))}
  else if(b.id=="pplay")playPick();else if(b.id=="ploop"){mode=mode=="loop"?"one":"loop";playPick()}
  else if(b.id=="pprev")pick(Math.max(0,pj()-1),!pv.paused);else if(b.id=="pnext")pick(Math.min(order.length-1,pj()+1),!pv.paused)
@@ -909,6 +934,15 @@ $("stopall").onclick=stopAll;
 // "portrait": [["m:ss.ss", x, y], ...] (fractions of the frame); the reel's crop centre follows them, its size as derived
 let frameOn=!!ls.get("frame");const crops=new Map();
 const fkeys=id=>((P[id]||{}).portrait||[]).map(([t,x,y])=>[secs(t),+x,+y]).sort((p,q)=>p[0]-q[0]);
+// the person to follow: picks "follow": [["m:ss.ss", x, y], ...] where the editor clicked them; the server's crop
+// (/api/crop) then tracks their face through the shot, so the page asks for it again once the click is saved
+const folkeys=id=>((P[id]||{}).follow||[]).map(([t,x,y])=>[secs(t),+x,+y]).sort((p,q)=>p[0]-q[0]);
+let followOn=false,staleCrop=null;
+function setFollow(id,t,x,y,a,b){const e=ent(id),ks=folkeys(id).filter(k=>k[0]<a-0.5||k[0]>b+0.5);
+ if(x!=null)ks.push([t,x,y]);if(ks.length)e.follow=ks.sort((p,q)=>p[0]-q[0]).map(([t,x,y])=>[fmt(t),+x.toFixed(4),+y.toFixed(4)]);
+ else delete e.follow;staleCrop=id;save()}
+function followMode(on){followOn=on;if(on&&!frameOn)toggleFrame();document.querySelectorAll(".fol").forEach(b=>b.classList.toggle("on",on));
+ document.querySelectorAll(".fr").forEach(f=>f.classList.toggle("follow",on));if(on)status("click the dancer to follow","ok")}
 const putKeys=(id,ks)=>{ent(id).portrait=ks.sort((p,q)=>p[0]-q[0]).map(([t,x,y])=>[fmt(t),+x.toFixed(4),+y.toFixed(4)])};
 const clamp=(v,lo,hi)=>Math.min(Math.max(v,lo),hi);
 const lerp=(ts,vs,t)=>{if(t<=ts[0])return vs[0];for(let i=1;i<ts.length;i++)if(t<=ts[i]){const f=(t-ts[i-1])/(ts[i]-ts[i-1]||1);
@@ -932,7 +966,7 @@ function frameAt(c,a,b,t){const g=derived(c,a,b);if(g===undefined)return"wait";i
  const ks=fkeys(c.id).filter(k=>k[0]>=a-0.5&&k[0]<=b+0.5);let o=null;
  if(ks.length){const kt=ks.map(k=>k[0]);o={x:clamp(lerp(kt,ks.map(k=>k[1]),t),cr.w/2,1-cr.w/2),
   y:clamp(lerp(kt,ks.map(k=>k[2]),t),cr.h/2,1-cr.h/2)}}
- return{d,o,w:cr.w,h:cr.h,z:cr.z}}
+ return{d,o,w:cr.w,h:cr.h,z:cr.z,fol:cr.follow}}
 function vrect(wrap,v){const R=wrap.getBoundingClientRect(),ar=v.videoWidth&&v.videoHeight?v.videoWidth/v.videoHeight:(C()?.ar||TW/TH);
  const w=Math.min(R.width,R.height*ar),h=w/ar;return{l:(R.width-w)/2,t:(R.height-h)/2,w,h}}
 function frameDraw(el,wrap,v,c,a,b,t){el.classList.toggle("on",frameOn);$("fhelp").hidden=!frameOn;document.querySelectorAll(".frt").forEach(x=>x.classList.toggle("on",frameOn));
@@ -940,9 +974,10 @@ function frameDraw(el,wrap,v,c,a,b,t){el.classList.toggle("on",frameOn);$("fhelp
  if(typeof F=="string"){el.innerHTML=`<span class=frl>${{fills:"this clip fills the portrait frame as it is — no crop to place",
   off:"the portrait frame needs the page served by <code>focalcut reel serve</code>",wait:"working out the portrait crop…"}[F]}</span>`;return}
  const r=vrect(wrap,v),box=(p,cls)=>`<i class="fbox ${cls}" style="left:${r.l+(p.x-F.w/2)*r.w}px;top:${r.t+(p.y-F.h/2)*r.h}px;width:${F.w*r.w}px;height:${F.h*r.h}px"></i>`;
- const A=F.o||F.d,dx=F.o?F.o.x-F.d.x:0;
+ const A=F.o||F.d,dx=F.o?F.o.x-F.d.x:0,pin=folkeys(c.id).find(k=>Math.abs(k[0]-t)<=0.6);
  el.innerHTML=box(A,"act")+(F.o?box(F.d,"der"):"")+`<i class=fdot style="left:${r.l+A.x*r.w}px;top:${r.t+A.y*r.h}px"></i>`+
-  `<span class=frl>planner x ${F.d.x.toFixed(2)} y ${F.d.y.toFixed(2)}${F.z>1.001?" · zoom "+F.z.toFixed(2):""}`+
+  (pin?`<i class=fpin style="left:${r.l+pin[1]*r.w}px;top:${r.t+pin[2]*r.h}px" title="the person you chose to follow"></i>`:"")+
+  `<span class=frl>${F.fol=="face"?"<b>following the person you clicked</b> · ":F.fol=="point"?"<b>no face found there: held on your click</b> · ":""}planner x ${F.d.x.toFixed(2)} y ${F.d.y.toFixed(2)}${F.z>1.001?" · zoom "+F.z.toFixed(2):""}`+
   (F.o?` → <b>your focus x ${F.o.x.toFixed(2)} y ${F.o.y.toFixed(2)} (${dx>=0?"+":""}${dx.toFixed(2)})</b>`:" · drag to set a focal point")+`</span>`}
 function toggleFrame(){frameOn=!frameOn;ls.set("frame",frameOn);draw();pdraw()}
 // drag on the picture: a focal point at the playhead (one within ¼ s of it moves instead)
@@ -950,13 +985,18 @@ function frameDrag(el,wrap,v,ctx,redraw,stop){let x=null;
  const put=ev=>{const r=vrect(wrap,v),R=wrap.getBoundingClientRect();
   const ks=fkeys(x.c.id).filter(k=>Math.abs(k[0]-x.t)>0.25);
   ks.push([x.t,clamp((ev.clientX-R.left-r.l)/r.w,0,1),clamp((ev.clientY-R.top-r.t)/r.h,0,1)]);putKeys(x.c.id,ks);redraw()};
- el.addEventListener("pointerdown",ev=>{if(!frameOn)return;x=ctx();if(!x)return;stop();el.setPointerCapture(ev.pointerId);put(ev)});
+ el.addEventListener("pointerdown",ev=>{if(!frameOn)return;x=ctx();if(!x)return;stop();
+  if(followOn){const r=vrect(wrap,v),R=wrap.getBoundingClientRect(),[a,b]=x.r||rangeFor(x.c,x.t);
+   setFollow(x.c.id,x.t,clamp((ev.clientX-R.left-r.l)/r.w,0,1),clamp((ev.clientY-R.top-r.t)/r.h,0,1),a,b);
+   x=null;followMode(false);status("following that person — the crop updates in a moment","ok");return}
+  el.setPointerCapture(ev.pointerId);put(ev)});
  el.addEventListener("pointermove",ev=>{if(x)put(ev)});
  el.addEventListener("pointerup",()=>{if(x){x=null;save()}})}
 frameDrag($("fr"),$("vwrap"),vid,()=>({c:C(),t:now()}),draw,pause);
-frameDrag($("pfr"),$("pvwrap"),pv,()=>PX()&&{c:PX().c,t:pnow()},pdraw,()=>pv.pause());
-function clearFocus(c,a,b){const ks=fkeys(c.id),kept=ks.filter(k=>k[0]<a-0.5||k[0]>b+0.5);
- if(kept.length==ks.length)return status("no focal points here");putKeys(c.id,kept);save()}
+frameDrag($("pfr"),$("pvwrap"),pv,()=>PX()&&{c:PX().c,t:pnow(),r:[PX().a,PX().b]},pdraw,()=>pv.pause());
+function clearFocus(c,a,b){const ks=fkeys(c.id),kept=ks.filter(k=>k[0]<a-0.5||k[0]>b+0.5),fl=folkeys(c.id).some(k=>k[0]>=a-0.5&&k[0]<=b+0.5);
+ if(kept.length==ks.length&&!fl)return status("no focal points here");putKeys(c.id,kept);if(fl)setFollow(c.id,0,null,null,a,b);else save()}
+$("bfollow").onclick=$("pfollow").onclick=()=>followMode(!followOn);
 $("bframe").onclick=$("pframe").onclick=toggleFrame;
 $("fclr").onclick=()=>clearFocus(C(),...rangeFor(C(),now()));
 $("pfclr").onclick=()=>{const x=PX();if(x)clearFocus(x.c,x.a,x.b)};
@@ -975,7 +1015,7 @@ addEventListener("keydown",ev=>{if((ev.ctrlKey||ev.metaKey)&&ev.key.toLowerCase(
 addEventListener("keydown",ev=>{if(ev.target.tagName=="SELECT"||ev.target.tagName=="INPUT"||ev.ctrlKey||ev.metaKey||ev.altKey)return;
  const k=ev.key,K=k.toLowerCase();let done=true;
  if(k=="Tab")view($("selview").style.display=="grid"?1:2);
- else if(K=="f")toggleFrame();
+ else if(K=="f")toggleFrame();else if(K=="g")followMode(!followOn);else if(k=="Escape"&&followOn)followMode(false);
  else if($("selview").style.display=="grid"){const x=PX();
   if(chosen.size&&(k=="Backspace"||k=="Delete"))$("bulkdrop").click();
   else if(k=="Escape"&&chosen.size)$("bulkclr").click();
@@ -988,7 +1028,10 @@ addEventListener("keydown",ev=>{if(ev.target.tagName=="SELECT"||ev.target.tagNam
   else if(K=="i")edit(Math.min(pnow(),x.b-0.1),x.b);else if(K=="o")edit(x.a,Math.max(pnow(),x.a+0.1));
   else if(k==","||k=="<")nudge("slip",ev.shiftKey?-0.5:-0.02);else if(k=="."||k==">")nudge("slip",ev.shiftKey?0.5:0.02);
   else if(k=="\\"){mode=mode=="loop"?"one":"loop";playPick()}
-  else if(k=="Backspace"||k=="Delete")$("pdel").click();else done=false}
+  else if(k=="Backspace"||k=="Delete")$("pdel").click();
+  else if(/^[1-5]$/.test(k)&&x.k>=0){const n=+k;setStars(x.c.id,x.a,x.b,starsOf(x.c.id,x.a,x.b)==n?0:n)}else done=false}
+ else if(/^[1-5]$/.test(k)){const ss=sels(C().id),t=now();let j=act>=0&&ss[act]&&t>=ss[act][0]-0.05&&t<=ss[act][1]+0.05?act:ss.findIndex(([a,b])=>t>=a-0.05&&t<=b+0.05);
+  if(j<0)j=act;if(j>=0&&ss[j]){const n=+k;setStars(C().id,ss[j][0],ss[j][1],starsOf(C().id,ss[j][0],ss[j][1])==n?0:n)}else status("put the playhead on a selection to star it","err")}
  else if(k==" "||K=="k")vid.paused&&!rew?(playOne=false,playL()):pause();
  else if(K=="l")playL();else if(K=="j")playJ();
  else if(k=="ArrowLeft"||k==",")step(ev.shiftKey?-1:-FR);else if(k=="ArrowRight"||k==".")step(ev.shiftKey?1:FR);

@@ -1253,6 +1253,7 @@ def apply_picks(recs, picks, only=True):
                     m[k] += 1.0
                 m["pick"] = True
         roles = {_norm(p.get(k)) for k in ("open", "end") if p.get(k)}
+        stars = {_norm(k): n for k, n in (p.get("stars") or {}).items() if isinstance(n, (int, float))}
         for v in [v for v in p.get("add", []) if _norm(v) not in roles] + ([p["open"]] if p.get("open") else []):
             opening = v is p.get("open")
             a, b = span(v)
@@ -1266,6 +1267,8 @@ def apply_picks(recs, picks, only=True):
             for k in [k for k in ("score_l", "score_p") if k in m] or ["score"]:
                 m[k] += 1.0
             m["pick"] = True
+            if stars.get(_norm(v)):
+                m["stars"] = stars[_norm(v)]                     # (how much the editor wants it: pick_pieces)
             m["open" if opening else "add"] = True                # (the opening is placed by story, not include_adds)
             if b - a > 0.05:
                 m["span"] = [round(a, 3), round(b, 3)]
@@ -1293,14 +1296,23 @@ PIECE_FULL = 0.55        # picks cut to pieces fill at most this share of an act
 PIECE_KEEP = 0.7         # a pick's second piece goes in only if it plays at least this well against its best one
 
 
-def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None, close=None, clip_share=None):
+def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None, close=None, clip_share=None,
+                grow=None, whole=(), by=None):
     """Long picks cut down to their best part (reel.json plan.<fmt> "pick_hold": beats): each in-out longer than
     hold beats becomes its best hold-beat window, scored on the moment curve (moments.curve: moves, quality, framing
     in this format, activity, face) -- the editor chose the stretch, the planner the best of it. Then the picks are
     condensed to a share of the reel's beats (budget, default half), shared out by subject: a clip with many picks
     keeps its best ones up to its share (at least one; clip_share -- cfg "pick_clip_share", default 1.5 -- times
     the even share, at least two pieces' worth; raise it when the editor's picks bunch in a few clips), and a long
-    pick earns a second piece of itself when there is room and it plays nearly as well (PIECE_KEEP). Each piece is a
+    pick earns a second piece of itself when there is room and it plays nearly as well (PIECE_KEEP); with grow (cfg
+    "pick_grow": beats, above hold) the room left lengthens the best picks to their best grow-beat window instead, so
+    a short reel can take every pick at hold beats and the strongest at grow. A clip in whole (cfg "pick_whole": its
+    picks are the reel's focus) keeps its picks whole and uncounted, as the ending does. by="clarity" (cfg "pick_by")
+    scores a part on how clearly its subject shows (the scrub's framing score, the pick rules passed, their faces
+    seen) and drops the least clear picks first, whichever clip they're from, in place of a share per clip -- B-roll
+    (no dancer to be clear) ranked among the B-roll on its own score, the people shots among themselves, each by its
+    place in its own group, so neither crowds the other out. Stars (picks "stars": {range: 1-5}, unrated 3) come
+    first either way: the most starred are lengthened first and dropped last. Each piece is a
     shot of its own (include_adds spreads them through the act, between the rest of the footage). The ending (cfg
     "ending": [file, from, to, ...]) and the close (cfg "close": [unit id, time]) are left whole and aren't counted.
     With a scrub (windows_<fmt>.json), the parts are scored on its windows instead (rank x score; a window that fails
@@ -1316,8 +1328,13 @@ def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None,
         best = 0.0
         for z in scrub.get(uid) or ():
             if min(y, z["t1"]) - max(x, z["t0"]) >= 0.6 * min(y - x, z["t1"] - z["t0"]):
-                best = max(best, z["rank"] * z["score"] * (1.0 if z["ok"] else 0.5))
+                best = max(best, clarity(z) if by == "clarity" else z["rank"] * z["score"] * (1.0 if z["ok"] else 0.5))
         return best
+
+    def clarity(z):                                          # the subject clearly seen: framed, every rule passed,
+        q = z["score"] * (1.0 if z["ok"] else 0.4)           # their face showing (B-roll: its framing alone)
+        face = (z.get("person") or {}).get("face")
+        return q * (0.5 + 0.5 * max(face)) if face else q
     for r in recs:
         for m in [m for m in r["moments"] if m.get("add") and m.get("span") and not m.get("open")]:
             a, b = m["span"]
@@ -1325,6 +1342,8 @@ def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None,
             if ending and ending[0] in (r["id"], u["id"]) and abs(u.get("export_t0", 0.0) + ending[1] - a) < 0.05:
                 continue
             if close and u["id"].startswith(close[0]) and a - 0.5 <= close[1] <= b:
+                continue
+            if any(u["id"].startswith(c) or r["id"].startswith(c) for c in whole or ()):
                 continue
             path = project.path("scores", u.get("score", u["id"]) + ".npz")
             if path not in series:
@@ -1343,9 +1362,15 @@ def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None,
                 for z in xs:
                     if all(z[1] >= y[2] or z[2] <= y[1] for y in wins):
                         wins.append(z)
-            cands.append(dict(r=r, m=m, wins=wins, subject=u["id"]))
+            cands.append(dict(r=r, m=m, wins=wins, subject=u["id"], win=win))
     if not cands:
         return []
+    if by == "clarity":                                      # each pick's place in its own group (B-roll, people)
+        for grp in (True, False):
+            g = sorted((c for c in cands if (c["r"]["unit"]["role"] == "transition") == grp), key=lambda c: c["wins"][0][0])
+            for k, c in enumerate(g):
+                c["q"] = (k + 1) / len(g)
+    star = lambda c: c["m"].get("stars") or 3
     room = budget * (share or 0.5)
     n = lambda z: max(1, round((z[2] - z[1]) / beat))
     subj = Counter(c["subject"] for c in cands)
@@ -1359,13 +1384,32 @@ def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None,
         total = sum(load.values())                           # with the most drops its weakest pick
         over = [s for s in subj if load[s] > cap and subj[s] > 1] or \
             ([s for s in subj if subj[s] > 1] if total > room else [])
+        if by == "clarity" and total > room:                 # the least clear pick goes, from whichever clip
+            c = min((c for c in cands if id(c) in keep), key=lambda c: (star(c), c["q"], keep[id(c)][0][0]))
+            load[c["subject"]] -= n(keep.pop(id(c))[0]); subj[c["subject"]] -= 1
+            dropped.append(c)
+            continue
         if not over:
             break
         s = max(over, key=lambda s: load[s])
-        c = min((c for c in cands if c["subject"] == s and id(c) in keep), key=lambda c: keep[id(c)][0][0])
+        c = min((c for c in cands if c["subject"] == s and id(c) in keep), key=lambda c: (star(c), keep[id(c)][0][0]))
         load[s] -= n(keep.pop(id(c))[0]); subj[s] -= 1
         dropped.append(c)
-    extra = sorted(((z, c) for c in cands if id(c) in keep for z in c["wins"][1:]
+    if grow and grow > hold:                                 # room left: the best picks play grow beats
+        g = grow * beat
+        for c in sorted((c for c in cands if id(c) in keep), key=lambda c: (-star(c), -c.get("q", 0), -keep[id(c)][0][0])):
+            a, b = c["m"]["span"]
+            z0 = keep[id(c)][0]
+            if b - a <= z0[2] - z0[1] + 0.5 * beat:
+                continue                                     # (already the whole pick)
+            L = min(g, b - a)
+            xs = [(c["win"](x, x + L), x, x + L) for x in np.arange(a, b - L + 1e-6, 0.1)] or [(z0[0], a, b)]
+            z = max(xs, key=lambda q: q[0])
+            more = n(z) - n(z0)
+            if more > 0 and sum(load.values()) + more <= room:
+                keep[id(c)] = [z]
+                load[c["subject"]] += more
+    extra = [] if grow else sorted(((z, c) for c in cands if id(c) in keep for z in c["wins"][1:]
                     if z[0] >= PIECE_KEEP * c["wins"][0][0]), key=lambda zc: -zc[0][0])
     for z, c in extra:                                       # room left: a long pick's next best part
         if load[c["subject"]] + n(z) <= cap and sum(load.values()) + n(z) <= room:
@@ -2364,7 +2408,61 @@ def reframe(project, unit, t0, length, fmt, focus=True):
     the source fills the frame as it is and there is nothing to follow. The editor's focal points for this format
     (picks "<fmt>", set in the source browser) take over the centre where there are any (focus=False: as derived)."""
     c = _reframe(project, unit, t0, length, fmt)
-    return focus_override(c, focus_keys(project.picks(), unit, fmt), t0, length) if focus else c
+    picks = project.picks()
+    if fmt == "portrait" and (picks.get(unit["id"]) or {}).get("follow"):   # the editor's chosen person
+        dense = project.path("scores", f"faces_dense_{unit['id']}.npz")
+        yf = _cached(dense, lambda f: dict(np.load(f))) if os.path.exists(dense) else None
+        c = follow_override(c, yf, follow_keys(picks, unit), t0, length)
+    return focus_override(c, focus_keys(picks, unit, fmt), t0, length) if focus else c
+
+
+def follow_keys(picks, unit):
+    """The people the editor chose to follow in a unit: [(source time, x, y)] where they clicked them, x and y
+    fractions of the frame. picks.json: {"<export file>": {"follow": [["0:16.10", 0.52, 0.30], ...]}}."""
+    p = picks.get(unit["id"]) or {}
+    x0 = unit.get("export_t0", 0.0)
+    return sorted((x0 + _secs(t), float(x), float(y)) for t, x, y in p.get("follow") or [])
+
+
+FOLLOW_NEAR = 0.12         # a face this near the click (of the frame), within FOLLOW_WHEN s of it, is theirs
+FOLLOW_WHEN = 0.75
+
+
+def follow_override(crop, yf, keys, t0, length):
+    """The portrait crop on the person the editor clicked (picks "follow", set in the source browser), for the
+    whole shot: their face's track (face_tracks, anyone's -- not only the people the planner took the shot to be
+    about) steers the strip, the face in the upper third, the strip widened for a close face. A click with no face
+    near it (a back, a face too small to find) holds the strip on the click. Unchanged when no click is near the shot."""
+    keys = [k for k in keys if t0 - FOCUS_REACH <= k[0] <= t0 + length + FOCUS_REACH]
+    if not crop or not keys:
+        return crop
+    kt, kx, ky = min(keys, key=lambda k: abs(k[0] - (t0 + length / 2)))
+    w, h, z = crop["w"], crop["h"], crop.get("z", 1.0)
+    grid = np.arange(0, length + 0.01, 0.2)
+    best, bd = None, FOLLOW_NEAR
+    for tr in (face_tracks(yf, t0 - 1.0, t0 + length + 1.0) if yf is not None else []):
+        j = int(np.argmin(np.abs(tr[0] - kt)))
+        dd = float(np.hypot(tr[1][j] - kx, tr[2][j] - ky))
+        if abs(tr[0][j] - kt) <= FOLLOW_WHEN and dd < bd:
+            best, bd = tr, dd
+    if best is None:
+        x = np.full_like(grid, np.clip(kx, w / 2, 1 - w / 2))
+        y = np.full_like(grid, np.clip(ky, h / 2, 1 - h / 2))
+        out = dict(crop, follow="point")
+    else:
+        t, cx, cy, fh, _ = best
+        tt = t - t0
+        zoom = max(min(1.0, FACE_FIT * h / max(float(np.median(fh)), 1e-3)), 1 / max(z, 1.0))
+        w, h = w / zoom, h / zoom
+        k = np.exp(-0.5 * (np.arange(-4, 5) / 1.5) ** 2); k /= k.sum()   # ~0.3 s
+        x = np.convolve(np.pad(np.interp(grid, tt, cx), 4, mode="edge"), k, mode="valid")
+        y = np.convolve(np.pad(np.interp(grid, tt, cy + (0.5 - FACE_TOP) * h), 4, mode="edge"), k, mode="valid")
+        x, y = np.clip(x, w / 2, 1 - w / 2), np.clip(y, h / 2, 1 - h / 2)
+        seen = min(1.0, float(((tt >= 0) & (tt <= length)).sum()) / max(1.0, length / 0.5))
+        out = dict(crop, w=round(w, 4), h=round(h, 4), z=round(z * zoom, 3), follow="face", facetrack=True,
+                   **{f: round(max(float(crop.get(f, 0.0)), seen), 2) for f in ("face", "present", "inside", "head")})
+    out["path"] = [[round(float(a), 2), round(float(b), 4), round(float(c), 4)] for a, b, c in zip(grid, x, y)]
+    return out
 
 
 def focus_keys(picks, unit, fmt):
@@ -3118,7 +3216,8 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     if cfg.get("pick_hold") and picks:                       # long picks: their best part; many: condensed
         b = music.get("beat") or float(np.median(np.diff(music["beats"])))
         condensed = pick_pieces(project, moments, fmt, b, cfg["pick_hold"], music["length"] / b, cfg.get("pick_share"),
-                                 cfg.get("ending"), cfg.get("close"), cfg.get("pick_clip_share"))
+                                 cfg.get("ending"), cfg.get("close"), cfg.get("pick_clip_share"), cfg.get("pick_grow"),
+                                 cfg.get("pick_whole") or (), cfg.get("pick_by"))
     kp = project.config.get("keep")
     kp = "plan_{fmt}_rendered.json" if kp is True else kp    # true: the last cut rendered (render.run saves it)
     kp = kp and kp.format(fmt=project.cut_name(fmt))

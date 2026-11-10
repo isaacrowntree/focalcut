@@ -1712,3 +1712,18 @@ def test_portrait_strip_moves_onto_the_subjects_face_when_the_body_track_misses_
     assert P.face_track(yf, 0.0, 2.0, grid, np.full(len(grid), 0.62), y, cw, ch) is None   # already on it: as is
     far = dict(yf, cx=np.tile([0.9, 0.15], n))               # only faces far from the strip: someone else's
     assert P.face_track(far, 0.0, 2.0, grid, x, y, cw, ch) is None
+
+
+def test_follow_puts_the_portrait_strip_on_the_person_the_editor_clicked():
+    from focalcut.reel.plan import follow_override
+    t = np.arange(0, 4.01, 0.5)
+    # two people: one at x 0.3, one moving from x 0.6 to 0.8; the editor clicks the second
+    yf = dict(t=np.r_[t, t], cx=np.r_[np.full_like(t, 0.3), 0.6 + 0.05 * t], cy=np.full(2 * len(t), 0.3),
+              h=np.full(2 * len(t), 0.08), score=np.full(2 * len(t), 0.9))
+    crop = dict(w=0.32, h=1.0, z=1.0, path=[[0, 0.3, 0.5]], face=0.2)
+    c = follow_override(crop, yf, [(1.0, 0.65, 0.3)], 0.0, 4.0)
+    assert c["follow"] == "face" and abs(c["path"][0][1] - 0.6) < 0.03 and abs(c["path"][-1][1] - 0.8) < 0.03
+    assert c["face"] == 1.0
+    c = follow_override(crop, yf, [(1.0, 0.5, 0.7)], 0.0, 4.0)          # nobody's face there: hold on the click
+    assert c["follow"] == "point" and all(abs(p[1] - 0.5) < 1e-6 for p in c["path"])
+    assert follow_override(crop, yf, [(9.0, 0.65, 0.3)], 0.0, 4.0) is crop   # a click far from the shot
