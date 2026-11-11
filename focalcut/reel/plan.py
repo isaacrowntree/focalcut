@@ -2313,7 +2313,27 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
         unclump_clips(seq)
     if cfg.get("open_broll"):
         open_broll(P, seq, recs, cfg["open_broll"] if isinstance(cfg["open_broll"], list) else ("teaser", "arrival"))
+    if cfg.get("open_with"):
+        open_with(seq, cfg["open_with"])
     return seq, acts
+
+
+def open_with(seq, specs):
+    """The editor's picks that follow the logo, in order (cfg "open_with": [[export file, "m:ss.ss"], ...], each a
+    pick's in-point): moved from wherever they were placed to just after the teaser, into the arrival. The grid
+    stays as it is (an act gives up the beats another gains)."""
+    at = max((k + 1 for k, x in enumerate(seq) if x["act"] == "teaser"), default=0)
+    for uid, t in specs:
+        t = _secs(t) if isinstance(t, str) else float(t)
+        k = next((k for k, x in enumerate(seq) if x.get("span") and x["unit"]["id"] == uid
+                  and abs(x["span"][0] - x["unit"].get("export_t0", 0.0) - t) < 0.05), None)
+        if k is None:
+            print(f"[reel] open_with: no placed pick of {uid} at {t:.2f}")
+            continue
+        x = seq.pop(k)
+        x["act"] = "arrival"
+        seq.insert(at if k >= at else at - 1, x)
+        at += 1
 
 
 def open_broll(P, seq, recs, acts=("teaser", "arrival")):
