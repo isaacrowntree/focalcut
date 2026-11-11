@@ -2314,25 +2314,40 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
     if cfg.get("open_broll"):
         open_broll(P, seq, recs, cfg["open_broll"] if isinstance(cfg["open_broll"], list) else ("teaser", "arrival"))
     if cfg.get("open_with"):
-        open_with(seq, cfg["open_with"])
+        open_with(seq, cfg["open_with"], beat=music["beat"])
+    if cfg.get("end_with"):
+        open_with(seq, cfg["end_with"], end=True, beat=music["beat"])
     return seq, acts
 
 
-def open_with(seq, specs):
+def open_with(seq, specs, end=False, beat=None):
     """The editor's picks that follow the logo, in order (cfg "open_with": [[export file, "m:ss.ss"], ...], each a
-    pick's in-point): moved from wherever they were placed to just after the teaser, into the arrival. The grid
-    stays as it is (an act gives up the beats another gains)."""
-    at = max((k + 1 for k, x in enumerate(seq) if x["act"] == "teaser"), default=0)
+    pick's in-point): moved from wherever they were placed to just after the teaser, into the arrival; end=True (cfg
+    "end_with"): to just before the ending shot, into the finale. The grid stays as it is (an act gives up the beats
+    another gains). With beat, each plays whole: the beats it needs come from the shots of its act, before it first."""
+    at = next((k for k, x in enumerate(seq) if x.get("ending")), len(seq)) if end else \
+        max((k + 1 for k, x in enumerate(seq) if x["act"] == "teaser"), default=0)
     for uid, t in specs:
         t = _secs(t) if isinstance(t, str) else float(t)
         k = next((k for k, x in enumerate(seq) if x.get("span") and x["unit"]["id"] == uid
                   and abs(x["span"][0] - x["unit"].get("export_t0", 0.0) - t) < 0.05), None)
         if k is None:
-            print(f"[reel] open_with: no placed pick of {uid} at {t:.2f}")
+            print(f"[reel] {'end' if end else 'open'}_with: no placed pick of {uid} at {t:.2f}")
             continue
         x = seq.pop(k)
-        x["act"] = "arrival"
-        seq.insert(at if k >= at else at - 1, x)
+        x["act"] = "finale" if end else "arrival"
+        at = at if k >= at else at - 1
+        seq.insert(at, x)
+        if beat:                                             # whole: beats from the shots before it in its act
+            need = max(1, round((x["span"][1] - x["span"][0]) / beat)) - x["beats"]
+            for step in (-1, 1):                             # (the shots before it first, then after)
+                j = at + step
+                while need > 0 and 0 <= j < len(seq) and seq[j]["act"] == x["act"]:
+                    d = seq[j]
+                    if d["beats"] > 1 and not any(d.get(f) for f in ("logo", "ending", "open")):
+                        d["beats"] -= 1; x["beats"] += 1; need -= 1
+                    else:
+                        j += step
         at += 1
 
 
