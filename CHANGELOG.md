@@ -22,7 +22,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Fitting many picks into a short reel** (`plan.<fmt>` keys): `pick_grow` (every pick at `pick_hold` beats, the
   room left lengthening the best to `pick_grow`), `pick_by: "clarity"` (drop the picks whose subject is least
   clearly seen first, B-roll ranked among B-roll), `pick_whole` (clips whose picks play whole: the reel's focus),
-  `pick_like` (a format plays the picks another kept, e.g. portrait the landscape cut's).
+  `pick_like` (a format plays the picks another kept, e.g. portrait the landscape cut's), `open_broll` (B-roll
+  alone in the opening acts: people shots swap with later B-roll, and the window recast keeps to B-roll there).
 
 ### Docs
 

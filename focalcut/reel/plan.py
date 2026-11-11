@@ -2311,7 +2311,33 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
         split_long(P, seq, recs, home)                       # none too short to read (the grid stays as it is)
         merge_flashes(P, seq)
         unclump_clips(seq)
+    if cfg.get("open_broll"):
+        open_broll(P, seq, recs, cfg["open_broll"] if isinstance(cfg["open_broll"], list) else ("teaser", "arrival"))
     return seq, acts
+
+
+def open_broll(P, seq, recs, acts=("teaser", "arrival")):
+    """B-roll alone in the opening acts (cfg "open_broll": true, or the acts): a shot of people there swaps places
+    with a B-roll shot of a later act (not the finale), the nearest in length -- an editor's pick moves on, it isn't
+    lost -- or, with none to swap, a planner's shot becomes a B-roll moment; the logo shot leads the teaser. The
+    grid stays as it is."""
+    br = lambda s: s["unit"]["role"] == "transition"
+    for s in [s for s in seq if s["act"] in acts and not br(s) and not s.get("logo")]:
+        k = next(i for i, x in enumerate(seq) if x is s)
+        later = [j for j, x in enumerate(seq) if j > k and x["act"] not in acts and x["act"] != "finale" and br(x)
+                 and not any(x.get(f) for f in ("logo", "ending", "open", "close"))]
+        if later:
+            j = min(later, key=lambda j: (abs(seq[j]["beats"] - s["beats"]), j))
+            x = seq[j]
+            x["act"], s["act"] = s["act"], x["act"]
+            seq[k], seq[j] = x, s
+        elif not s.get("span"):
+            got = P.best([r for r in recs if r["role"] == "transition"])
+            if got:
+                seq[k] = P.take(*got, beats=s["beats"], act=s["act"])
+    lg = next((i for i, x in enumerate(seq) if x["act"] == "teaser" and x.get("logo") == "in"), None)
+    if lg:                                                   # the logo opens the reel
+        seq.insert(0, seq.pop(lg))
 
 
 def transitions(seq, music, cfg, direction=None):
@@ -3797,6 +3823,8 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None, split=True):
         return sorted({round(d, 3) for d in dts}, key=abs)
 
     slid = recast_n = 0
+    ob = cfg.get("open_broll")
+    opening = (ob if isinstance(ob, list) else ("teaser", "arrival")) if ob else ()
     stuck, stuck_at = [], []
     todo = [(i, s) for i, s, why in window_fails(shots, W) if not why]
     late = [(i, s) for i, s in enumerate(shots) if s["unit"].get("day") and s["act"] not in DAY_ACTS
@@ -3827,6 +3855,8 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None, split=True):
                 if r["id"] == u["id"] or (not loose and (r["role"] != u["role"] if not perf else not people_broll(ru))):
                     continue
                 if any(n["unit"]["clip"] == ru["clip"] for n in nb):
+                    continue
+                if s["act"] in opening and r["role"] != "transition":   # (cfg "open_broll": B-roll there alone)
                     continue
                 own_set = not cfg.get("sets") or ru.get("category") == u.get("category")   # (another set's only
                 d = bool(ru.get("day")) or (bool(day_cats) and fits(ru, day_cats))         # when its own has none)
