@@ -214,8 +214,15 @@ def menu(project, current: str) -> str:
     cuts += sorted(f[:-5] for f in (os.listdir(rev) if os.path.isdir(rev) else [])
                    if f.endswith(".html") and f[:-5] not in cuts and f != "sources.html")
     links = [("sources", "Sources")] + [(c, c.capitalize()) for c in cuts]
+    frames = [("main", "Frame portrait")] if os.path.exists(project.path("plan_portrait.json")) else []
+    from .project import Project
+    frames += [(c, f"Frame {c} portrait") for c in (Project(project.folder).config.get("cuts") or {})
+               if os.path.exists(project.path(f"plan_{c}_portrait.json"))]
     return ('<nav class=menu>' + "".join(f'<a href="{quote(k)}.html"{" class=cur" if k == current else ""}>'
                                          f'{html.escape(label)}</a>' for k, label in links)
+            + "".join(f'<a href="sources.html#frame={quote(r)}" title="the portrait cut shot by shot, its crop over the '
+                      f'picture: drag to pan, G then click to follow a dancer">{html.escape(label)}</a>'
+                      for r, label in frames)
             + '<a href="/" id=allp hidden>All projects</a></nav>')
 
 
@@ -505,7 +512,14 @@ async function push(){try{const r=await fetch(D.root+"api/picks",{method:"PUT",h
 async function boot(){try{const r=await fetch(D.root+"api/picks",{cache:"no-store"});if(!r.ok)throw 0;P=await r.json();
  server=true;lastSnap=JSON.stringify(P);($("allp")||{}).hidden=false;status("picks.json — saves as you go","ok")}catch(e){const l=ls.get("picks");if(l)P=l;
  status("opened as a file: changes stay in this browser","err")}
- const last=ls.get("clip");go(Math.max(0,D.clips.findIndex(c=>c.id==last)),true)}
+ const last=ls.get("clip");go(Math.max(0,D.clips.findIndex(c=>c.id==last)),true);framing()}
+// sources.html#frame=<reel>: straight to framing that reel's portrait cut -- Cut & picks, the portrait cut's shots in
+// order, the crop over the picture: drag to pan it, G then a click to follow a dancer, ←/→ from shot to shot
+function framing(){const m=/frame=([\w-]+)/.exec(location.hash);if(!m)return;
+ if(RID.includes(m[1])&&reel!==m[1]){reel=m[1];ls.set("reel",reel);useReel();place.clear()}
+ pfmt="P";ls.set("pfmt","P");if(!frameOn)toggleFrame();view(2);pick(0,false);
+ status(`framing the ${reel=="all"?"":rlab(reel)+" "}portrait cut — drag the picture to pan · G then click a dancer to follow · ←/→ shot to shot · Clear focus to undo`,"ok")}
+addEventListener("hashchange",framing);
 // selections of a clip: [[a,b],...] sorted; written back as "m:ss.ss-m:ss.ss" (single times stay as they were)
 function sels(id){return((P[id]||{}).add||[]).filter(isRange).map(span).sort((x,y)=>x[0]-y[0])}
 function points(id){return((P[id]||{}).add||[]).filter(v=>!isRange(v)).map(v=>span(v)[0])}
