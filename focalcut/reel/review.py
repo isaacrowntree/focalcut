@@ -45,19 +45,25 @@ def page(plan, fmt, thumbs, sources=None, picks=None, key="review", root="", nav
         a = s["src_in"] - u.get("export_t0", 0.0)
         tags = " ".join(filter(None, [s["act"], s["kind"], "+".join(s["fx"]),
                                       s.get("transition") and f"⇢ {s['transition']}"]))
-        img = f'<img src="{html.escape(quote(thumbs[i]))}" loading="lazy" alt="">' if thumbs[i] else ""
-        cards.append(f'<figure data-i="{i}">{img}<figcaption><b>{i + 1}</b> {html.escape(u["id"])} '
-                     f'<span class=t>{mmss(a)}–{mmss(a + s["length"])}</span><br><small>{html.escape(tags)}</small>'
-                     f'<code title="copy into picks.json">{html.escape(pick_line(s))}</code>'
-                     f'<span class=bar><button data-act=scrub>Scrub source ▸</button>'
-                     f'<button data-act=ban>Ban</button><button data-act=more>More +</button></span>'
-                     f'<span class=st></span></figcaption></figure>')
+        img = (f'<img src="{html.escape(quote(thumbs[i]))}" loading="lazy" alt="" title="scrub the clip this shot '
+               f'comes from">' if thumbs[i] else "")
+        frame = (f'<a href="sources.html#frame={quote(reel)}&shot={i + 1}" title="pan this shot\'s portrait crop, or '
+                 f'follow a dancer">Frame</a>' if fmt == "portrait" else "")
+        cards.append(f'<figure data-i="{i}">{img}<figcaption><span><b>{i + 1}</b> <span class=nm>{html.escape(u["id"])}'
+                     f'</span></span><span class=t title="{html.escape(pick_line(s))}">{mmss(a)}–{mmss(a + s["length"])}'
+                     f' · {s["length"]:.1f} s</span><small>{html.escape(tags)}</small><span class=st></span>'
+                     f'<span class=bar><button data-act=scrub>Scrub</button>'
+                     f'<button data-act=ban class=danger>Ban</button><button data-act=more title="ask for more shots '
+                     f'from this clip">More +</button><button data-act=less hidden title="one fewer">−</button>{frame}'
+                     f'</span></figcaption></figure>')
         shots.append(dict(id=u["id"], a=round(a, 2), b=round(a + s["length"], 2), kind=s["kind"]))
     data = dict(shots=shots, sources=sources or {}, picks=picks or {}, key=key, root=root, reel=reel,
                 reels=reels or [])
-    return webui.document(f"{fmt} reel review", "review.html", data, css=("review.css",), js=("picks.js", "review.js"),
+    label = next((r["label"] for r in reels or [] if r["id"] == reel), reel.capitalize())
+    return webui.document(f"{project} — {label} {fmt} review", "review.html", data, css=("ui.css", "review.css"),
+                          js=("picks.js", "app.js", "review.js"),
                           subs={"W": str(w), "FMT": html.escape(fmt), "N": str(len(shots)), "CARDS": "".join(cards),
-                                "NAV": nav, "PROJECT": html.escape(project)})
+                                "NAV": nav, "PROJECT": html.escape(project), "REEL": html.escape(label)})
 
 
 def sources(project, plan, fmt, page_dir):

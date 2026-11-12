@@ -6,9 +6,15 @@ land in the file as they make them, with no download or copy step. One process s
 
 Each project lives under /p/<slug>/ (the slug from its folder name: "SSMC 2026" -> ssmc-2026); its files resolve
 against its own folder, and under that prefix:
-    GET/PUT api/picks    reads / replaces picks.json (the previous file is kept as picks.json.bak)
+    GET/PUT api/picks    reads / replaces picks.json. The answer's ETag names the file's contents; a PUT with
+                         If-Match replaces the file only if it is still that one, else 409 with the file as it is
+                         now (two pages open on one project merge their edits instead of the last one winning).
+                         The previous file is kept as picks.json.bak, and a copy every ten minutes of editing in
+                         picks_history/ (the newest 200)
     GET     api/crop     ?id=<export file>&a=<s>&b=<s>&fmt=portrait: the crop the planner derives for that stretch,
                          before any focal point the editor set (path times are seconds from a)
+Files are sent with a Last-Modified the browser checks each time (a re-made thumbnail shows at once); the exports
+themselves may be kept for an hour.
 / is always the index of the projects and their pages. GET /api/projects lists them; POST /api/projects {"folder": ...}
 adds one to the running server; --root <dir> also picks up any <dir>/*/focalcut/reel/reel.json as it appears.
 With a single folder (and no --root) the project is also served at the top level, as before (/api/picks is its
@@ -16,6 +22,8 @@ picks, its files at their own paths). Localhost only.
 """
 from __future__ import annotations
 
+import email.utils
+import hashlib
 import html
 import json
 import mimetypes
@@ -23,12 +31,33 @@ import os
 import re
 import shutil
 import threading
+import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .project import Project
 
 LOCAL = {"localhost", "127.0.0.1", "[::1]"}
+HISTORY_EVERY = 600        # seconds of editing between the copies of picks.json kept in picks_history/
+HISTORY_KEEP = 200
+VIDEO = (".mp4", ".mov", ".m4v", ".webm", ".mkv")
+
+
+def etag(data: bytes) -> str:
+    return '"' + hashlib.sha1(data).hexdigest()[:20] + '"'
+
+
+def keep_history(picks: str):
+    """A copy of picks.json (as it is, before it is replaced) in picks_history/, at most one every HISTORY_EVERY
+    seconds: a session's edits can be walked back further than the one-step picks.json.bak."""
+    d = os.path.join(os.path.dirname(picks), "picks_history")
+    old = sorted(f for f in (os.listdir(d) if os.path.isdir(d) else []) if f.startswith("picks-"))
+    if old and time.time() - os.path.getmtime(os.path.join(d, old[-1])) < HISTORY_EVERY:
+        return
+    os.makedirs(d, exist_ok=True)
+    shutil.copyfile(picks, os.path.join(d, time.strftime("picks-%Y%m%d-%H%M%S.json")))
+    for f in old[:max(0, len(old) + 1 - HISTORY_KEEP)]:
+        os.remove(os.path.join(d, f))
 
 
 def slug(folder: str) -> str:
@@ -129,7 +158,8 @@ def handler(site):
 
         def end_headers(self):
             p = urlparse(self.path).path
-            self.send_header("Cache-Control", "no-store" if "/api/" in p or p.endswith((".html", "/")) else "max-age=3600")
+            self.send_header("Cache-Control", "no-store" if "/api/" in p or p.endswith((".html", "/"))
+                             else "max-age=3600" if p.lower().endswith(VIDEO) else "no-cache")
             super().end_headers()
 
         def local(self):
@@ -169,8 +199,11 @@ def handler(site):
                     return self.reply(404, b'{"error": "no review pages yet: run the review step"}')
                 return self.redirect((f"/p/{quote(s)}" if s else "") + "/" + quote(first[0][1]))
             if path == "/api/picks":
-                f = project.path("picks.json")
-                return self.reply(200, open(f, "rb").read() if os.path.exists(f) else b"{}")
+                data = self.picks_bytes(project)
+                tag = etag(data)
+                if self.headers.get("If-None-Match") == tag:
+                    return self.reply(304, b"", headers={"ETag": tag})
+                return self.reply(200, data, headers={"ETag": tag})
             if path == "/api/crop":
                 return self.crop(project, parse_qs(urlparse(self.path).query))
             root = os.path.realpath(project.folder)
@@ -189,13 +222,29 @@ def handler(site):
             if not isinstance(data, dict):
                 return self.reply(400, b'{"error": "picks must be a JSON object"}')
             picks = project.path("picks.json")
-            if os.path.exists(picks):
-                shutil.copyfile(picks, picks + ".bak")
-            tmp = picks + ".tmp"
-            with open(tmp, "w") as fh:
-                json.dump(data, fh, indent=1)
-            os.replace(tmp, picks)
-            self.reply(200, b'{"ok": true}')
+            want = self.headers.get("If-Match")
+            with site.lock:                              # (one save at a time: the check and the swap are one step)
+                now = self.picks_bytes(project)
+                if want and want != etag(now):           # changed since this page read it: the page merges
+                    return self.reply(409, now, headers={"ETag": etag(now)})
+                if os.path.exists(picks):
+                    keep_history(picks)
+                    shutil.copyfile(picks, picks + ".bak")
+                new = json.dumps(data, indent=1).encode()
+                tmp = picks + ".tmp"
+                with open(tmp, "wb") as fh:
+                    fh.write(new)
+                os.replace(tmp, picks)
+            self.reply(200, b'{"ok": true}', headers={"ETag": etag(new)})
+
+        @staticmethod
+        def picks_bytes(project) -> bytes:
+            f = project.path("picks.json")
+            try:
+                with open(f, "rb") as fh:
+                    return fh.read()
+            except FileNotFoundError:
+                return b"{}"
 
         def do_POST(self):
             if not self.local():
@@ -214,8 +263,8 @@ def handler(site):
 
         def body(self):
             try:
-                return json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
-            except ValueError:
+                return json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+            except (ValueError, RecursionError):
                 return None
 
         def crop(self, project, q):
@@ -231,7 +280,10 @@ def handler(site):
                 assert fmt in ("portrait", "landscape") and b > a
             except (KeyError, ValueError, AssertionError):
                 return self.reply(400, b'{"error": "id, a < b and fmt"}')
-            c = reframe(project, u, u.get("export_t0", 0.0) + a, b - a, fmt, focus=False)
+            try:
+                c = reframe(project, u, u.get("export_t0", 0.0) + a, b - a, fmt, focus=False)
+            except Exception as e:                       # (a missing score file, say: the page says why)
+                return self.reply(500, json.dumps({"error": f"{type(e).__name__}: {e}"}).encode())
             self.reply(200, json.dumps(c).encode())
 
         def redirect(self, to):
@@ -240,10 +292,12 @@ def handler(site):
             self.send_header("Content-Length", "0")
             self.end_headers()
 
-        def reply(self, code, body, kind="application/json"):
+        def reply(self, code, body, kind="application/json", headers=None):
             self.send_response(code)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(body)))
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
             self.end_headers()
             self.wfile.write(body)
 
@@ -252,6 +306,12 @@ def handler(site):
             kind = mimetypes.guess_type(f)[0] or "application/octet-stream"
             a, b, code = 0, size - 1, 200
             rng = self.headers.get("Range", "")
+            modified = email.utils.formatdate(int(os.path.getmtime(f)), usegmt=True)
+            if not rng and self.headers.get("If-Modified-Since") == modified:
+                self.send_response(304)
+                self.send_header("Last-Modified", modified)
+                self.end_headers()
+                return
             if rng.startswith("bytes="):
                 lo, _, hi = rng[6:].split(",")[0].partition("-")
                 if lo:
@@ -268,6 +328,7 @@ def handler(site):
             self.send_response(code)
             self.send_header("Content-Type", kind)
             self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Last-Modified", modified)
             self.send_header("Content-Length", str(b - a + 1))
             if code == 206:
                 self.send_header("Content-Range", f"bytes {a}-{b}/{size}")
@@ -289,10 +350,19 @@ def handler(site):
 
 def run(projects, port=8765, host="127.0.0.1", root=None):
     projects = [projects] if isinstance(projects, Project) else list(projects)
+    from . import browse, webui
     for p in projects:
-        if not os.path.exists(p.path("review", "sources.html")):
-            from . import browse
+        page = p.path("review", "sources.html")
+        if not os.path.exists(page):
             browse.run(p)
+        elif webui.stamp_of(page) != webui.version():    # made by another focalcut: its picking tools have changed
+            print(f"[reel] {page}: made by another version of focalcut, making it again")
+            browse.run(p)
+            old = [f for f in os.listdir(p.path("review")) if f.endswith(".html") and f != "sources.html"
+                   and webui.stamp_of(p.path("review", f)) != webui.version()]
+            if old:
+                print(f"[reel]   its review pages ({', '.join(sorted(old))}) are from that version too: "
+                      f"`focalcut reel run {p.folder} --steps review` makes them again")
     site = Site(projects, root)
     srv = ThreadingHTTPServer((host, port), handler(site))
     srv.daemon_threads = True

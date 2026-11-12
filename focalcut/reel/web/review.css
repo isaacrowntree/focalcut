@@ -1,148 +1,115 @@
-:root {
-  --bg: #111;
-  --fg: #eee;
-  --mut: #999;
-  --card: #1c1c1c;
-  --line: #333;
-  --acc: #f5c542;
-  --add: #3ddc84;
-  --ban: #ff5c5c;
-  --mom: #7aa7ff;
+/* A reel's review page: every shot of the cut as a card, and a scrubber on the clip a shot comes from. */
+#bar {
+  position: sticky;
+  top: 0;
 }
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f6f6f6;
-    --fg: #111;
-    --mut: #555;
-    --card: #fff;
-    --line: #ddd;
-    --acc: #a06c00;
-    --add: #0a8a4a;
-    --ban: #c62828;
-    --mom: #2457c5;
-  }
-}
-body {
-  background: var(--bg);
-  color: var(--fg);
-  font: 13px system-ui;
-  margin: 16px;
-}
-h1 {
-  font-size: 18px;
-  margin: 0 0 6px;
-}
-p {
+.how {
+  margin: 12px 16px 0;
   color: var(--mut);
-  max-width: 80ch;
+  max-width: 110ch;
+  line-height: 1.8;
+}
+.how code {
+  font-size: 12px;
 }
 main {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(%W%px, 1fr));
   gap: 12px;
+  padding: 12px 16px 40px;
 }
 figure {
   margin: 0;
-  background: var(--card);
+  background: var(--panel);
   border-radius: 8px;
   overflow: hidden;
-  border: 2px solid transparent;
+  border: 2px solid var(--line);
 }
 figure.banned {
   border-color: var(--ban);
-  opacity: 0.6;
+}
+figure.banned img {
+  opacity: 0.35;
 }
 figure.changed {
-  border-color: var(--add);
+  border-color: var(--sel);
 }
-img {
+figure img {
   width: 100%;
   display: block;
+  cursor: pointer;
+  background: #000;
 }
 figcaption {
-  padding: 6px 8px;
+  padding: 6px 8px 8px;
+  display: grid;
+  gap: 2px;
 }
-.t {
-  color: var(--acc);
+figcaption .nm {
+  word-break: break-all;
 }
-small,
+figcaption .t {
+  color: var(--io);
+  font-variant-numeric: tabular-nums;
+}
+figcaption small,
 .st {
   color: var(--mut);
+  font-size: 11px;
+}
+.st:empty {
+  display: none;
 }
 .st {
-  display: block;
-  font-size: 11px;
+  color: var(--sel);
+  font-weight: 600;
 }
-code {
-  display: block;
-  margin-top: 4px;
-  font-size: 11px;
-  color: var(--mut);
-  user-select: all;
-  overflow-wrap: anywhere;
-  cursor: copy;
-}
-button {
-  font: inherit;
-  background: var(--line);
-  color: var(--fg);
-  border: 0;
-  border-radius: 5px;
-  padding: 4px 8px;
-  cursor: pointer;
-  margin: 4px 4px 0 0;
-}
-button:hover {
-  outline: 1px solid var(--acc);
+figure.banned .st {
+  color: var(--ban);
 }
 .bar {
-  display: block;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
 }
-#top {
-  position: sticky;
-  top: 0;
-  background: var(--bg);
-  padding: 8px 0;
-  z-index: 5;
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 12px;
+.bar button,
+.bar a {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.bar a {
+  color: var(--port);
+  text-decoration: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.row {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+  margin-top: 6px;
 }
-#count {
-  color: var(--acc);
-  margin-right: 8px;
+button.wide {
+  min-width: 84px;
 }
-.how {
-  margin: 0 0 12px;
-  color: var(--mut);
-}
-.how summary {
-  cursor: pointer;
-}
-dialog {
-  background: var(--card);
-  color: var(--fg);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 12px;
-  width: min(960px, 96vw);
+#dlg {
+  width: min(1000px, 96vw);
   max-height: 96vh;
-}
-dialog::backdrop {
-  background: #000a;
 }
 #vid {
   width: 100%;
-  max-height: 58vh;
+  max-height: 54vh;
   background: #000;
   display: block;
+  border-radius: 6px;
+  margin-top: 8px;
 }
 .tl {
   position: relative;
-  background: var(--line);
+  background: var(--card);
+  border: 1px solid var(--line);
   border-radius: 6px;
   margin: 6px 0;
   cursor: ew-resize;
@@ -151,12 +118,10 @@ dialog::backdrop {
   overflow: hidden;
 }
 #tl {
-  height: 44px;
+  height: 40px;
 }
 #zt {
-  height: 88px;
-  background: var(--bg);
-  border: 1px solid var(--line);
+  height: 84px;
 }
 .tl i {
   position: absolute;
@@ -166,7 +131,7 @@ dialog::backdrop {
   pointer-events: none;
 }
 .tl .cur {
-  background: var(--acc);
+  background: var(--io);
   opacity: 0.85;
 }
 .tl .oth {
@@ -181,7 +146,7 @@ dialog::backdrop {
 }
 .tl .add {
   width: 4px;
-  background: var(--add);
+  background: var(--sel);
   z-index: 2;
 }
 .tl .add::after {
@@ -190,14 +155,14 @@ dialog::backdrop {
   top: 0;
   left: -5px;
   border: 7px solid transparent;
-  border-top-color: var(--add);
+  border-top-color: var(--sel);
 }
 .tl .ban {
   background: var(--ban);
   opacity: 0.35;
 }
 .tl .pre {
-  background: var(--add);
+  background: var(--sel);
   opacity: 0.4;
 }
 .tl .io {
@@ -208,7 +173,7 @@ dialog::backdrop {
 }
 .tl .ph {
   width: 2px;
-  background: var(--fg);
+  background: var(--ph);
   z-index: 3;
 }
 .tl .ph::before {
@@ -217,10 +182,10 @@ dialog::backdrop {
   top: 0;
   left: -6px;
   border: 7px solid transparent;
-  border-top-color: var(--fg);
+  border-top-color: var(--ph);
 }
 .tl .win {
-  border: 2px solid var(--acc);
+  border: 2px solid var(--io);
   background: transparent;
   z-index: 1;
 }
@@ -252,36 +217,27 @@ dialog::backdrop {
   padding: 1px 5px;
   border-radius: 3px;
   display: none;
-  z-index: 10;
+  z-index: 60;
   font-variant-numeric: tabular-nums;
-}
-#help {
-  font-size: 12px;
-  color: var(--mut);
-  margin: 6px 0 0;
-  line-height: 1.9;
-}
-.row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: center;
 }
 #pos {
-  font-variant-numeric: tabular-nums;
-  color: var(--acc);
+  font: 600 13px ui-monospace, monospace;
+  color: var(--io);
+  min-width: 11em;
 }
 #alts {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
   margin-top: 6px;
-  max-height: 110px;
+  max-height: 84px;
   overflow: auto;
 }
 #alts button {
   background: transparent;
-  border: 1px solid var(--mom);
+  border-color: var(--mom);
+  font-size: 11px;
+  padding: 1px 6px;
 }
 #alts button.on {
   background: var(--mom);
@@ -290,47 +246,12 @@ dialog::backdrop {
 #marks {
   font-size: 12px;
   color: var(--mut);
-  margin-top: 6px;
+  margin-top: 8px;
 }
 #marks b {
-  color: var(--add);
+  color: var(--sel);
+  cursor: pointer;
 }
-kbd {
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  padding: 0 4px;
-  font-size: 11px;
-}
-pre {
-  white-space: pre-wrap;
-  font-size: 11px;
-  background: var(--card);
-  padding: 8px;
-  border-radius: 6px;
-  max-height: 40vh;
-  overflow: auto;
-}
-.menu {
-  display: inline-flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  font-size: 13px;
-  margin-right: 8px;
-}
-.menu a {
-  color: var(--mut);
-  text-decoration: none;
-  padding: 2px 0;
-  border-bottom: 2px solid transparent;
-}
-.menu a:hover {
-  color: var(--fg);
-}
-.menu a.cur {
-  color: var(--fg);
-  font-weight: 600;
-  border-bottom-color: currentColor;
-}
-.menu a[hidden] {
-  display: none;
+#marks button {
+  padding: 0 5px;
 }

@@ -1,30 +1,51 @@
-
-<header><h1>%TITLE%</h1>%NAV%
-<div id=views><button id=v1 class=on title="every clip, one at a time">Clips</button><button id=v2 title="the cut, shot by shot, with your picks in it">Cut &amp; picks</button></div><span id=reelsw title="which reel you're picking for: its shots show in the lanes; picks for other reels fade; new picks, bans, the opening and the ending are for this reel only, and removing one takes it out of this reel only (All: every reel)"></span><span id=counts></span>
-<span class=sp></span><span id=saved></span>
-<span class=pj><button id=copy title="copy picks.json to the clipboard">Copy</button><button id=dl title="download picks.json">Download</button></span>
+<header id=bar>
+<div class=bar1>
+<h1>%TITLE%</h1>
+<div id=views class=tabs role=tablist>
+<button id=v1 role=tab title="every clip, one at a time: mark the ranges you want (key Tab moves between the views)">Clips</button>
+<button id=v2 role=tab title="the cut shot by shot, your picks in it: trim, slip, star, drop">Cut &amp; picks</button>
+<button id=v3 role=tab title="the portrait cut shot by shot: drag to pan the crop, click a dancer to follow them">Frame portrait</button>
+</div>
+<span id=reelsw class=seg title="the reel you are working on: its shots show in the lanes and the cut; picks for other reels fade. New picks, bans, the opening and the ending are for this reel only, and removing one takes it out of this reel only (All: every reel)"></span>
+<span class=sp></span>
+<span id=saved class=save></span>
+<span class=seg><button id=undo title="undo (Ctrl+Z)" aria-label=undo disabled>↶ Undo</button><button id=redo title="redo (Ctrl+Shift+Z)" aria-label=redo disabled>↷</button></span>
+<button id=helpb title="every key (?)">Keys <kbd>?</kbd></button>
+<details class=menu><summary title="picks.json and the theme">More</summary><div>
+<button id=copy title="copy picks.json to the clipboard">Copy picks.json</button>
+<button id=dl title="download picks.json">Download picks.json</button>
+<button id=reset hidden title="drop the changes kept in this browser">Reset to the page's picks</button>
+<small>Theme</small><span class=seg><button data-theme-set=auto>Auto</button><button data-theme-set=dark>Dark</button><button data-theme-set=light>Light</button></span>
+</div></details>
+</div>
+<div class=bar2>%NAV%<span class=sp></span><span id=counts></span></div>
 </header>
-<section id=clipsview><aside id=side><div id=filters></div><div id=list></div></aside>
-<div id=main>
-<div id=cliphead><h2 id=cname></h2><span id=cmeta style="color:var(--mut)"></span><span class=sp></span>
+
+<section id=clipsview class=view>
+<aside class=side><div id=filters></div><div id=list class=scroll></div></aside>
+<div class=main id=main>
+<div id=cliphead><h2 id=cname></h2><span id=cmeta class=mut></span><span class=sp></span>
 <button id=prevc title="previous clip (↑)">↑ Prev clip</button><button id=nextc title="next clip (↓)">Next clip ↓</button></div>
-<div id=vwrap><video id=vid preload=auto playsinline muted></video><div id=still></div><span id=tc></span><div id=fr class=fr></div></div>
-<div class=row><button id=play>▶ Play</button><button id=fb title="one frame back (←)">◀ frame</button>
+<div id=vwrap class=stage><video id=vid preload=auto playsinline muted></video><div id=still class=still></div><span id=tc class=tc></span><div id=fr class=fr></div></div>
+<div class=row>
+<button id=play class=wide title="play / pause (Space)">▶ Play</button><button id=fb title="one frame back (←)">◀ frame</button>
 <button id=ff title="one frame on (→)">frame ▶</button>
-<select id=rate><option value=0.25>¼×</option><option value=0.5>½×</option><option value=1 selected>1×</option>
+<select id=rate title="playback speed"><option value=0.25>¼×</option><option value=0.5>½×</option><option value=1 selected>1×</option>
 <option value=2>2×</option><option value=4>4×</option></select>
-<button id=sound title="sound on / off">🔇</button>
-<span style="width:10px"></span>
-<button id=bin title="mark in (I)">In <kbd>I</kbd></button><button id=bout title="mark out (O)">Out <kbd>O</kbd></button>
+<button id=sound title="sound on / off">Sound off</button>
+<span class=gap></span>
+<button id=bin title="mark in at the playhead (I)">In <kbd>I</kbd></button><button id=bout title="mark out at the playhead (O)">Out <kbd>O</kbd></button>
 <button id=badd class=go title="add the in–out as a selection (Enter)">+ Add selection <kbd>Enter</kbd></button>
+<button id=bban class=danger title="keep the in–out out of the reel (B)">Ban in–out <kbd>B</kbd></button>
 <span id=io></span><span class=sp></span>
-<button id=zfit title="whole clip (0)">Fit <kbd>0</kbd></button><button id=zin>Zoom +</button><button id=zout>Zoom −</button>
-<button id=banc title="never use this clip">Ban clip</button></div>
-<div class=row><button id=bframe class=frt title="show the portrait reel's crop here; drag on the picture to set a focal point (F)">▯ Portrait frame <kbd>F</kbd></button>
-<button id=bfollow class=fol title="then click a dancer: the portrait crop follows that person through the shot (G)">👤 Follow person <kbd>G</kbd></button>
-<button id=fclr title="remove the focal points and the followed person around the playhead (this selection, reel shot or 3 s)">Clear focus here</button>
-<span id=fhelp style="color:var(--mut);font-size:12px" hidden>dashed pink: what the planner works out · yellow: what the portrait reel shows — drag to set a focal point at the playhead; set more at other times and the crop glides between them</span></div>
-<div id=ov class=tl title="the whole clip; the yellow box is what the timeline below shows — click or drag to move"><canvas></canvas></div>
+<span class=seg><button id=zout title="zoom out (−)">−</button><button id=zfit title="the whole clip (0)">Fit</button><button id=zin title="zoom in (=)">+</button></span>
+<button id=banc class=danger title="never use this clip in the reel you are working on">Ban clip</button></div>
+<div class=row>
+<button id=bframe class=frt title="show the portrait reel's crop over the picture; drag it to pan (F)">Portrait frame <kbd>F</kbd></button>
+<button id=bfollow class=fol title="then click a dancer: the portrait crop follows that person through the shot (G)">Follow a person <kbd>G</kbd></button>
+<button id=fclr title="back to the planner's framing around the playhead (this selection, reel shot or 3 s): your pan and the person you follow go">Reset framing here</button>
+<span id=fhelp class=mut hidden>drag the picture to pan the portrait crop here (more pans at other times: it glides between them) · <a href="#frame">Frame portrait</a> goes through the cut shot by shot</span></div>
+<div id=ov class=tl title="the whole clip; the outlined box is what the timeline below shows — click or drag to move"><canvas></canvas></div>
 <div id=tl class=tl>
 <div id=ruler title="click or drag to scrub"></div>
 <div id=strip title="click or drag to scrub; scroll to zoom, shift+scroll to pan"><canvas></canvas></div>
@@ -32,42 +53,120 @@
 <div id=lland class=lane><span class=lab>landscape</span></div><div id=lport class=lane><span class=lab>portrait</span></div>
 </div>
 <div id=mysel></div>
-<div id=keys><kbd>Space</kbd>/<kbd>K</kbd> play · <kbd>J</kbd>/<kbd>L</kbd> shuttle back / on (again: faster) ·
-<kbd>←</kbd><kbd>→</kbd> frame (<kbd>Shift</kbd> 1 s) · <kbd>I</kbd> in · <kbd>O</kbd> out · <kbd>Enter</kbd> add
-selection · <kbd>X</kbd> clear in–out · <kbd>Backspace</kbd> delete selection at playhead · <kbd>[</kbd><kbd>]</kbd>
-previous / next mark · <kbd>\</kbd> loop selection · <kbd>↑</kbd><kbd>↓</kbd> previous / next clip ·
-<kbd>=</kbd><kbd>−</kbd> zoom · <kbd>0</kbd> fit · <kbd>B</kbd> ban in–out · <kbd>1</kbd>–<kbd>5</kbd> star the selection at the playhead · <kbd>F</kbd> portrait frame · <kbd>G</kbd> follow a person (then click them) · <kbd>Tab</kbd> Cut &amp; picks<br>
-Or drag in the <b style="color:var(--sel)">selections</b> lane to mark a range directly; drag a block to move it,
-its edges to trim. <span style="color:var(--land)">■</span> landscape and <span style="color:var(--port)">■</span>
-portrait show what the current reels use; <span style="color:var(--mom)">|</span> moments the planner found.
-Each selection goes in the reel starting at its in-point.</div>
+<p class=hint>Drag in the <b style="color:var(--sel)">selections</b> lane to pick a range (or <kbd>I</kbd> <kbd>O</kbd> <kbd>Enter</kbd>); drag a block to move it, its edges to trim; <kbd>1</kbd>–<kbd>5</kbd> stars it.
+<span style="color:var(--land)">■</span> landscape and <span style="color:var(--port)">■</span> portrait are the shots the reel uses now: click one to pick it, ✕ or drag along the lane to take shots out.
+<span style="color:var(--mom)">|</span> moments the planner found. <kbd>?</kbd> every key.</p>
 </div></section>
-<section id=selview>
-<div id=selhead><h2 id=seltitle></h2><span id=seltot style="color:var(--mut)"></span><span class=sp></span>
-<span id=pfmts><button data-f=L title="the landscape reel's shots, in order, with your picks">Landscape cut</button><button data-f=P title="the portrait reel's shots, in order, with your picks">Portrait cut</button><button data-f=picks title="only the picks you made">Picks only</button></span>
-<button id=playall class=go>▶ Play all</button><button id=stopall>■ Stop</button>
-<div id=bulk><b id=bulkn></b><span class=sp></span><button id=bulkall title="select every shot the planner chose (not your picks) (A)">Select all planner shots</button>
-<button id=bulkdrop class=go title="drop every selected shot: picks are removed, the planner's shots banned (Delete)">Drop selected</button>
-<button id=bulkclr title="clear the selection (Esc)">Clear</button></div></div>
-<div id=ped><div id=pvwrap><video id=pv playsinline muted preload=auto></video><div id=pstill></div><span id=pvtc></span><div id=pfr class=fr></div></div>
-<div class=row style="margin:8px 0"><button id=pprev title="previous pick (←)">◀ Prev</button>
-<button id=pplay class=go title="play this pick (Space)">▶ Play pick</button><button id=ploop title="loop this pick (\)">↻ Loop</button>
-<button id=pnext title="next pick (→)">Next ▶</button><b id=plen style="font:600 14px ui-monospace,monospace;margin:0 8px"></b>
+
+<section id=selview class=view>
+<aside class=side>
+<div class=sidehead>
+<span id=pfmts class=seg><button data-f=L title="the landscape reel's shots, in order, with your picks">Landscape</button><button data-f=P title="the portrait reel's shots, in order, with your picks">Portrait</button><button data-f=picks title="only the picks you made">Picks only</button></span>
+<div id=seltot class=mut></div>
+<div id=bulk><b id=bulkn></b><span class=sp></span>
+<button id=bulkdrop class=go title="drop every ticked shot: picks are removed, the planner's shots banned (Delete)">Drop</button>
+<button id=bulkclr title="untick them all (Esc)">Clear</button></div>
+</div>
+<div id=cards class=scroll></div>
+</aside>
+<div class=main>
+<div id=selhead><h2 id=seltitle></h2><span class=sp></span>
+<button id=bulkall title="tick every shot the planner chose (not your picks) (A)">Tick the planner's shots</button>
+<button id=playall class=go title="play the cut from this shot on">▶ Play all</button><button id=stopall title="stop (Esc)">■ Stop</button></div>
+<div id=seq title="every shot in order, widths by length — click to play from there"></div>
+<div id=pedempty class=emptystate>Choose a shot on the left (or press <kbd>→</kbd>) to trim it, slip it, star it or drop it.</div>
+<div id=ped>
+<div id=pvwrap class=stage><video id=pv playsinline muted preload=auto></video><div id=pstill class=still></div><span id=pvtc class=tc></span><div id=pfr class=fr></div></div>
+<div class=row><button id=pprev title="previous shot (←)">◀ Prev</button>
+<button id=pplay class="go wide" title="play this shot (Space)">▶ Play</button><button id=ploop title="loop this shot (\)">Loop</button>
+<button id=pnext title="next shot (→)">Next ▶</button><b id=plen class=len></b>
 <span class=grp>In <button data-n="in:-0.5" title="lengthen at the start (Shift: 5 s)">−½s</button><button data-n="in:-0.02">−f</button>
-<button data-n="in:0.02">+f</button><button data-n="in:0.5" title="trim the start">+½s</button><button id=pin title="in at the playhead (I)">⇤ I</button></span>
+<button data-n="in:0.02">+f</button><button data-n="in:0.5" title="trim the start">+½s</button><button id=pin title="in at the playhead (I)">I</button></span>
 <span class=grp>Out <button data-n="out:-0.5" title="trim the end">−½s</button><button data-n="out:-0.02">−f</button>
-<button data-n="out:0.02">+f</button><button data-n="out:0.5" title="lengthen at the end (Shift: 5 s)">+½s</button><button id=pout title="out at the playhead (O)">O ⇥</button></span>
-<span class=grp>Slip <button data-n="slip:-0.5" title="move the whole pick earlier (,)">◀ ½s</button><button data-n="slip:-0.02">◀ f</button>
-<button data-n="slip:0.02">f ▶</button><button data-n="slip:0.5" title="move the whole pick later (.)">½s ▶</button></span>
-<button id=pframe class=frt title="portrait crop; drag on the picture to set a focal point (F)">▯ Portrait <kbd>F</kbd></button>
-<button id=pfollow class=fol title="then click a dancer: the portrait crop follows that person through the pick (G)">👤 Follow</button>
-<button id=pfclr title="remove this pick's focal points and followed person">Clear focus</button>
-<span class=grp><button id=pfirst title="open the reel on this pick, under the event's logo (one opening per reel)">★ Opening</button><button id=plast title="end the reel on this pick (one ending per reel)">⚑ Ending</button></span><span class=grp id=pstars></span><span class=grp id=preels></span><span class=sp></span><button id=popen title="open this clip in Clips">Open in Clips</button><button id=pdel title="remove (Backspace)">✕ Remove</button></div>
+<button data-n="out:0.02">+f</button><button data-n="out:0.5" title="lengthen at the end (Shift: 5 s)">+½s</button><button id=pout title="out at the playhead (O)">O</button></span>
+<span class=grp>Slip <button data-n="slip:-0.5" title="move the whole shot earlier (Shift+,)">◀ ½s</button><button data-n="slip:-0.02" title="a frame earlier (,)">◀ f</button>
+<button data-n="slip:0.02" title="a frame later (.)">f ▶</button><button data-n="slip:0.5" title="move the whole shot later (Shift+.)">½s ▶</button></span></div>
+<div class=row>
+<span class=grp id=pstars></span><span class=grp id=preels></span>
+<span class=grp><button id=pfirst title="open the reel on this pick, under the event's logo (one opening per reel)">Opens the reel</button><button id=plast title="end the reel on this pick (one ending per reel)">Ends the reel</button></span>
+<span class=sp></span>
+<button id=pframe class=frt title="the portrait crop over the picture; drag it to pan (F)">Portrait frame <kbd>F</kbd></button>
+<button id=pfollow class=fol title="then click a dancer: the portrait crop follows that person through the shot (G)">Follow <kbd>G</kbd></button>
+<button id=pfclr title="back to the planner's framing for this shot">Reset framing</button>
+<button id=popen title="open this clip in Clips, at this shot">Open in Clips</button><button id=pdel class=danger title="remove this pick; a planner's shot is banned instead (Backspace)">✕ Remove</button></div>
 <div id=pt class=tl><div id=pruler></div><div id=pstrip title="drag the edges to trim or lengthen, the block to slip it, anywhere else to scrub; scroll to zoom"><canvas></canvas></div></div>
-<p style="color:var(--mut);font-size:12px;margin:6px 0 0">Drag the pick's edges to lengthen or trim, drag the block to slip it, click
-elsewhere to scrub · tick cards (<kbd>X</kbd>, shift-click for a range, <kbd>A</kbd> all the planner's) then <kbd>Delete</kbd> drops them all · <kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> previous / next pick · <kbd>I</kbd>/<kbd>O</kbd> in / out
-at the playhead · <kbd>,</kbd><kbd>.</kbd> slip a frame (<kbd>Shift</kbd> ½ s) · <kbd>\</kbd> loop · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Tab</kbd> Clips</p></div>
-<div id=seq title="every selection in order, widths by length — click to play from there"></div>
-<div id=cards></div>
-</section>
+<p class=hint>Drag the edges to lengthen or trim, the block to slip it; click elsewhere to scrub. A planner's shot becomes your pick as soon as you change it.
+Tick shots (<kbd>X</kbd>, shift-click for a range) and <kbd>Delete</kbd> drops them all. <kbd>?</kbd> every key.</p>
+</div></div></section>
+
+<section id=frameview class=view>
+<aside class=side>
+<div class=sidehead><b id=ftitle></b><div id=fcount class=mut></div>
+<span id=ffilter class=seg><button data-ff=all class=on>All</button><button data-ff=mine title="shots you framed: panned, or following a person">Framed by you</button><button data-ff=auto title="shots still framed by the planner">Planner's</button></span></div>
+<div id=fshots class=scroll></div>
+</aside>
+<div class=main>
+<div id=fempty class=emptystate hidden></div>
+<div id=fbody>
+<div id=fhead><h2 id=fname></h2><span id=fmeta class=mut></span><span class=sp></span><span id=fstate class=fstate></span></div>
+<div id=fstagewrap>
+<div id=fwrap class=stage><video id=fv playsinline muted preload=auto></video><div id=fstill class=still></div><span id=ftc class=tc></span><div id=ffr class="fr on"></div></div>
+<figure id=fprev><canvas id=fcanvas width=270 height=480></canvas><figcaption>what the reel shows</figcaption></figure>
+</div>
+<div class=row>
+<button id=fprevb title="previous shot (←)">◀ Prev</button><button id=fplay class="go wide" title="play this shot, looping (Space)">▶ Play</button><button id=fnextb title="next shot (→)">Next ▶</button>
+<span class=gap></span>
+<span id=fmode class=seg title="what a drag does: one pan for the whole shot, or a pan at the playhead (set more at other times and the crop glides between them)"><b>Drag pans</b><button data-fm=shot>the whole shot</button><button data-fm=key>at the playhead</button></span>
+<span class=sp></span>
+<button id=freset title="back to the planner's framing for this shot: your pan and the person you follow go (Backspace)">Reset to the planner's <kbd>⌫</kbd></button>
+<button id=fopen title="open this clip in Clips, at this shot">Open in Clips</button></div>
+<div id=ftl class=tl><div id=fstrip title="click or drag to scrub through the shot"><canvas></canvas></div></div>
+<p class=hint><b>Drag</b> the bright frame to pan the crop · <b>click a dancer</b> to follow them through the shot · <kbd>←</kbd> <kbd>→</kbd> shot to shot · <kbd>Space</kbd> play ·
+<kbd>,</kbd> <kbd>.</kbd> a frame back / on · <kbd>Backspace</kbd> the planner's framing again · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo. The new framing is in the reel after the next re-plan and render.</p>
+</div></div></section>
+
 <div id=hover><div></div><span></span></div>
+<dialog id=help><div class=head><h2>Keys</h2><button id=helpx>Close <kbd>Esc</kbd></button></div>
+<div class=cols>
+<div><h3>Everywhere</h3><dl>
+<dt><kbd>Tab</kbd></dt><dd>next view: Clips, Cut &amp; picks, Frame portrait</dd>
+<dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>undo · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> redo</dd>
+<dt><kbd>F</kbd></dt><dd>the portrait frame over the picture</dd>
+<dt><kbd>G</kbd></dt><dd>follow a person: then click them</dd>
+<dt><kbd>?</kbd></dt><dd>this sheet</dd></dl>
+<h3>Frame portrait</h3><dl>
+<dt>drag</dt><dd>pan the crop</dd>
+<dt>click</dt><dd>follow the dancer you click</dd>
+<dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>previous / next shot</dd>
+<dt><kbd>Space</kbd></dt><dd>play the shot, looping</dd>
+<dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>a frame back / on (<kbd>Shift</kbd>: ½ s)</dd>
+<dt><kbd>Backspace</kbd></dt><dd>back to the planner's framing</dd></dl></div>
+<div><h3>Clips</h3><dl>
+<dt><kbd>Space</kbd> <kbd>K</kbd></dt><dd>play / pause</dd>
+<dt><kbd>J</kbd> <kbd>L</kbd></dt><dd>shuttle back / on (again: faster)</dd>
+<dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>a frame (<kbd>Shift</kbd>: 1 s)</dd>
+<dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>previous / next clip</dd>
+<dt><kbd>I</kbd> <kbd>O</kbd></dt><dd>in / out at the playhead</dd>
+<dt><kbd>Enter</kbd></dt><dd>add the in–out as a selection</dd>
+<dt><kbd>X</kbd></dt><dd>clear the in–out</dd>
+<dt><kbd>B</kbd></dt><dd>ban the in–out</dd>
+<dt><kbd>Backspace</kbd></dt><dd>remove the selection at the playhead</dd>
+<dt><kbd>1</kbd>–<kbd>5</kbd></dt><dd>star the selection at the playhead (again: clear)</dd>
+<dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>previous / next mark</dd>
+<dt><kbd>\</kbd></dt><dd>loop the selection</dd>
+<dt><kbd>=</kbd> <kbd>−</kbd> <kbd>0</kbd></dt><dd>zoom in / out / the whole clip</dd>
+<dt><kbd>Home</kbd> <kbd>End</kbd></dt><dd>start / end of the clip</dd></dl></div>
+<div><h3>Cut &amp; picks</h3><dl>
+<dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>previous / next shot</dd>
+<dt><kbd>Space</kbd></dt><dd>play the shot · <kbd>\</kbd> loop it · <kbd>Esc</kbd> stop</dd>
+<dt><kbd>I</kbd> <kbd>O</kbd></dt><dd>in / out at the playhead</dd>
+<dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>slip a frame (<kbd>Shift</kbd>: ½ s)</dd>
+<dt><kbd>1</kbd>–<kbd>5</kbd></dt><dd>star the pick (again: clear)</dd>
+<dt><kbd>Backspace</kbd></dt><dd>remove the pick / ban the planner's shot</dd>
+<dt><kbd>X</kbd></dt><dd>tick the shot (shift-click a card: a range)</dd>
+<dt><kbd>A</kbd></dt><dd>tick every shot the planner chose</dd>
+<dt><kbd>Delete</kbd></dt><dd>drop the ticked shots · <kbd>Esc</kbd> untick</dd></dl>
+<h3>Mouse</h3><dl>
+<dt>scroll</dt><dd>zoom a timeline (<kbd>Shift</kbd>: pan)</dd>
+<dt>lanes</dt><dd>✕ takes a reel shot out; drag along the lanes takes out every shot in the range</dd></dl></div>
+</div></dialog>

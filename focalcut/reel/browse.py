@@ -150,37 +150,64 @@ def clips(project, page_dir, plans, reels=None):
 
 
 def _uses(plans, uid, x0):
-    """{fmt: [[in, out, shot number], ...]}: the shots each plan takes from this unit, in its export's timeline."""
-    return {fmt: [[round(s["src_in"] - x0, 2), round(s["src_in"] - x0 + s["length"], 2), i + 1]
+    """{fmt: [[in, out, shot number], ...]}: the shots each plan takes from this unit, in its export's timeline. A
+    portrait shot carries its crop too ([in, out, number, crop]: the page draws the frame from it at once, and can
+    with no server to ask)."""
+    return {fmt: [[round(s["src_in"] - x0, 2), round(s["src_in"] - x0 + s["length"], 2), i + 1,
+                   *([_crop(s)] if fmt == "portrait" else [])]
                   for i, s in enumerate(p["shots"]) if s["unit"]["id"] == uid] for fmt, p in plans.items()}
+
+
+def _crop(shot):
+    """A planned shot's crop as the page draws it: its size, zoom and path ([[seconds from the shot's in, x, y]]);
+    None when the picture fills the frame as it is."""
+    c = shot.get("crop")
+    if not c or not c.get("path"):
+        return None
+    out = dict(w=c["w"], h=c["h"], z=c.get("z", 1.0), path=[[t, round(x, 3), round(y, 3)] for t, x, y in c["path"]])
+    if c.get("follow"):
+        out["follow"] = c["follow"]
+    return out
+
+
+JS = ("picks.js", "app.js", "sources.js", "cut.js", "frame.js", "main.js")
 
 
 def page(clips, picks=None, key="sources", title="Sources", root="", nav="", reels=None):
     """root: the project folder relative to the page ("../../../"), so its API calls work under any server prefix.
     reels: [{"id", "label"}] of the reels picks can be given to (the page's reel switch; none: no switch)."""
     data = dict(clips=clips, picks=picks or {}, key=key, tile=TILE, root=root, reels=reels or [])
-    return webui.document(title, "sources.html", data, css=("sources.css",), js=("picks.js", "sources.js"),
+    return webui.document(f"{title} — sources", "sources.html", data, css=("ui.css", "sources.css"), js=JS,
                           subs={"TITLE": html.escape(title), "NAV": nav})
 
 
+def cut_label(cut: str) -> str:
+    """A review page's name as people read it: "short_portrait" -> "Short portrait"."""
+    return cut.replace("_", " ").capitalize()
+
+
 def menu(project, current: str) -> str:
-    """The pages' shared menu: this project's sources page and reel reviews (relative links, so it works opened as
-    files too) and, when served, every project's index ("All projects", shown by the page once the server answers)."""
+    """The pages' shared menu: this project's sources page, its reel reviews and the portrait framing of each reel
+    (relative links, so it works opened as files too) and, when served, every project's index ("All projects", shown
+    by the page once the server answers)."""
     rev = project.path("review")
     cuts = [c for c in ("landscape", "portrait") if os.path.exists(project.path(f"plan_{c}.json"))]
     cuts += sorted(f[:-5] for f in (os.listdir(rev) if os.path.isdir(rev) else [])
                    if f.endswith(".html") and f[:-5] not in cuts and f != "sources.html")
-    links = [("sources", "Sources")] + [(c, c.capitalize()) for c in cuts]
-    frames = [("main", "Frame portrait")] if os.path.exists(project.path("plan_portrait.json")) else []
+    frames = [("main", "Main")] if os.path.exists(project.path("plan_portrait.json")) else []
     from .project import Project
-    frames += [(c, f"Frame {c} portrait") for c in (Project(project.folder).config.get("cuts") or {})
+    frames += [(c, c.capitalize()) for c in (Project(project.folder).config.get("cuts") or {})
                if os.path.exists(project.path(f"plan_{c}_portrait.json"))]
-    return ('<nav class=menu>' + "".join(f'<a href="{quote(k)}.html"{" class=cur" if k == current else ""}>'
-                                         f'{html.escape(label)}</a>' for k, label in links)
-            + "".join(f'<a href="sources.html#frame={quote(r)}" title="the portrait cut shot by shot, its crop over the '
-                      f'picture: drag to pan, G then click to follow a dancer">{html.escape(label)}</a>'
-                      for r, label in frames)
-            + '<a href="/" id=allp hidden>All projects</a></nav>')
+    cur = lambda k: " class=cur" if k == current else ""
+    out = f'<nav class=pages><a href="sources.html"{cur("sources")}>Sources</a>'
+    if cuts:
+        out += "<i>Review</i>" + "".join(f'<a href="{quote(c)}.html"{cur(c)}>{html.escape(cut_label(c))}</a>'
+                                         for c in cuts)
+    if frames:
+        out += "<i>Frame portrait</i>" + "".join(
+            f'<a href="sources.html#frame={quote(r)}" title="the {html.escape(label)} portrait cut shot by shot: drag '
+            f'to pan the crop, click a dancer to follow them">{html.escape(label)}</a>' for r, label in frames)
+    return out + '<a href="/" id=allp hidden data-served>All projects</a></nav>'
 
 
 def title_of(project) -> str:

@@ -1,125 +1,13 @@
-:root {
-  --bg: #0e0f12;
-  --panel: #16181d;
-  --card: #1d2027;
-  --line: #2c303a;
-  --fg: #e8e8ea;
-  --mut: #8b8f99;
-  --sel: #3ddc84;
-  --io: #ffd23f;
-  --land: #4cc9f0;
-  --port: #f72585;
-  --mom: #7b8cff;
-  --ban: #ff5c5c;
-  --ph: #fff;
-}
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    --bg: #f3f3f5;
-    --panel: #fff;
-    --card: #f7f7f9;
-    --line: #d9dbe0;
-    --fg: #15161a;
-    --mut: #5d6270;
-    --sel: #139a52;
-    --io: #b88a00;
-    --land: #087ea4;
-    --port: #c2185b;
-    --mom: #4b5bd6;
-    --ban: #d32f2f;
-    --ph: #000;
-  }
-}
-* {
-  box-sizing: border-box;
-}
+/* The source browser: three views (Clips, Cut & picks, Frame portrait), each a list on the left and a player with
+   its tools on the right; only the list scrolls, so the picture never leaves the screen. */
 html,
 body {
   height: 100%;
 }
 body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--fg);
-  font:
-    13px/1.4 system-ui,
-    sans-serif;
   display: grid;
   grid-template-rows: auto 1fr;
   overflow: hidden;
-}
-button,
-select {
-  font: inherit;
-  color: inherit;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 4px 10px;
-  cursor: pointer;
-}
-button:hover {
-  border-color: var(--mut);
-}
-button.on {
-  background: var(--fg);
-  color: var(--bg);
-}
-button.go {
-  background: var(--sel);
-  color: #000;
-  border-color: var(--sel);
-  font-weight: 600;
-}
-kbd {
-  border: 1px solid var(--line);
-  border-bottom-width: 2px;
-  border-radius: 4px;
-  padding: 0 4px;
-  font-size: 11px;
-  font-family: ui-monospace, monospace;
-}
-header {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-  flex-wrap: wrap;
-}
-header h1 {
-  font-size: 15px;
-  margin: 0 8px 0 0;
-}
-.pj {
-  display: inline-flex;
-  gap: 4px;
-}
-.pj button {
-  padding: 2px 8px;
-  font-size: 12px;
-}
-#saved {
-  color: var(--mut);
-  font-size: 12px;
-}
-#saved.ok {
-  color: var(--sel);
-}
-#saved.err {
-  color: var(--ban);
-}
-.sp {
-  flex: 1;
-}
-#views {
-  display: flex;
-  gap: 4px;
-}
-#counts {
-  color: var(--mut);
-  font-size: 12px;
 }
 #counts b {
   color: var(--fg);
@@ -133,43 +21,120 @@ header h1 {
 #counts .x b {
   color: var(--ban);
 }
-#clipsview {
-  display: grid;
-  grid-template-columns: 290px 1fr;
+.view {
+  display: none;
+  grid-template-columns: var(--side, 290px) minmax(0, 1fr);
   min-height: 0;
 }
-@media (max-width: 860px) {
-  body {
-    overflow: auto;
-    height: auto;
-  }
-  #clipsview {
-    grid-template-columns: 1fr;
-  }
-  #side {
-    max-height: 38vh;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-  #main {
-    overflow: visible;
-  }
+.view.on {
+  display: grid;
 }
-#side {
+.side {
   border-right: 1px solid var(--line);
-  overflow: auto;
   background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
+.scroll {
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+}
+.sidehead {
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+}
+.main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px;
+  gap: 8px;
+}
+.main h2 {
+  font-size: 16px;
+  margin: 0;
+}
+.row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.row .gap {
+  width: 8px;
+}
+button.wide {
+  min-width: 84px;
+}
+.hint {
+  color: var(--mut);
+  font-size: 12px;
+  margin: 2px 0 0;
+  line-height: 1.8;
+}
+.hint a,
+#fhelp a {
+  color: var(--port);
+}
+.emptystate {
+  margin: auto;
+  color: var(--mut);
+  text-align: center;
+  max-width: 46ch;
+  padding: 40px 0;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+/* --- the picture --- */
+.stage {
+  background: #000;
+  border-radius: 8px;
+  position: relative;
+  height: min(50vh, 560px);
+  flex: none;
+  overflow: hidden;
+}
+.stage video,
+.still {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.still {
+  background-repeat: no-repeat;
+  display: none;
+}
+.still.on {
+  display: block;
+}
+.tc {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  background: #000a;
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font: 600 13px ui-monospace, monospace;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* --- Clips: the list --- */
 #filters {
-  position: sticky;
-  top: 0;
-  background: var(--panel);
   padding: 8px;
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
   border-bottom: 1px solid var(--line);
-  z-index: 2;
 }
 #filters button {
   padding: 2px 8px;
@@ -191,10 +156,12 @@ header h1 {
   background: var(--card);
   box-shadow: inset 3px 0 var(--io);
 }
+.ci.out > * {
+  opacity: 0.45;
+}
 .ci .th {
   width: 96px;
   height: 54px;
-  background-size: auto 54px;
   border-radius: 4px;
   background-color: #000;
   position: relative;
@@ -204,7 +171,7 @@ header h1 {
   right: 3px;
   bottom: 3px;
   background: var(--sel);
-  color: #000;
+  color: var(--on-sel);
   border-radius: 8px;
   padding: 0 6px;
   font-size: 11px;
@@ -227,81 +194,20 @@ header h1 {
   font-size: 11px;
   text-shadow: 0 0 3px #000;
 }
-.chip {
-  display: inline-block;
-  padding: 0 6px;
-  border-radius: 8px;
-  font-size: 10px;
-  background: var(--line);
-  color: var(--fg);
-}
-#main {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: auto;
-  padding: 10px 14px;
-  gap: 8px;
-}
-#vwrap {
-  background: #000;
-  border-radius: 8px;
-  position: relative;
-  height: min(50vh, 560px);
-  flex: none;
-  overflow: hidden;
-}
-#vid,
-#still {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-#still {
-  background-repeat: no-repeat;
-  display: none;
-  image-rendering: auto;
-}
-#still.on {
-  display: block;
-}
-#tc {
-  position: absolute;
-  left: 8px;
-  top: 8px;
-  background: #000a;
-  color: #fff;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font:
-    600 14px ui-monospace,
-    monospace;
-}
-#cliphead {
+#cliphead,
+#selhead,
+#fhead {
   display: flex;
   gap: 10px;
   align-items: baseline;
   flex-wrap: wrap;
 }
-#cliphead h2 {
-  font-size: 16px;
-  margin: 0;
-}
-.row {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  flex-wrap: wrap;
-}
 #io {
-  font:
-    12px ui-monospace,
-    monospace;
+  font: 12px ui-monospace, monospace;
   color: var(--io);
-  min-width: 16em;
 }
+
+/* --- timelines --- */
 .tl {
   position: relative;
   user-select: none;
@@ -309,6 +215,12 @@ header h1 {
   border-radius: 6px;
   background: var(--card);
   border: 1px solid var(--line);
+  flex: none;
+}
+.tl i {
+  position: absolute;
+  display: block;
+  font-style: normal;
 }
 #ov {
   height: 30px;
@@ -336,7 +248,9 @@ header h1 {
   position: relative;
   cursor: pointer;
 }
-#strip canvas {
+#strip canvas,
+#pstrip canvas,
+#fstrip canvas {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -364,13 +278,8 @@ header h1 {
 }
 #lland,
 #lport {
-  height: 18px;
+  height: 20px;
   cursor: cell;
-}
-.tl i {
-  position: absolute;
-  display: block;
-  font-style: normal;
 }
 .tk {
   top: 12px;
@@ -412,68 +321,13 @@ header h1 {
   font-weight: 600;
 }
 .blk.act {
-  background: color-mix(in srgb, var(--sel) 75%, transparent);
-  color: #000;
-}
-.stars {
-  white-space: nowrap;
-  margin-right: 6px;
-}
-.stars b {
-  cursor: pointer;
-  color: var(--io);
-  font-size: 15px;
-  padding: 0 1px;
-}
-.stars b:hover {
-  transform: scale(1.2);
-  display: inline-block;
-}
-.stars sub {
-  font-size: 9px;
-  color: var(--mut);
-  font-weight: 400;
-  margin-left: 1px;
+  background: color-mix(in srgb, var(--sel) 80%, transparent);
+  color: var(--on-sel);
 }
 .blk.away {
-  opacity: 0.35;
+  opacity: 0.4;
   border-style: dashed;
   background: transparent;
-}
-#reelsw {
-  display: inline-flex;
-  gap: 2px;
-  align-items: center;
-  padding-left: 8px;
-  border-left: 1px solid var(--line);
-}
-#reelsw:empty {
-  display: none;
-}
-#reelsw button {
-  padding: 2px 8px;
-  font-size: 12px;
-}
-#reelsw b {
-  font-size: 11px;
-  color: var(--mut);
-  font-weight: 500;
-  margin-right: 4px;
-}
-.rk {
-  font-size: 11px;
-  color: var(--mut);
-  margin-right: 8px;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.rk input {
-  vertical-align: -2px;
-}
-#preels button.on {
-  background: var(--sel);
-  color: #000;
-  border-color: var(--sel);
 }
 .blk .h {
   position: absolute;
@@ -511,11 +365,7 @@ header h1 {
 .ban {
   top: 0;
   bottom: 0;
-  background: repeating-linear-gradient(
-    45deg,
-    color-mix(in srgb, var(--ban) 40%, transparent) 0 6px,
-    transparent 6px 12px
-  );
+  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--ban) 45%, transparent) 0 6px, transparent 6px 12px);
   pointer-events: none;
 }
 .use {
@@ -523,19 +373,17 @@ header h1 {
   bottom: 2px;
   border-radius: 3px;
   opacity: 0.9;
-  font-size: 9px;
+  font-size: 10px;
   color: #000;
   overflow: hidden;
   padding-left: 2px;
+  cursor: copy;
 }
 #lland .use {
   background: var(--land);
 }
 #lport .use {
   background: var(--port);
-}
-.use {
-  cursor: copy;
 }
 .use:hover {
   outline: 2px solid var(--fg);
@@ -552,12 +400,12 @@ header h1 {
   right: 0;
   top: 0;
   bottom: 0;
-  width: 13px;
-  line-height: 14px;
+  width: 14px;
+  line-height: 15px;
   text-align: center;
   font-size: 10px;
   font-weight: 700;
-  background: #0006;
+  background: #0007;
   color: #fff;
   cursor: pointer;
   display: none;
@@ -566,13 +414,13 @@ header h1 {
   display: block;
 }
 .use .ux:hover {
-  background: var(--ban, #c0392b);
+  background: var(--ban);
 }
 .rub {
   top: 0;
   bottom: 0;
-  background: color-mix(in srgb, #c0392b 30%, transparent);
-  border: 1px solid #c0392b;
+  background: color-mix(in srgb, var(--ban) 30%, transparent);
+  border: 1px solid var(--ban);
   pointer-events: none;
   z-index: 2;
 }
@@ -583,6 +431,7 @@ header h1 {
   color: var(--mut);
   font-size: 11px;
   pointer-events: none;
+  white-space: nowrap;
 }
 .ph {
   top: 0;
@@ -609,6 +458,20 @@ header h1 {
   border-radius: 4px;
   pointer-events: none;
 }
+.fk {
+  top: 1px;
+  bottom: 1px;
+  width: 6px;
+  margin-left: -3px;
+  background: var(--io);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 2;
+}
+.fk.fl {
+  background: var(--port);
+  outline: 1px solid #fff;
+}
 #hover {
   position: fixed;
   display: none;
@@ -619,9 +482,7 @@ header h1 {
   border-radius: 6px;
   padding: 3px;
   color: #fff;
-  font:
-    11px ui-monospace,
-    monospace;
+  font: 11px ui-monospace, monospace;
   text-align: center;
 }
 #hover div {
@@ -630,221 +491,155 @@ header h1 {
   background-repeat: no-repeat;
   border-radius: 3px;
 }
-#mysel table,
-#allsel table {
+
+/* --- a clip's selections --- */
+#mysel table {
   border-collapse: collapse;
   width: 100%;
 }
-td,
-th {
+#mysel td,
+#mysel th {
   padding: 4px 8px;
   border-bottom: 1px solid var(--line);
   text-align: left;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
-th {
+#mysel th {
   color: var(--mut);
   font-weight: 500;
   font-size: 11px;
 }
-tr.act td {
+#mysel tr.act td {
   background: var(--card);
 }
-#keys {
-  color: var(--mut);
-  font-size: 12px;
-  line-height: 1.9;
+#mysel tr.away td:not(:last-child) {
+  opacity: 0.5;
 }
-#selview {
-  display: none;
-  grid-template-columns: minmax(0, 1fr);
-  overflow: auto;
-  padding: 12px 16px;
-  gap: 12px;
-  align-content: start;
+#mysel td:last-child {
+  text-align: right;
 }
-#selhead {
-  display: flex;
-  gap: 10px;
+.stars {
+  white-space: nowrap;
+  display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
 }
-#selhead h2 {
-  margin: 0;
+.stars b {
+  cursor: pointer;
+  color: var(--io);
   font-size: 16px;
+  padding: 0 1px;
+  line-height: 1;
 }
-#ped {
-  display: none;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 10px;
+.stars b:hover {
+  transform: scale(1.25);
 }
-#pvwrap {
-  background: #000;
-  border-radius: 8px;
-  position: relative;
-  height: min(42vh, 460px);
-  overflow: hidden;
+.rk {
+  font-size: 12px;
+  color: var(--mut);
+  white-space: nowrap;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
-#pv,
-#pstill {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-#pstill {
-  display: none;
-  background-repeat: no-repeat;
-}
-#pstill.on {
-  display: block;
+.rk input {
+  accent-color: var(--sel);
+  margin: 0;
 }
 .grp {
   display: inline-flex;
-  gap: 2px;
+  gap: 3px;
   align-items: center;
-  padding-left: 8px;
-  border-left: 1px solid var(--line);
   color: var(--mut);
   font-size: 11px;
+}
+.grp + .grp {
+  padding-left: 8px;
+  border-left: 1px solid var(--line);
 }
 .grp button {
   padding: 3px 7px;
   font-size: 12px;
 }
-#pruler {
-  height: 18px;
-  position: relative;
-  border-bottom: 1px solid var(--line);
+.grp .lab {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
-#pruler .lb {
-  color: var(--fg);
-  font-weight: 600;
-}
-#pstrip {
-  height: 64px;
-  position: relative;
-  cursor: crosshair;
-}
-#pstrip canvas {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
-#pstrip .blk {
-  top: 2px;
-  bottom: 2px;
-  background: transparent;
-  border-width: 3px;
-  color: #fff;
-  text-shadow: 0 0 3px #000;
-  cursor: grab;
-}
-#pstrip .blk .h {
-  width: 12px;
+#preels button.on,
+#pfirst.on,
+#plast.on {
   background: var(--sel);
-  opacity: 0;
+  color: var(--on-sel);
+  border-color: var(--sel);
 }
-#pstrip .blk .h:hover {
-  opacity: 0.6;
+.len {
+  font: 600 14px ui-monospace, monospace;
+  margin: 0 6px;
 }
-.dim {
-  top: 0;
-  bottom: 0;
-  background: #000b;
-  pointer-events: none;
+
+/* --- Cut & picks --- */
+#selview {
+  --side: clamp(330px, 31vw, 640px);
 }
-.oth {
-  top: 40%;
-  bottom: 40%;
-  background: var(--sel);
-  opacity: 0.5;
-  pointer-events: none;
+#seltot {
+  font-size: 12px;
 }
-#seq i.new {
-  background: var(--mut);
+#bulk {
+  display: none;
+  gap: 6px;
+  align-items: center;
+  padding: 5px 8px;
+  border: 1px solid var(--io);
+  border-radius: 8px;
 }
-#seq i.cut {
-  background: var(--land);
-  opacity: 0.45;
-}
-#seq i.cut.p {
-  background: var(--port);
-}
-#pfmts {
-  display: inline-flex;
-  gap: 2px;
-}
-.card [data-del] {
-  opacity: 0;
-}
-.card:hover [data-del],
-.card [data-del]:focus {
-  opacity: 1;
-}
-.card .tag {
-  font-size: 10px;
-  border-radius: 6px;
-  padding: 0 5px;
-  background: var(--sel);
-  color: #000;
-}
-.card.cut .tag {
-  background: var(--line);
-  color: var(--fg);
-}
-.card {
-  cursor: pointer;
-}
-#pvtc {
-  position: absolute;
-  left: 8px;
-  top: 8px;
-  background: #000a;
-  color: #fff;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font:
-    600 13px ui-monospace,
-    monospace;
-}
-#seq {
+#bulk.on {
   display: flex;
-  height: 26px;
-  border-radius: 6px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-}
-#seq i {
-  display: block;
-  height: 100%;
-  border-right: 1px solid var(--bg);
-  background: var(--sel);
-  opacity: 0.75;
-  cursor: pointer;
-}
-#seq i:hover,
-#seq i.act {
-  opacity: 1;
-  background: var(--io);
 }
 #cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  padding: 8px;
+  align-content: start;
+  grid-auto-rows: max-content;
 }
 .card {
-  background: var(--panel);
+  background: var(--card);
   border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
+  cursor: pointer;
+  position: relative;
+}
+.card:hover {
+  border-color: var(--mut);
 }
 .card.act {
   outline: 2px solid var(--io);
+  outline-offset: -1px;
+}
+.card.chk {
+  outline: 2px solid var(--io);
+}
+.card.chk .th {
+  opacity: 0.6;
+}
+.card .th {
+  aspect-ratio: 16/9;
+  background-color: #000;
+  background-repeat: no-repeat;
+  position: relative;
+}
+.card .th span {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  background: #000a;
+  color: #fff;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 11px;
 }
 .card .ck {
   position: absolute;
@@ -863,73 +658,156 @@ tr.act td {
 #cards.picking .ck {
   opacity: 1;
 }
-.card.chk {
-  outline: 2px solid var(--io);
-  background: var(--sel2, var(--panel));
-}
-.card.chk .th {
-  opacity: 0.7;
-}
-#seq i.chk {
-  opacity: 1;
-  background: var(--io);
-}
-#bulk {
-  display: none;
-  gap: 8px;
-  align-items: center;
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--io);
-  border-radius: 8px;
-}
-#bulk.on {
-  display: flex;
-}
-.card .th {
-  aspect-ratio: 16/9;
-  background-color: #000;
-  background-repeat: no-repeat;
-  cursor: pointer;
-  position: relative;
-}
-.card .th span {
-  position: absolute;
-  left: 4px;
-  top: 4px;
-  background: #000a;
-  color: #fff;
-  border-radius: 4px;
-  padding: 0 5px;
-  font-size: 11px;
-}
 .card .bd {
-  padding: 6px 8px;
-  display: flex;
-  justify-content: space-between;
-  gap: 6px;
-  align-items: center;
-}
-.card .bd div {
+  padding: 5px 7px;
   font-size: 12px;
+  line-height: 1.35;
 }
 .card .bd small {
   color: var(--mut);
+  display: block;
+}
+.card .nm {
+  word-break: break-all;
+}
+.card .tag {
+  font-size: 10px;
+  border-radius: 6px;
+  padding: 0 5px;
+  background: var(--sel);
+  color: var(--on-sel);
+  white-space: nowrap;
+}
+.card .tag.role {
+  background: var(--io);
+  color: #000;
+}
+.card .st {
+  color: var(--io);
+}
+.card [data-del] {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 0 6px;
+  opacity: 0;
+}
+.card:hover [data-del],
+.card [data-del]:focus {
+  opacity: 1;
 }
 .catgrp {
   grid-column: 1/-1;
   font-weight: 600;
   color: var(--mut);
   margin-top: 6px;
+  font-size: 12px;
 }
+#seq {
+  display: flex;
+  height: 22px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  flex: none;
+}
+#seq i {
+  display: block;
+  height: 100%;
+  border-right: 1px solid var(--bg);
+  background: var(--sel);
+  opacity: 0.75;
+  cursor: pointer;
+  min-width: 1px;
+}
+#seq i.new {
+  background: var(--mut);
+}
+#seq i.cut {
+  background: var(--land);
+  opacity: 0.45;
+}
+#seq i.cut.p {
+  background: var(--port);
+}
+#seq i:hover,
+#seq i.act,
+#seq i.chk {
+  opacity: 1;
+  background: var(--io);
+}
+#ped {
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+}
+#ped.on {
+  display: flex;
+}
+#pvwrap {
+  height: min(46vh, 520px);
+}
+#vwrap {
+  height: min(44vh, 540px);
+}
+#pruler {
+  height: 18px;
+  position: relative;
+  border-bottom: 1px solid var(--line);
+}
+#pruler .lb {
+  color: var(--fg);
+  font-weight: 600;
+}
+#pstrip {
+  height: 64px;
+  position: relative;
+  cursor: crosshair;
+}
+#pstrip .blk {
+  top: 2px;
+  bottom: 2px;
+  background: transparent;
+  border-width: 3px;
+  color: #fff;
+  text-shadow: 0 0 3px #000;
+}
+#pstrip .blk .h {
+  width: 12px;
+}
+#pstrip .blk .h:hover {
+  opacity: 0.6;
+}
+.dim {
+  top: 0;
+  bottom: 0;
+  background: #000b;
+  pointer-events: none;
+}
+.oth {
+  top: 40%;
+  bottom: 40%;
+  background: var(--sel);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* --- the portrait frame over a picture --- */
 .fr {
   position: absolute;
   inset: 0;
   pointer-events: none;
   z-index: 2;
+  touch-action: none;
 }
 .fr.on {
   pointer-events: auto;
+  cursor: grab;
+}
+.fr.on.drag {
+  cursor: grabbing;
+}
+.fr.follow {
   cursor: crosshair;
 }
 .fr i {
@@ -938,13 +816,19 @@ tr.act td {
 }
 .fbox {
   border: 2px solid var(--io);
-  border-radius: 2px;
+  border-radius: 3px;
 }
 .fbox.act {
   box-shadow: 0 0 0 9999px #000a;
 }
+.fbox.act.pan {
+  border-color: var(--sel);
+}
+.fbox.act.follow {
+  border-color: var(--port);
+}
 .fbox.der {
-  border: 2px dashed var(--port);
+  border: 2px dashed #fff8;
 }
 .fdot {
   width: 12px;
@@ -954,6 +838,14 @@ tr.act td {
   border: 2px solid #000;
   background: var(--io);
 }
+.fpin {
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  border-radius: 50%;
+  border: 3px solid var(--port);
+  box-shadow: 0 0 0 2px #000a, inset 0 0 0 2px #000a;
+}
 .frl {
   position: absolute;
   left: 8px;
@@ -962,64 +854,202 @@ tr.act td {
   color: #fff;
   padding: 3px 8px;
   border-radius: 4px;
-  font:
-    12px ui-monospace,
-    monospace;
+  font-size: 12px;
   pointer-events: none;
+  max-width: calc(100% - 16px);
 }
 .frl b {
   color: var(--io);
 }
-.fpin {
-  width: 22px;
-  height: 22px;
-  margin: -11px 0 0 -11px;
-  border-radius: 50%;
-  border: 3px solid var(--port);
-  box-shadow: 0 0 0 2px #000a;
-}
-.fr.follow {
-  cursor: copy;
+button.frt.on {
+  background: var(--io);
+  color: #000;
+  border-color: var(--io);
 }
 button.fol.on {
   background: var(--port);
   color: #fff;
   border-color: var(--port);
 }
-.fk.fl {
-  background: var(--port);
+
+/* --- Frame portrait --- */
+#frameview {
+  --side: 300px;
 }
-.fk {
-  top: 1px;
-  bottom: 1px;
-  width: 6px;
-  margin-left: -3px;
-  background: var(--io);
-  border-radius: 2px;
-  pointer-events: none;
-  z-index: 2;
+#fshots {
+  padding: 6px;
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  grid-auto-rows: max-content;
 }
-.menu {
-  display: inline-flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  font-size: 13px;
-  margin-right: 8px;
+.fs {
+  display: grid;
+  grid-template-columns: 45px 1fr;
+  gap: 8px;
+  padding: 4px;
+  border-radius: 8px;
+  cursor: pointer;
+  align-items: center;
+  border: 1px solid transparent;
 }
-.menu a {
-  color: var(--mut);
-  text-decoration: none;
-  padding: 2px 0;
-  border-bottom: 2px solid transparent;
+.fs:hover {
+  background: var(--card);
 }
-.menu a:hover {
-  color: var(--fg);
+.fs.cur {
+  background: var(--card);
+  border-color: var(--io);
 }
-.menu a.cur {
-  color: var(--fg);
+.fs .th {
+  width: 45px;
+  height: 80px;
+  border-radius: 4px;
+  background-color: #000;
+  background-repeat: no-repeat;
+}
+.fs .nm {
   font-weight: 600;
-  border-bottom-color: currentColor;
+  font-size: 12px;
+  word-break: break-all;
 }
-.menu a[hidden] {
-  display: none;
+.fs small {
+  color: var(--mut);
+  display: block;
+  font-size: 11px;
+}
+.badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 8px;
+  padding: 0 7px;
+  background: var(--line);
+  color: var(--mut);
+}
+.badge.pan {
+  background: var(--sel);
+  color: var(--on-sel);
+}
+.badge.follow {
+  background: var(--port);
+  color: #fff;
+}
+.fstate {
+  font-weight: 600;
+  padding: 3px 12px;
+  border-radius: 14px;
+  background: var(--line);
+  color: var(--fg);
+  transition: background 0.2s;
+}
+.fstate.pan {
+  background: var(--sel);
+  color: var(--on-sel);
+}
+.fstate.follow {
+  background: var(--port);
+  color: #fff;
+}
+.fstate.warn {
+  background: var(--io);
+  color: #000;
+}
+.fstate.flash {
+  animation: flash 0.7s;
+}
+@keyframes flash {
+  0% {
+    transform: scale(1.12);
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--io) 50%, transparent);
+  }
+}
+#fbody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+#fstagewrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: stretch;
+}
+#fwrap {
+  height: min(56vh, 620px);
+}
+#fprev {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  height: min(56vh, 620px);
+}
+#fprev canvas {
+  height: calc(100% - 22px);
+  aspect-ratio: 9/16;
+  width: auto;
+  background: #000;
+  border-radius: 8px;
+  border: 2px solid var(--line);
+}
+#fprev.pan canvas {
+  border-color: var(--sel);
+}
+#fprev.follow canvas {
+  border-color: var(--port);
+}
+#fprev figcaption {
+  font-size: 11px;
+  color: var(--mut);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+#fstrip {
+  height: 56px;
+  position: relative;
+  cursor: pointer;
+}
+
+/* --- small screens: the views stack, the page scrolls --- */
+@media (max-width: 860px) {
+  html,
+  body {
+    height: auto;
+  }
+  body {
+    overflow: auto;
+    display: block;
+  }
+  .view.on {
+    display: block;
+  }
+  .side {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    max-height: 34vh;
+  }
+  .main {
+    overflow: visible;
+  }
+  .stage,
+  #fwrap,
+  #pvwrap {
+    height: 56vw;
+  }
+  #fstagewrap {
+    grid-template-columns: 1fr;
+  }
+  #fprev {
+    height: 60vw;
+  }
+  .bar1,
+  .bar2 {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  #counts {
+    display: none;
+  }
 }

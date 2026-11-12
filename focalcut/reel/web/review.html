@@ -1,40 +1,59 @@
-
-<div id=top><h1>%PROJECT% · %FMT% · %N% shots</h1>%NAV%<span id=count></span>
-<button id=copy title="copy picks.json to the clipboard">Copy</button><button id=dl title="download picks.json">Download</button>
-<button id=clear>Reset to file</button><span id=saved></span>
-<details><summary>show picks</summary><pre id=json></pre></details></div>
-<details class=how><summary>How this page works</summary><p>Times are in each export file's own timeline. <b>Scrub source</b> opens the export the shot comes from: the
-<span style="color:var(--acc)">yellow</span> block is this shot, grey blocks are the reel's other shots from that
-video, <span style="color:var(--mom)">blue</span> ticks are the moments the planner found. Mark extra shots anywhere
-with <kbd>M</kbd> (as many as you like), swap this shot to the playhead or an <kbd>I</kbd>/<kbd>O</kbd> range
-(<kbd>S</kbd>), ban it (<kbd>B</kbd>), or ask for more from the video. Drag either strip to scrub; the lower one is
-zoomed around the playhead for frame-accurate picks (scroll or <kbd>=</kbd>/<kbd>−</kbd> to zoom); J/K/L shuttle. Then save the
-picks as <code style="display:inline">focalcut/reel/picks.json</code> and re-run
-<code style="display:inline">--steps plan,render,xml,review</code>.</p></details>
+<header id=bar>
+<div class=bar1>
+<h1>%PROJECT% <small>%REEL% · %FMT% · %N% shots</small></h1>
+<span id=count class=mut></span>
+<span class=sp></span>
+<span id=saved class=save></span>
+<span class=seg><button id=undo title="undo (Ctrl+Z)" aria-label=undo disabled>↶ Undo</button><button id=redo title="redo (Ctrl+Shift+Z)" aria-label=redo disabled>↷</button></span>
+<button id=helpb title="every key (?)">Keys <kbd>?</kbd></button>
+<details class=menu><summary title="picks.json and the theme">More</summary><div>
+<button id=copy title="copy picks.json to the clipboard">Copy picks.json</button>
+<button id=dl title="download picks.json">Download picks.json</button>
+<button id=reset hidden title="drop the changes kept in this browser">Reset to the page's picks</button>
+<small>Theme</small><span class=seg><button data-theme-set=auto>Auto</button><button data-theme-set=dark>Dark</button><button data-theme-set=light>Light</button></span>
+</div></details>
+</div>
+<div class=bar2>%NAV%<span class=sp></span><span>picks made here are for <b>%REEL%</b> only</span></div>
+</header>
+<p class=how>Every shot of the cut as it stands. <b>Ban</b> a shot and the next re-plan puts something else there; <b>Scrub</b> opens the clip it comes from, to mark extra shots
+(<kbd>M</kbd>), swap the shot for another moment (<kbd>S</kbd>) or prefer a range (<kbd>P</kbd>); <b>More</b> asks for more shots from that clip. Then re-run
+<code>--steps plan,render,xml,review</code>.</p>
 <main>%CARDS%</main>
 <dialog id=dlg><div class=row style="justify-content:space-between"><b id=title></b>
-<span><button id=helpb title="keyboard shortcuts (?)">Keys ?</button> <button id=close>Close ✕</button></span></div>
+<button id=close>Close <kbd>Esc</kbd></button></div>
 <video id=vid preload=auto playsinline muted></video>
 <div id=tl class=tl title="whole video: drag to scrub; the outlined box is the zoomed strip below"></div>
 <div id=zt class=tl title="zoomed around the playhead: drag to scrub precisely; scroll to zoom in / out"></div>
-<div class=row><span id=pos>0:00.00</span> <span id=speed style="color:var(--mut)"></span>
-<button id=back>−1 s</button><button id=fb>◀ frame</button><button id=play>Play ▸</button><button id=ff>frame ▶</button>
+<div class=row><span id=pos>0:00.00</span> <span id=speed class=mut></span>
+<button id=back>−1 s</button><button id=fb>◀ frame</button><button id=play class=wide>▶ Play</button><button id=ff>frame ▶</button>
 <button id=fwd>+1 s</button>
 <select id=rate title="playback speed"><option value=0.25>¼×</option><option value=0.5>½×</option>
 <option value=1 selected>1×</option><option value=2>2×</option></select>
-<button id=zin title="zoom in (=)">Zoom +</button><button id=zout title="zoom out (−)">Zoom −</button>
+<span class=seg><button id=zout title="zoom out (−)">−</button><button id=zin title="zoom in (=)">+</button></span>
 <button id=goshot>Back to this shot</button></div>
-<div class=row><button id=add style="background:var(--add);color:#000">+ Mark extra shot (M)</button>
-<button id=swap>⇄ Use playhead / in–out instead of this shot (S)</button>
-<button id=pref title="prefer the in–out range without banning this shot (P)">Prefer in–out (P)</button>
-<button id=bandlg>Ban this shot (B)</button>
-<button id=moredlg>More from this video +</button><button id=lessdlg>−</button></div>
-<div id=alts></div><div id=marks></div>
-<div id=help><kbd>Space</kbd>/<kbd>K</kbd> play-pause · <kbd>L</kbd> play, again for 2× 4× · <kbd>J</kbd> rewind,
-again faster · <kbd>←</kbd>/<kbd>→</kbd> or <kbd>,</kbd>/<kbd>.</kbd> one frame · <kbd>Shift</kbd>+arrows 1 s ·
-<kbd>0</kbd>–<kbd>9</kbd> jump to 0–90% · <kbd>Home</kbd>/<kbd>End</kbd><br>
-<kbd>M</kbd> (or <kbd>A</kbd>) mark an extra shot — as many as you like · <kbd>[</kbd>/<kbd>]</kbd> previous / next
-marker or moment · <kbd>Backspace</kbd> delete the marker at the playhead · <kbd>I</kbd>/<kbd>O</kbd> in / out ·
-<kbd>X</kbd> clear in–out · <kbd>S</kbd> swap this shot · <kbd>P</kbd> prefer in–out · <kbd>B</kbd> ban ·
-<kbd>=</kbd>/<kbd>−</kbd> or scroll: zoom the strip · <kbd>Esc</kbd> close</div></dialog>
+<div class=row><button id=add class=go>+ Mark extra shot <kbd>M</kbd></button>
+<button id=swap title="ban this shot and prefer the playhead (or the in–out) instead">Use the playhead / in–out instead <kbd>S</kbd></button>
+<button id=pref title="prefer the in–out range without banning this shot">Prefer in–out <kbd>P</kbd></button>
+<button id=bandlg class=danger>Ban this shot <kbd>B</kbd></button>
+<span class=seg><button id=lessdlg title="one fewer">−</button><button id=moredlg title="ask for more shots from this video">More from this video +</button></span></div>
+<div id=marks></div><div id=alts></div>
+</dialog>
 <div id=hover></div>
+<dialog id=help><div class=head><h2>Keys — in the scrubber</h2><button id=helpx>Close <kbd>Esc</kbd></button></div>
+<div class=cols>
+<div><h3>Playing</h3><dl>
+<dt><kbd>Space</kbd> <kbd>K</kbd></dt><dd>play / pause</dd>
+<dt><kbd>J</kbd> <kbd>L</kbd></dt><dd>shuttle back / on (again: faster)</dd>
+<dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>a frame (<kbd>Shift</kbd>: 1 s)</dd>
+<dt><kbd>0</kbd>–<kbd>9</kbd></dt><dd>jump to 0–90%</dd>
+<dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>previous / next marker or moment</dd>
+<dt><kbd>=</kbd> <kbd>−</kbd></dt><dd>zoom the strip (or scroll)</dd></dl></div>
+<div><h3>Picking</h3><dl>
+<dt><kbd>M</kbd></dt><dd>mark an extra shot at the playhead</dd>
+<dt><kbd>Backspace</kbd></dt><dd>remove the marker at the playhead</dd>
+<dt><kbd>I</kbd> <kbd>O</kbd> <kbd>X</kbd></dt><dd>in / out / clear them</dd>
+<dt><kbd>S</kbd></dt><dd>swap this shot for the playhead or the in–out</dd>
+<dt><kbd>P</kbd></dt><dd>prefer the in–out</dd>
+<dt><kbd>B</kbd></dt><dd>ban / unban this shot</dd>
+<dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>undo · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> redo</dd></dl></div>
+</div></dialog>
