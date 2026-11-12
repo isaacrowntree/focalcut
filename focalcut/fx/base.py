@@ -13,6 +13,7 @@ Everything that needs the performers' masks asks ctx.masks(frames) -- SAM 3 runs
 import numpy as np
 
 EFFECTS, TRANSITIONS = {}, {}
+MASK_SIDE = 1920                                              # performer masks are made on frames this size at most
 
 
 def register(cls):
@@ -32,7 +33,18 @@ class Context:
         """Performer masks (float 0..1) for these frames; computed with SAM 3 once and cached."""
         if self._masks is None or self._mask_frames != len(frames):
             from .masks import performer_masks
-            self._masks = performer_masks(np.stack(frames), group=bool(self.params.get("group")))
+            H, W = frames[0].shape[:2]
+            k = MASK_SIDE / max(H, W)
+            if k < 1:                                          # a 4K shot: masks made at 1080p size (SAM 3 tracks
+                import cv2
+
+                w, h = round(W * k), round(H * k)              # at 960 px and the matte at 1024 either way) and
+                                                               # scaled up, so they cost what a 1080p shot's do
+                small = np.stack([cv2.resize(f, (w, h), interpolation=cv2.INTER_AREA) for f in frames])
+                m = performer_masks(small, group=bool(self.params.get("group")))
+                self._masks = np.stack([cv2.resize(x, (W, H), interpolation=cv2.INTER_CUBIC) for x in m]).clip(0, 1)
+            else:
+                self._masks = performer_masks(np.stack(frames), group=bool(self.params.get("group")))
             self._mask_frames = len(frames)
         return self._masks
 
@@ -85,4 +97,5 @@ def dim(f, amount=0.42, sat=0.25):
 
 
 def to_u8(f):
-    return np.clip(f, 0, 255).astype(np.uint8)
+    """Float picture to 8 bits, rounded (cutting the fraction off darkens every blended frame by half a step)."""
+    return np.clip(f + 0.5, 0, 255).astype(np.uint8)

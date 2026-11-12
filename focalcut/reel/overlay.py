@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 
 import cv2
 import numpy as np
@@ -259,6 +260,25 @@ def flicker(x, kind, since, beat, fps):
     return x + (255 - x) * a if kind == WHITE else x * (1 - a)
 
 
+def whites(plan: dict, n: int, fps: int) -> np.ndarray:
+    """Per frame, how far the cut itself has gone to white (0..1): its flash and dip-to-white transitions, by their
+    own curves. The show's dark edges and MilkDrop follow it, so a flash is a full white frame, not a white oval
+    inside a black border."""
+    from .. import fx
+    out, pos = np.zeros(n, np.float32), 0
+    shots = plan["shots"]
+    for i, s in enumerate(shots):
+        tr = fx.TRANSITIONS.get(s.get("transition") or "")
+        if i and tr is not None and hasattr(tr, "white"):
+            ctx = fx.Context(fps=fps, beat=s.get("beat", plan["beat"]))
+            m = min(tr().frames(ctx), shots[i - 1]["frames"], s["frames"]) // 2 * 2     # (render.apply_transitions)
+            for j in range(m):
+                if 0 <= pos - m // 2 + j < n:
+                    out[pos - m // 2 + j] = tr.white(j, m)
+        pos += s["frames"]
+    return out
+
+
 def acts(plan: dict, n: int) -> list:
     out = []
     for s in plan["shots"]:
@@ -290,12 +310,21 @@ def schedule(G: dict, A: list, opts: dict, seed: int = 7) -> list:
     return phrases(G, A, opts["presets"], CALM, seed)
 
 
+def effect_divisor(W, H) -> int:
+    """What the built-in effects' canvas is divided by: 2 up to 1080p, 4 at 4K. Their strokes, glows and speeds are
+    in pixels of a 960 x 540 canvas, so they are drawn at that size and scaled up: the same show at any output size."""
+    return max(2, 2 * round(max(W, H) / 1920))
+
+
 class Show:
-    """The effects at half resolution, each keeping its own state; a weight per effect eases it in and out."""
+    """The effects on a canvas half the size of a 1080p frame (effect_divisor), each keeping its own state; a weight
+    per effect eases it in and out."""
 
     def __init__(self, W, H, fps, beat, rng):
         self.W, self.H, self.fps, self.beat, self.rng = W, H, fps, beat, rng
-        self.w, self.h = W // 2, H // 2
+        d = effect_divisor(W, H)                                 # half size at 1080p; the same picture at 4K
+        self.w, self.h = W // d, H // d
+        self.md_filter = "bilinear"                              # how the MilkDrop layer is scaled up (apply sets it)
         w, h = self.w, self.h
         self.R = float(np.hypot(w, h) / 2)
         yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
@@ -310,6 +339,7 @@ class Show:
                                                                  # extra edge fade (reel.json "milkdrop_edge")
         self.flick = {}                                          # flicker beats (set by apply)
         self.zoom = None                                         # MilkDrop zoom per frame (set by apply)
+        self.white = None                                        # the cut's own flashes to white, per frame (whites)
         self.pal, self.ramp = Palette("neon"), Palette("neon").ramp()
         self.fire = np.zeros((h, w), np.float32)
         self.burst = np.zeros((h, w, 3), np.float32)
@@ -642,14 +672,20 @@ def frame(f, k, show, F, G, S, preset, opts, md=None):
         bare = max(float(np.clip(1 - show.cover / EDGE_LIT, 0, 1)), show.bare[k] if show.bare is not None else 0.0)
         v = opts["vignette"] + (1 - opts["vignette"]) * opts["bare"] * bare    # over a beat: a preset that leaves the edges dark
         ee = np.minimum(1.0, e * (1 + 0.5 * opts["bare"] * bare)) if bare > 0.01 else e   # gets a deeper, wider fade to black
-        x = x * (1 - v * ee) ** 2                                # the footage darkens to almost black in the corners
+        dk = (1 - v * ee) ** 2
+        x = x * dk                                               # the footage darkens to almost black in the corners
         mdu = mdu * (k_ + (1 - k_) * DULL)                       # (MilkDrop's dull, unkeyed ground is black there)
+        wh = float(show.white[k]) if show.white is not None else 0.0
+        if wh > 0:                                               # a flash or dip to white in the cut floods the
+            x = x + 255 * wh * (1 - dk)                          # whole frame: the dark edges burn out with the
         # ...and MilkDrop fills them in: keyed nearer the
         g = min(1.0, s * (0.75 + 0.25 * kick))                   # middle (lighter in calm acts, between beats), whole
         am = (k_ + (1 - k_) * e * opts["edge_fill"]) * e * (g + (1 - g) * e)   # and strongest in the corners, none in the
         am = 1 - (1 - am) ** 2                                   # centre
         grey = mdu.mean(-1, keepdims=True)                       # and more vivid: richer colour, a little brighter
         mdu = np.clip(grey + (mdu - grey) * 1.4, 0, 255) * 1.1
+        if wh > 0:                                               # footage, and so does MilkDrop's light over them
+            mdu = mdu * (1 - wh) + 255 * wh
         x = x * (1 - am) + mdu * am
     blink = (0.14 if down else 0.07) * s * kick if "kick" in B else 0.0
     if "drops" in B and drop >= 0:
@@ -692,93 +728,221 @@ def milk(name: str) -> str:
     return dst
 
 
+MILKDROP_SIDE = 1920   # the MilkDrop layer's long side (reel.json overlay "milkdrop_side"): its presets' line
+#                        widths, glows and feedback blur are in pixels, so the layer keeps a 1080p canvas whatever
+#                        the output's size (the same look in a 4K reel) and is scaled up on the way in
+_layer_lock = threading.Lock()
+
+
+def layer_size(W, H, opts) -> tuple:
+    """The size the MilkDrop layer renders at for a W x H reel: the output's shape, its long side at most
+    opts["milkdrop_side"], even on both sides."""
+    side = int(opts.get("milkdrop_side") or MILKDROP_SIDE)
+    k = min(1.0, side / max(W, H))
+    return int(round(W * k / 2)) * 2, int(round(H * k / 2)) * 2
+
+
+def layer_enc() -> list:
+    """The MilkDrop layer's own encode: 4:4:4 (its saturated lines would smear at half-resolution chroma before they
+    are keyed and scaled) and near lossless, as it is decoded again for every render."""
+    from . import hw
+    if hw.nvenc():
+        return ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", "10", "-b:v", "0",
+                "-profile:v", "high444p", "-pix_fmt", "yuv444p", *hw.COLOUR, "-bsf:v", hw.VUI]
+    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "8", "-pix_fmt", "yuv444p", *hw.COLOUR, "-bsf:v", hw.VUI]
+
+
 def milkdrop_layer(work, song, start, n, fps, w, h, per_frame, beat) -> str:
     """Render the MilkDrop layer (cached in work/): the presets per frame, each change blended over a beat. projectM
     renders it on the GPU from the song's own samples at a fixed frame time, so it is frame-exact against the cut."""
     import hashlib
     import json
 
-    from . import hw
     sched = [[k, p, round(beat, 3)] for k, p in enumerate(per_frame) if k == 0 or p != per_frame[k - 1]]
     sched[0][2] = 0
-    key = hashlib.md5(json.dumps(["projectm", song, os.path.getmtime(song), start, n, fps, w, h, sched])
+    key = hashlib.md5(json.dumps(["projectm444", song, os.path.getmtime(song), start, n, fps, w, h, sched])
                       .encode()).hexdigest()[:10]
     out = os.path.join(work, f"milkdrop_{key}.mp4")
-    if os.path.exists(out):
-        return out
-    exe = mdrender()
-    pcm, tsv = os.path.join(work, f"milkdrop_{key}.s16"), os.path.join(work, f"milkdrop_{key}.tsv")
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", song, "-ac", "2", "-ar", "44100", "-f", "s16le", pcm],
-                   check=True)
-    with open(tsv, "w") as f:
-        f.writelines(f"{k}\t{bl}\t{milk(p)}\n" for k, p, bl in sched)
-    env = {**os.environ, "GALLIUM_DRIVER": "d3d12", "MESA_D3D12_DEFAULT_ADAPTER_NAME": "NVIDIA",
-           "LD_LIBRARY_PATH": ":".join(filter(None, ["/usr/lib/wsl/lib", os.environ.get("LD_LIBRARY_PATH")]))} \
-        if os.path.exists("/usr/lib/wsl/lib") else None          # (WSL: the GPU through Mesa's D3D12 driver)
-    md = subprocess.Popen([exe, str(w), str(h), str(fps), str(n), str(start), pcm, tsv], stdout=subprocess.PIPE, env=env)
-    wr = subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
-                         "-r", str(fps), "-i", "-", *(hw.NVENC if hw.nvenc() else hw.X264), "-pix_fmt", "yuv420p",
-                         out + ".part.mp4"], stdin=md.stdout)
-    md.stdout.close()
-    if md.wait() or wr.returncode:
-        raise RuntimeError("the MilkDrop layer failed to render")
-    os.replace(out + ".part.mp4", out)
-    for f in (pcm, tsv):
-        os.remove(f)
+    with _layer_lock:                                            # (render.run starts it early, beside the shots)
+        if os.path.exists(out):
+            return out
+        exe = mdrender()
+        pcm, tsv = os.path.join(work, f"milkdrop_{key}.s16"), os.path.join(work, f"milkdrop_{key}.tsv")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", song, "-ac", "2", "-ar", "44100", "-f", "s16le", pcm],
+                       check=True)
+        with open(tsv, "w") as f:
+            f.writelines(f"{k}\t{bl}\t{milk(p)}\n" for k, p, bl in sched)
+        env = {**os.environ, "GALLIUM_DRIVER": "d3d12", "MESA_D3D12_DEFAULT_ADAPTER_NAME": "NVIDIA",
+               "LD_LIBRARY_PATH": ":".join(filter(None, ["/usr/lib/wsl/lib", os.environ.get("LD_LIBRARY_PATH")]))} \
+            if os.path.exists("/usr/lib/wsl/lib") else None      # (WSL: the GPU through Mesa's D3D12 driver)
+        md = subprocess.Popen([exe, str(w), str(h), str(fps), str(n), str(start), pcm, tsv], stdout=subprocess.PIPE,
+                              env=env)
+        wr = subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
+                             "-r", str(fps), "-i", "-", *layer_enc(), out + ".part.mp4"], stdin=md.stdout)
+        md.stdout.close()
+        if md.wait() or wr.returncode:
+            raise RuntimeError("the MilkDrop layer failed to render")
+        os.replace(out + ".part.mp4", out)
+        for f in (pcm, tsv):
+            os.remove(f)
     return out
 
 
+def setup(plan: dict, music: dict, opts: dict, W: int, H: int, fps: int) -> dict:
+    """What the show plays, frame by frame: the music's grid, the acts, the preset per frame and, for MilkDrop, the
+    presets it renders and the layer's size."""
+    n = sum(s["frames"] for s in plan["shots"])
+    c = dict(n=n, G=grid(music, plan, n, fps), A=acts(plan, n), layer=None)
+    if opts["engine"] == "milkdrop":                             # drop bursts only; the visuals are MilkDrop's
+        pals = list(HEX) + ["rainbow"]
+        c["P"] = [([], pals[(int(c["G"]["bar"][k]) // 8) % len(pals)]) for k in range(n)]
+        c["names"] = phrases(c["G"], c["A"], opts["milkdrop"], opts["milkdrop_calm"])
+        c["layer"] = layer_size(W, H, opts)
+    else:
+        c["P"] = schedule(c["G"], c["A"], opts)
+    return c
+
+
+def prerender(work: str, plan: dict, music: dict, song: str, opts: dict, W: int, H: int, fps: int) -> None:
+    """The MilkDrop layer, rendered ahead: it depends on the music and the plan's acts, not on the shots, so
+    render.run starts this beside the shot renders and apply then finds the layer in work/."""
+    c = setup(plan, music, opts, W, H, fps)
+    if c["layer"]:
+        milkdrop_layer(work, song, plan["music_start"], c["n"], fps, *c["layer"], c["names"], plan["beat"])
+
+
+def _read(pipe, size):
+    """Exactly size bytes from a pipe as a bytearray, or None at its end."""
+    buf = bytearray(size)
+    view, got = memoryview(buf), 0
+    while got < size:
+        r = pipe.readinto(view[got:])
+        if not r:
+            return None
+        got += r
+    return buf
+
+
+def _pipe(p):
+    """A bigger pipe buffer for raw frames (Linux; 1 MB is the unprivileged ceiling)."""
+    try:
+        import fcntl
+        fcntl.fcntl(p.fileno(), 1031, 1 << 20)                   # F_SETPIPE_SZ
+    except (ImportError, OSError):
+        pass
+
+
 def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, enc: list, fps: int) -> None:
+    """The show over the joined shots. On a CUDA GPU the frames are composited there (composite.py) from raw 4:2:0
+    and back, with the decode and the encode on threads of their own; without one, overlay.frame on the CPU."""
+    import queue
+
+    from . import composite
     W, H = map(int, subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                                              "stream=width,height", "-of", "csv=p=0", src]).decode().split(",")[:2])
-    n = sum(s["frames"] for s in plan["shots"])
+    c = setup(plan, music, opts, W, H, fps)
+    n, G, P = c["n"], c["G"], c["P"]
     F = features(song, plan["music_start"], n, fps)
-    G = grid(music, plan, n, fps)
     S = strength(plan, n, opts)
-    A = acts(plan, n)
     show = Show(W, H, fps, plan["beat"], np.random.default_rng(7))
     show.edge = edge_mask(W, H, opts["clear"])
     show.flick = flickers(G, S, opts, fps)
+    show.white = whites(plan, n, fps)
     print(f"[reel] overlay: {sum(v == WHITE for v in show.flick.values())} white and "
           f"{sum(v == DARK for v in show.flick.values())} dark flickers")
-    layer = None
-    if opts["engine"] == "milkdrop":                             # drop bursts only; the visuals are MilkDrop's
-        pals = list(HEX) + ["rainbow"]
-        P = [([], pals[(int(G["bar"][k]) // 8) % len(pals)]) for k in range(n)]
-        names = phrases(G, A, opts["milkdrop"], opts["milkdrop_calm"])
-        path = milkdrop_layer(os.path.dirname(out), song, plan["music_start"], n, fps, W, H, names, plan["beat"])
+    path, lw, lh = None, 0, 0
+    if c["layer"]:
+        names, (lw, lh) = c["names"], c["layer"]
+        path = milkdrop_layer(os.path.dirname(out), song, plan["music_start"], n, fps, lw, lh, names, plan["beat"])
         zk = np.ones(max(1, int(plan["beat"] * fps))) / max(1, int(plan["beat"] * fps))   # zoom eases over a beat
         z = np.array([opts["milkdrop_zoom"].get(nm, 1) for nm in names], np.float32)
         show.zoom = np.convolve(np.pad(z, (len(zk) // 2, len(zk) - 1 - len(zk) // 2), mode="edge"), zk, "valid")
         b = np.array([opts["milkdrop_edge"].get(nm, 0.0) for nm in names], np.float32)
         show.bare = np.convolve(np.pad(b, (len(zk) // 2, len(zk) - 1 - len(zk) // 2), mode="edge"), zk, "valid") \
             if b.any() else None
-        layer = subprocess.Popen(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
-                                 stdout=subprocess.PIPE)
-    else:
-        P = schedule(G, A, opts)
-    rd = subprocess.Popen(["ffmpeg", "-v", "error", "-i", src, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        if max(W, H) > max(lw, lh):                              # scaled up (a 4K reel): bicubic keeps its lines crisp
+            show.md_filter = "bicubic"
+    dev = composite.device()
+    gpu = dev is not None
+    fmt_in, fmt_md = ("yuv420p", "yuv444p") if gpu else ("rgb24", "rgb24")
+    size = W * H * 3 // 2 if gpu else W * H * 3
+    rd = subprocess.Popen(["ffmpeg", "-v", "error", "-i", src, "-f", "rawvideo", "-pix_fmt", fmt_in, "-"],
                           stdout=subprocess.PIPE)
-    wr = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
+    layer = subprocess.Popen(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", fmt_md, "-"],
+                             stdout=subprocess.PIPE) if path else None
+    wr = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", fmt_in, "-s", f"{W}x{H}",
                            "-r", str(fps), "-i", "-", *enc, out], stdin=subprocess.PIPE)
-    size, k = W * H * 3, 0
-    while True:
-        b = rd.stdout.read(size)
-        if len(b) < size:
-            break
-        f = np.frombuffer(b, np.uint8).reshape(H, W, 3)
-        md = None
-        if layer is not None and k < n:
-            lb = layer.stdout.read(W * H * 3)
-            md = np.frombuffer(lb, np.uint8).reshape(H, W, 3) if len(lb) == W * H * 3 else None
-        g = frame(f, k, show, F, G, S, P[k], opts, md) if k < n else f
-        wr.stdin.write(np.ascontiguousarray(g).tobytes())
-        k += 1
-        if k % 250 == 0:
-            print(f"\r[reel] overlay: {k}/{n}", end="", flush=True)
+    for p in (rd.stdout, wr.stdin, layer.stdout if layer else None):
+        if p:
+            _pipe(p)
+    q_in, q_out, failed = queue.Queue(6), queue.Queue(6), []
+
+    def reader():                                                # decode, composite and encode overlap: the pipes
+        try:                                                     # are read and written off the compositing thread
+            k = 0
+            while True:
+                b = _read(rd.stdout, size)
+                if b is None:
+                    break
+                lb = _read(layer.stdout, lw * lh * 3) if layer is not None and k < n else None
+                q_in.put((b, lb))
+                k += 1
+        except Exception as e:                                   # (handed to the main thread)
+            failed.append(e)
+        q_in.put(None)
+
+    def writer():
+        try:
+            while True:
+                b = q_out.get()
+                if b is None:
+                    break
+                wr.stdin.write(b)
+        except Exception as e:
+            failed.append(e)
+            while q_out.get() is not None:                       # (keep draining, so the main thread never blocks)
+                pass
+
+    threads = [threading.Thread(target=reader, daemon=True), threading.Thread(target=writer, daemon=True)]
+    for t in threads:
+        t.start()
+    comp = composite.Compositor(show, F, G, S, opts, dev) if gpu else None
+    k = 0
+    try:
+        while not failed:
+            item = q_in.get()
+            if item is None:
+                break
+            b, lb = item
+            if k >= n:                                           # past the cut: as it came
+                g = b
+            elif gpu:
+                with comp.t.inference_mode():
+                    md = comp.from_yuv444(lb, lw, lh) if lb is not None else None
+                    g = comp.to_yuv420(*comp.frame(*comp.from_yuv420(b), k, P[k], md))
+            else:
+                f = np.frombuffer(b, np.uint8).reshape(H, W, 3)
+                md = np.frombuffer(lb, np.uint8).reshape(lh, lw, 3) if lb is not None else None
+                g = np.ascontiguousarray(frame(f, k, show, F, G, S, P[k], opts, md))
+            q_out.put(g)
+            k += 1
+            if k % 250 == 0:
+                print(f"\r[reel] overlay: {k}/{n}", end="", flush=True)
+    except BaseException as e:
+        failed.insert(0, e)
+    finally:
+        q_out.put(None)
+        threads[1].join()
+        if failed:                                               # stopped early: let the reader's ffmpeg go
+            rd.kill()
+            while q_in.get() is not None:
+                pass
+        wr.stdin.close()
+        rd.wait(); wr.wait()
+        if layer is not None:
+            layer.stdout.close(); layer.wait()
     print()
-    rd.wait(); wr.stdin.close(); wr.wait()
-    if layer is not None:
-        layer.stdout.close(); layer.wait()
+    if failed:
+        raise failed[0]
     if wr.returncode:
         raise RuntimeError("overlay encode failed")

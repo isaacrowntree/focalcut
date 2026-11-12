@@ -18,11 +18,16 @@ def ease(u):
 class Flash(Transition):
     name = "flash"; duration_beats = 0.5
 
+    @staticmethod
+    def white(i, n):
+        """How white frame i of the n is (0..1): the overlay floods its own layers by the same amount."""
+        return (1 - abs(i - n / 2) / (n / 2)) ** 1.5            # 0 -> 1 at the cut -> 0
+
     def apply(self, a, b, ctx):
         n = len(a) + len(b); out = []
         for i, f in enumerate(list(a) + list(b)):
-            k = 1 - abs(i - n / 2) / (n / 2)                    # 0 -> 1 at the cut -> 0
-            out.append(to_u8(f.astype(np.float32) * (1 - k ** 1.5) + 255 * k ** 1.5))
+            k = self.white(i, n)
+            out.append(to_u8(f.astype(np.float32) * (1 - k) + 255 * k))
         return out
 
 
@@ -40,10 +45,14 @@ class Fade(Transition):
 
 
 def radial_blur(f, k):
+    """f smeared outwards from its centre over 8% of its size at k = 1: copies a couple of pixels apart at the
+    frame's edge (a handful of copies shows as ghost outlines, more so on a 4K frame), averaged."""
+    reach = k * 0.08
+    taps = int(np.clip(np.ceil(reach * max(f.shape[:2]) / 2 / 2.5), 4, 48))
     acc = f.astype(np.float32)
-    for j in range(1, 5):
-        acc += zoom(f, 1 + k * j * 0.02).astype(np.float32)
-    return to_u8(acc / 5)
+    for j in range(1, taps + 1):
+        acc += zoom(f, 1 + reach * j / taps)
+    return to_u8(acc / (taps + 1))
 
 
 @register
@@ -114,7 +123,8 @@ class Spin(Transition):
             k = 1 - abs(2 * u - 1)                                   # 0 -> 1 at the cut -> 0
             z = 1 + 0.5 * k                                          # zoomed in enough to hide the corners
             acc = np.zeros((H, W, 3), np.float32)
-            steps = 1 + int(6 * k)
+            arc = np.radians(9 * k) * np.hypot(W, H) / 2             # the blur's sweep at the corners, in pixels
+            steps = 1 + int(np.clip(np.ceil(arc / 3), 6 * k, 64))    # copies ~3 px apart there: a smear, no ghosts
             for j in range(steps):                                   # rotational motion blur
                 M = cv2.getRotationMatrix2D((W / 2, H / 2), sgn * (ang - 9 * k * j / max(steps, 1)), z)
                 acc += cv2.warpAffine(f, M, (W, H), borderMode=cv2.BORDER_REFLECT)
@@ -149,10 +159,14 @@ class DipWhite(Transition):
     """A slower flash: A burns out to white, B develops out of it."""
     name = "dipwhite"; duration_beats = 1.5
 
+    @staticmethod
+    def white(i, n):
+        return ease(1 - abs(i - n / 2) / (n / 2))
+
     def apply(self, a, b, ctx):
         n = len(a) + len(b); out = []
         for i, f in enumerate(list(a) + list(b)):
-            k = ease(1 - abs(i - n / 2) / (n / 2))
+            k = self.white(i, n)
             out.append(to_u8(f.astype(np.float32) * (1 - k) + 255 * k))
         return out
 

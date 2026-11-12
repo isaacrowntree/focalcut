@@ -43,9 +43,34 @@ def nvenc() -> bool:
         return False
 
 
-def enc() -> list[str]:
-    """Video encoder arguments for every intermediate and final picture (1080p, FPS, BT.709)."""
-    return [*(NVENC if nvenc() else X264), "-pix_fmt", "yuv420p", "-r", str(FPS), *COLOUR]
+ENC_VERSION = 2          # part of every shot's cache key: raise it when the encode's settings change
+GOP = FPS                # the delivered file's keyframe interval: a second, so players and editors seek it cleanly
+
+
+def enc(final: bool = False) -> list[str]:
+    """Video encoder arguments for every intermediate and final picture (any size, FPS, BT.709). final: the encode
+    that is delivered as it is (the overlay's pass, the stinger), with a keyframe every GOP frames."""
+    return [*(NVENC if nvenc() else X264), "-pix_fmt", "yuv420p", "-r", str(FPS), *COLOUR,
+            *(["-g", str(GOP)] if final else [])]
+
+
+def run_enc(cmd: list[str], tries: int = 4) -> None:
+    """Run an ffmpeg that encodes with hw.enc. A consumer NVIDIA driver allows 12 NVENC sessions at once, across
+    every program on the machine: an encode that could not open one (another render is running) waits and tries
+    again instead of failing the reel."""
+    import sys
+    import time
+    for k in range(tries):
+        r = subprocess.run(cmd, stderr=subprocess.PIPE, text=True, errors="replace")
+        if not r.returncode:
+            if r.stderr.strip():
+                print(r.stderr, file=sys.stderr, end="")
+            return
+        busy = "OpenEncodeSessionEx" in r.stderr or "No capable devices found" in r.stderr
+        if not busy or k == tries - 1:
+            print(r.stderr, file=sys.stderr, end="")
+            raise subprocess.CalledProcessError(r.returncode, cmd, stderr=r.stderr)
+        time.sleep(3 * (k + 1))
 
 
 def retag(src: str, dst: str) -> None:

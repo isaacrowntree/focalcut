@@ -45,6 +45,11 @@ reel.json keys (all optional except song):
                                          also finds people the camera only passed (people step)
     hips               "movement": the semantic step scores hips on dancing movement, no from-behind / close-up
                                          prompts (an audience, not performers); false: left out
+    resolution         the size the reel renders at: "1080p" (default: 1920x1080 landscape, 1080x1920 portrait),
+                                         "1440p", "4k" (3840x2160 / 2160x3840), or [width, height] of the landscape
+                                         frame; {"landscape": "4k", "portrait": "1080p"} sets it per format, and a
+                                         cut can carry its own. Shots, effects, the overlay, the stinger and the
+                                         XML's sequence all follow it (render.py)
     logo               image file (PNG with transparency) laid front and centre over the opening shots
     act_logos          {"<act>": "<image>"}  a title over an act's first shot, e.g. the headliner's name on "climax";
                                          {"<act>": {"image": ..., "match": ["<category or tag>"]}}: on that footage
@@ -106,6 +111,33 @@ def with_profiles(level: dict, profiles: dict, seen: tuple = ()) -> dict:
     return merge(out, {k: v for k, v in level.items() if k != "use"})
 
 
+RESOLUTIONS = {"1080p": 1080, "hd": 1080, "fhd": 1080, "1440p": 1440, "qhd": 1440, "2k": 1440,
+               "2160p": 2160, "4k": 2160, "uhd": 2160}
+
+
+def frame_size(resolution, fmt: str) -> tuple[int, int]:
+    """(width, height) of a format's frame for a reel.json "resolution": a name ("1080p", "1440p", "4k"), "<n>p",
+    [width, height] (either way round: landscape takes the long side across, portrait upright), or a
+    {format: resolution} of those. Nothing: 1080p. Both sides come out even (4:2:0 video)."""
+    r = resolution.get(fmt) if isinstance(resolution, dict) else resolution
+    if r is None or r is True or r == "":
+        short, long = 1080, 1920
+    elif isinstance(r, (list, tuple)):
+        if len(r) != 2 or not all(isinstance(v, (int, float)) and v >= 16 for v in r):
+            raise ValueError(f'reel.json "resolution": {r!r} is not [width, height]')
+        short, long = sorted(int(v) for v in r)
+    else:
+        name = str(r).strip().lower()
+        short = RESOLUTIONS.get(name) or (int(name[:-1]) if name.endswith("p") and name[:-1].isdigit() else
+                                          int(name) if name.isdigit() else None)
+        if not short or short < 16:
+            raise ValueError(f'reel.json "resolution": {r!r} is not one of {sorted(RESOLUTIONS)}, "<n>p" or '
+                             f'[width, height]')
+        long = round(short * 16 / 9)
+    short, long = short // 2 * 2, long // 2 * 2
+    return (short, long) if fmt == "portrait" else (long, short)
+
+
 class Project:
     def __init__(self, folder: str, cut: str | None = None):
         self.folder = os.path.abspath(folder)
@@ -152,6 +184,10 @@ class Project:
         if self.ban & {unit.get("id"), unit.get("clip"), unit.get("id", "").split("#")[0]}:
             return False
         return not self.footage or fits(unit, self.footage)
+
+    def size(self, fmt: str) -> tuple[int, int]:
+        """(width, height) the reel renders at in a format: reel.json "resolution" (a cut's own wins), 1080p unset."""
+        return frame_size(self.config.get("resolution"), fmt)
 
     def role(self, category: str) -> str:
         return {**DEFAULT_ROLES, **self.config.get("roles", {})}.get(category, "show")

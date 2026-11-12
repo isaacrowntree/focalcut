@@ -1,10 +1,24 @@
 """Render a reel from plan_<fmt>.json: beat-locked shots, effect modules, transitions, the music, the stinger.
 
-Shots are cut from the original camera files (or their configured proxies) at 1080p 50 fps (Instagram's ceiling),
-each through the plan's crop: a fixed zoom whose centre glides with the subject. Shots carrying effects run through focalcut.fx (speed curves first, as
-they change how much source is read); transitions rewrite the tail of one shot and the head of the next so the
-cuts stay on the beat. Output: out/<name>_recap_<fmt>.mp4 at -14 LUFS, plus out/<fmt>_shots.json (the final file
-used for each shot, read by the Premiere export).
+Shots are cut from the original camera files (or their configured proxies) at 50 fps and the project's size
+(reel.json "resolution": 1080p, Instagram's ceiling, unless it says "4k" or another), each through the plan's crop:
+a fixed zoom whose centre glides with the subject. Shots carrying effects run through focalcut.fx (speed curves
+first, as they change how much source is read); transitions rewrite the tail of one shot and the head of the next
+so the cuts stay on the beat. Output: out/<name>_recap_<fmt>.mp4 at -14 LUFS, plus out/<fmt>_shots.json (the final
+file used for each shot, read by the Premiere export).
+
+Where the time goes, and what runs beside what (measured: docs/render.md):
+
+  stabilise   pass 1 of every stabilised shot (vidstab's motion analysis, one CPU core each, no encoder), STAB_JOBS
+              at once, before anything encodes; cached per source stretch in ~/.cache/focalcut/stab
+  shots       plain shots several at once (DECODERS: Quick Sync and CPU decodes, each with an NVENC session),
+              effect shots one at a time beside them; every shot cached in work/ by a key of all that shapes it
+  overlay     the MilkDrop layer renders beside the shots (it needs the music and the acts, not the pictures); the
+              composite runs on the GPU (composite.py), decode and encode on threads of their own
+  the rest    transitions (two shots each, streamed: only the frames inside the blend are held), the join, the mix
+              and the mux are seconds
+
+Each stage's wall-clock time is printed at the end and saved to out/<cut>_timings.json.
 """
 from __future__ import annotations
 
@@ -12,6 +26,8 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
+import time
 
 import numpy as np
 
@@ -19,11 +35,13 @@ from . import exposure, hw
 
 SPEED_FX = ("hero", "bullet", "montage", "flashin", "flashout", "jumpcut", "fit")
 
-SIZE = {"landscape": (1920, 1080), "portrait": (1080, 1920)}
+SIZE = {"landscape": (1920, 1080), "portrait": (1080, 1920)}   # 1080p: the default (reel.json "resolution")
 FPS = 50
 # shots rendered at once, by decoder: the Intel iGPU (hw.ffmpeg) leaves the CPU free for the filters, so it takes
-# the most (measured on a 24-thread CPU: 3 + 3 kept the CPU at 85% and the iGPU's decoder at 40%)
-DECODERS = {"qsv": 5, "cpu": 2}
+# the most. Every shot holds an NVENC session while it renders and consumer drivers allow 12 at once: these, the
+# effect shot beside them and the MilkDrop layer make 11
+DECODERS = {"qsv": 6, "cpu": 3}
+STAB_JOBS = max(2, (os.cpu_count() or 4) // 2)                 # motion analyses at once (FOCALCUT_STAB_JOBS)
 
 
 def __getattr__(name):                                      # render.ENC: the encoder arguments (found on first use)
@@ -31,6 +49,37 @@ def __getattr__(name):                                      # render.ENC: the en
         return hw.enc()
     raise AttributeError(name)
 I, TP = -14.0, -1.5
+
+
+def size(project, fmt) -> tuple:
+    """(width, height) the project renders a format at: reel.json "resolution", else 1080p."""
+    f = getattr(project, "size", None)
+    return tuple(f(fmt)) if callable(f) else SIZE[fmt]
+
+
+class Timer:
+    """Wall-clock seconds per stage of a render; stages that run beside others are timed on their own."""
+
+    def __init__(self):
+        self.t, self.lock, self.t0 = {}, threading.Lock(), time.time()
+
+    def add(self, stage, seconds):
+        with self.lock:
+            self.t[stage] = self.t.get(stage, 0.0) + seconds
+
+    def __call__(self, stage):
+        timer = self
+
+        class Span:
+            def __enter__(self):
+                self.t = time.time()
+
+            def __exit__(self, *exc):
+                timer.add(stage, time.time() - self.t)
+        return Span()
+
+    def report(self) -> dict:
+        return {"total": round(time.time() - self.t0, 1), **{k: round(v, 1) for k, v in self.t.items()}}
 
 
 def crop_expr(path, k):
@@ -50,6 +99,7 @@ def crop_expr(path, k):
 
 
 STAB = os.path.expanduser("~/.cache/focalcut/stab")         # vidstab motion files (a path without spaces for ffmpeg)
+_stab_locks, _stab_guard = {}, threading.Lock()
 
 
 def stab(path, t, dur, rot):
@@ -57,19 +107,28 @@ def stab(path, t, dur, rot):
     os.makedirs(STAB, exist_ok=True)
     name = hashlib.md5(f"{path}|{t:.3f}|{dur:.3f}|{rot}".encode()).hexdigest()[:12] + ".trf"
     trf = os.path.join(STAB, name)
-    if not os.path.exists(trf):                    # run in STAB with a bare file name: no filter-string escaping
-        pre = (rot + ",") if rot else ""
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.3f}", "-t", f"{dur:.3f}", "-i", path, "-an", "-vf",
-                        f"{pre}vidstabdetect=shakiness=6:accuracy=12:result={name}.part", "-f", "null", "-"],
-                       check=True, cwd=STAB)
-        os.replace(trf + ".part", trf)             # (a render stopped mid-pass leaves no half a motion file behind)
+    with _stab_guard:                              # (the same stretch asked for twice at once is analysed once)
+        lock = _stab_locks.setdefault(name, threading.Lock())
+    with lock:
+        if not os.path.exists(trf):                # run in STAB with a bare file name: no filter-string escaping
+            pre = (rot + ",") if rot else ""
+            part = f"{name}.{os.getpid()}.part"    # (another render analysing it too writes its own)
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.3f}", "-t", f"{dur:.3f}", "-i", path, "-an",
+                            "-vf", f"{pre}vidstabdetect=shakiness=6:accuracy=12:result={part}", "-f", "null", "-"],
+                           check=True, cwd=STAB)
+            os.replace(os.path.join(STAB, part), trf)   # (a render stopped mid-pass leaves no half a motion file)
     return trf
+
+
+def read_length(s) -> float:
+    """Seconds of source a plain shot decodes: its length (more of it when paced) and two frames to spare."""
+    return s["length"] * (s.get("speed") or 1.0) + 0.1
 
 
 def shot_filter(s, fmt, project=None, dur=None):
     """The shot's filter chain: rotation, stabilisation (a shaky stretch: the plan's "stab"), the crop that follows
-    the subject, 1080p at FPS."""
-    W, H = SIZE[fmt]
+    the subject, the project's size at FPS."""
+    W, H = size(project, fmt)
     u = s["unit"]
     f = [u["rotate"]] if u.get("rotate") else []
     if s.get("stab") and project is not None:               # smooth the camera, zoomed just enough to hide the
@@ -90,8 +149,9 @@ def shot_filter(s, fmt, project=None, dur=None):
     return ",".join(f)
 
 
-def key(s, beat=None):
-    """Cache name for a shot: changes whenever anything that shapes its pixels does."""
+def key(s, beat=None, size=None):
+    """Cache name for a shot: changes whenever anything that shapes its pixels does (size: the frame it is rendered
+    at, with the encode's settings; without one, the shot's identity alone -- the effects' random seed)."""
     u = s["unit"]
     k = json.dumps([u["id"], u["source"], u.get("rotate"), u["role"], s["src_in"], s["frames"], s.get("fx"),
                     s.get("crop"), s["peak"], s.get("logo"), s.get("stab"), s["kind"] == "closeup", beat, 3, hw.enc_tag()]
@@ -99,7 +159,8 @@ def key(s, beat=None):
                    + ([["pull", s["pull"]]] if s.get("pull") else [])
                    + ([["lift", s["lift"]]] if s.get("lift") else [])
                    + (["speed2"] if any(n in SPEED_FX for n in s.get("fx") or ()) else [])   # (1x tails)
-                   + ([["pace", s["speed"]]] if (s.get("speed") or 1.0) != 1.0 else []),
+                   + ([["pace", s["speed"]]] if (s.get("speed") or 1.0) != 1.0 else [])
+                   + ([["size", *size, hw.ENC_VERSION]] if size else []),
                    sort_keys=True)
     return hashlib.md5(k.encode()).hexdigest()[:10]
 
@@ -108,7 +169,7 @@ def cut_shot(project, s, fmt, out, qsv=False):
     """A plain shot straight from the camera file: decoded on the Intel iGPU when qsv (and hw.ffmpeg can; a
     stabilised shot reads its motion file on the Linux side, so it stays on the CPU), encoded by hw.enc."""
     p = s.get("speed") or 1.0
-    read = s["length"] * p + 0.1                            # the source it plays (more of it when paced)
+    read = read_length(s)                                   # the source it plays (more of it when paced)
     if p != 1.0 and s.get("crop"):                          # follow the subject over all of it
         from .plan import reframe
         s = dict(s, crop=reframe(project, s["unit"], s["src_in"], s["length"] * p, fmt) or s["crop"])
@@ -118,15 +179,14 @@ def cut_shot(project, s, fmt, out, qsv=False):
     vf = ["-vf", chain]
     logo = project.logo(s.get("logo_image"))
     if s.get("logo") and logo:                              # the event's logo over the opening, or an act's title
-        W, H = SIZE[fmt]
+        W, H = size(project, fmt)
         fade = ",fade=t=in:st=0.15:d=0.6:alpha=1" if s["logo"] == "in" else ""
         vf = ["-i", P(logo), "-filter_complex",
               f"[0:v]{chain},vignette=angle=PI/5,eq=brightness=-0.05[v];"
-              f"[1:v]scale={int(W * (0.5 if W > H else 0.8))}:-1,format=rgba,loop=-1:1,fps={FPS}{fade}[l];"
+              f"[1:v]scale={int(W * (0.5 if W > H else 0.8))}:-1:flags=lanczos,format=rgba,loop=-1:1,fps={FPS}{fade}[l];"
               f"[v][l]overlay=(W-w)/2:(H-h)/2:shortest=1,format=yuv420p"]
-    subprocess.run([exe, "-v", "error", "-y", *dec, "-ss", f"{t:.3f}", "-t", f"{read:.3f}",
-                    "-i", P(src), "-an", *vf, *hw.enc(), "-frames:v", str(s["frames"]), P(out)],
-                   check=True)
+    hw.run_enc([exe, "-v", "error", "-y", *dec, "-ss", f"{t:.3f}", "-t", f"{read:.3f}",
+                "-i", P(src), "-an", *vf, *hw.enc(), "-frames:v", str(s["frames"]), P(out)])
 
 
 def fx_shot(project, s, fmt, beat, out):
@@ -134,7 +194,7 @@ def fx_shot(project, s, fmt, beat, out):
     from .. import fx
     from ..fx.speed import Speed
     from .plan import reframe
-    W, H = SIZE[fmt]
+    W, H = size(project, fmt)
     u, L = s["unit"], s["length"]
     ctx = fx.Context(fps=FPS, beat=beat, peak=s["peak"], seed=int(key(s)[:4], 16), params={"group": s.get("group"), "closeup": s["kind"] == "closeup",
                                      "face": s["kind"] == "closeup" or (s.get("crop") or {}).get("face", 0) >= 0.5,
@@ -169,34 +229,82 @@ def fx_shot(project, s, fmt, beat, out):
     write_frames(frames, out)
 
 
-def read_frames(path):
+def frame_count(path) -> int:
+    return int(subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                        "stream=nb_frames", "-of", "csv=p=0", path]).decode().strip().strip(","))
+
+
+def frame_size(path) -> tuple:
     W, H = map(int, subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                                              "stream=width,height", "-of", "csv=p=0", path]).decode().split(",")[:2])
-    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+    return W, H
+
+
+def read_frames(path, start=0, count=None):
+    """A shot file's frames as RGB arrays: all of them, or count of them from frame start."""
+    W, H = frame_size(path)
+    trim = [] if not start and count is None else \
+        ["-vf", f"trim=start_frame={start}" + (f":end_frame={start + count}" if count is not None else "")]
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, *trim, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                          capture_output=True, check=True).stdout
     return list(np.frombuffer(raw, np.uint8).reshape(-1, H, W, 3))
 
 
 def write_frames(frames, out):
-    H, W = frames[0].shape[:2]
+    """RGB frames (a list, or anything that yields arrays or raw bytes) encoded by hw.enc."""
+    frames = iter(frames)
+    first = next(frames)
+    H, W = first.shape[:2]
     p = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
                           "-r", str(FPS), "-i", "-", *hw.enc(), out], stdin=subprocess.PIPE)
-    for f in frames:
-        p.stdin.write(np.ascontiguousarray(f).tobytes())
-    p.stdin.close()
+    try:
+        p.stdin.write(np.ascontiguousarray(first).data)
+        for f in frames:
+            p.stdin.write(f if isinstance(f, (bytes, bytearray, memoryview)) else np.ascontiguousarray(f).data)
+        p.stdin.close()
+    except BrokenPipeError:
+        pass
     if p.wait():
         if os.path.exists(out):
             os.remove(out)
         raise subprocess.CalledProcessError(p.returncode, "ffmpeg (write_frames)")
 
 
-def render_shots(project, plan, fmt, work, draft=False):
+def splice(src, out, at, new):
+    """src re-encoded to out with its frames from `at` on replaced by `new`: streamed, so a long shot at 4K is never
+    held in memory whole."""
+    W, H = frame_size(src)
+    size_ = W * H * 3
+    rd = subprocess.Popen(["ffmpeg", "-v", "error", "-i", src, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                          stdout=subprocess.PIPE)
+
+    def frames():
+        k = 0
+        while True:
+            b = rd.stdout.read(size_)
+            if len(b) < size_:
+                break
+            if at <= k < at + len(new):
+                yield new[k - at]
+            else:                                           # (the first as an array: write_frames reads its size)
+                yield np.frombuffer(b, np.uint8).reshape(H, W, 3) if k == 0 else b
+            k += 1
+    try:
+        write_frames(frames(), out)
+    finally:
+        rd.stdout.close()
+        rd.wait()
+
+
+def render_shots(project, plan, fmt, work, draft=False, timer=None):
     """Every shot's file (cached by key): plain shots several at once -- DECODERS["qsv"] decoding on the Intel iGPU
     and DECODERS["cpu"] on the CPU, each encoding with NVENC where there is one -- while the effect shots (which run
-    their own GPU models) go one at a time beside them."""
+    their own GPU models) go one at a time beside them. The stabilised shots' motion analysis runs first, on the CPU
+    alone, many at once."""
     import queue
-    import threading
     from concurrent.futures import ThreadPoolExecutor
+    timer = timer or Timer()
+    dim = size(project, fmt)
     n, done, lock = len(plan["shots"]), [0], threading.Lock()
     slots = queue.Queue()
     for kind, k in hw.decoders(DECODERS).items():
@@ -221,15 +329,26 @@ def render_shots(project, plan, fmt, work, draft=False):
     files, jobs, fxs = [], [], []
     for i, s in enumerate(plan["shots"]):
         fx = bool(s.get("fx")) and not draft
-        out = os.path.join(work, f"shot_{i:03d}_{key(s, plan['beat'])}{'_fx' if fx else ''}.mp4")
+        out = os.path.join(work, f"shot_{i:03d}_{key(s, plan['beat'], dim)}{'_fx' if fx else ''}.mp4")
         files.append(out)
         (fxs if fx else jobs).append((s, out))
-    with ThreadPoolExecutor(max(slots.qsize(), 1)) as ex:
+    shaky = [s for s, out in jobs if s.get("stab") and not os.path.exists(out)]
+    if shaky:                                               # pass 1 of each, ahead of the encodes
+        def analyse(s):
+            path, t = project.decode_from(s["unit"]["source"], s["src_in"])
+            stab(path, t, read_length(s), s["unit"].get("rotate"))
+        with timer("stabilise"), ThreadPoolExecutor(int(os.environ.get("FOCALCUT_STAB_JOBS") or STAB_JOBS)) as ex:
+            for k, _ in enumerate(ex.map(analyse, shaky)):
+                print(f"\r[reel] {fmt}: camera shake measured on {k + 1}/{len(shaky)} shots", end="", flush=True)
+        print()
+    with timer("shots"), ThreadPoolExecutor(max(slots.qsize(), 1)) as ex:
         futs = [ex.submit(plain, s, out) for s, out in jobs]
         for s, out in fxs:
             if not os.path.exists(out):
+                t0 = time.time()
                 fx_shot(project, s, fmt, s.get("beat", plan["beat"]), out + ".part.mp4")
                 os.replace(out + ".part.mp4", out)
+                timer.add("effect shots (beside the shots)", time.time() - t0)
                 print(f"\n  {'+'.join(s['fx'])}: {s['unit']['id']} @ {s['t']}s", flush=True)
             tick()
         for f in futs:
@@ -239,7 +358,8 @@ def render_shots(project, plan, fmt, work, draft=False):
 
 
 def apply_transitions(plan, files):
-    """Rewrite the tail of the outgoing shot and the head of the incoming one at every planned transition."""
+    """Rewrite the tail of the outgoing shot and the head of the incoming one at every planned transition. Only the
+    frames inside the blend are held; the rest of both shots streams through."""
     from .. import fx
     for i, s in enumerate(plan["shots"]):
         name = s.get("transition")
@@ -248,13 +368,14 @@ def apply_transitions(plan, files):
         tag = hashlib.md5((files[i - 1] + files[i] + name).encode()).hexdigest()[:6]
         a_out, b_out = files[i - 1].replace(".mp4", f"_o{tag}.mp4"), files[i].replace(".mp4", f"_i{tag}.mp4")
         if not (os.path.exists(a_out) and os.path.exists(b_out)):
-            A, B = read_frames(files[i - 1]), read_frames(files[i])
+            na, nb = frame_count(files[i - 1]), frame_count(files[i])
             ctx = fx.Context(fps=FPS, beat=s.get("beat", plan["beat"]), seed=i)
             tr = fx.TRANSITIONS[name]()
-            n = min(tr.frames(ctx), len(A), len(B)) // 2 * 2
-            mid = tr.apply(A[len(A) - n // 2:], B[:n // 2], ctx)
-            write_frames(A[:len(A) - n // 2] + mid[:n // 2], a_out)
-            write_frames(mid[n // 2:] + B[n // 2:], b_out)
+            n = min(tr.frames(ctx), na, nb) // 2 * 2
+            mid = tr.apply(read_frames(files[i - 1], na - n // 2), read_frames(files[i], 0, n // 2), ctx)
+            splice(files[i - 1], a_out + ".part.mp4", na - n // 2, mid[:n // 2])
+            splice(files[i], b_out + ".part.mp4", 0, mid[n // 2:])
+            os.replace(a_out + ".part.mp4", a_out); os.replace(b_out + ".part.mp4", b_out)
         files[i - 1], files[i] = a_out, b_out
     return files
 
@@ -281,7 +402,8 @@ def run(project, fmt, draft=False, cut=None) -> str:
     plan = project.load(f"plan_{cut}.json")
     fmt = plan.get("format", fmt)
     music = project.load(project.music_file) if os.path.exists(project.path(project.music_file)) else {}
-    W, H = SIZE[fmt]
+    W, H = size(project, fmt)
+    timer = Timer()
     outdir, work = project.path("out"), project.path("work", cut)
     os.makedirs(outdir, exist_ok=True); os.makedirs(work, exist_ok=True)
     marked = exposure.mark(project, plan)                    # reel.json "exposure": blown-out / dark subjects
@@ -293,53 +415,79 @@ def run(project, fmt, draft=False, cut=None) -> str:
     from .velocity import speed_tails
     for line in speed_tails(plan):
         print(f"[reel] {cut}: WARNING speed: {line}")
-    files = render_shots(project, plan, fmt, work, draft)
-    if not draft:
-        files = apply_transitions(plan, files)
-    with open(os.path.join(outdir, f"{cut}_shots.json"), "w") as f:
-        json.dump([os.path.relpath(p, project.reel_dir) for p in files], f, indent=1)
     from ..fx import looks
     from . import overlay
+    song = plan.get("song") or music.get("song")
     ov = overlay.options(looks.overlay(project.config, fmt))   # reel.json "overlay" over the look's own
+    ahead, ahead_err = None, []
+    if ov and not draft:                           # the MilkDrop layer needs the music and the acts, not the
+        def layer():                               # pictures: it renders while the shots do
+            t0 = time.time()
+            try:
+                overlay.prerender(work, plan, music, song, ov, W, H, FPS)
+            except Exception as e:                 # (raised where the overlay would have rendered it)
+                ahead_err.append(e)
+            timer.add("milkdrop layer (beside the shots)", time.time() - t0)
+        ahead = threading.Thread(target=layer, daemon=True)
+        ahead.start()
+    files = render_shots(project, plan, fmt, work, draft, timer)
+    if not draft:
+        with timer("transitions"):
+            files = apply_transitions(plan, files)
+    with open(os.path.join(outdir, f"{cut}_shots.json"), "w") as f:
+        json.dump([os.path.relpath(p, project.reel_dir) for p in files], f, indent=1)
     if ov and not draft:                           # the visualiser layer over the cut (not the stinger)
         lst = os.path.join(work, "list_shots.txt")
         with open(lst, "w") as f:
             f.writelines("file '" + p.replace("'", "'\\''") + "'\n" for p in files)
         joined, layered = os.path.join(work, "shots.mp4"), os.path.join(work, "shots_overlay.mp4")
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", joined],
-                       check=True)
-        overlay.apply(joined, layered, plan, music, plan.get("song") or music["song"], ov, hw.enc(), FPS)
+        with timer("join"):
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", joined],
+                           check=True)
+        with timer("milkdrop layer (waited for)"):
+            ahead.join()
+        if ahead_err:
+            raise ahead_err[0]
+        with timer("overlay"):
+            overlay.apply(joined, layered, plan, music, song, ov, hw.enc(final=True), FPS)
         files = [layered]
     stinger = project.stinger(fmt) if plan.get("stinger") else None
-    if stinger:                                    # the stinger as the last "shot", conformed to size and rate
-        sting = os.path.join(work, f"stinger_{hw.enc_tag()}.mp4")
-        if not os.path.exists(sting):
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", stinger, "-an",
-                            "-vf", f"scale={W}:{H}:flags=lanczos,fps={FPS},setsar=1,format=yuv420p", *hw.enc(), sting],
-                           check=True)
-        files = [*files, sting]
-    lst = os.path.join(work, "list.txt")
-    with open(lst, "w") as f:
-        f.writelines("file '" + p.replace("'", "'\\''") + "'\n" for p in files)   # (concat's own quoting)
-    video = os.path.join(work, "video.mp4")
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", video],
-                   check=True)
-    mix = os.path.join(work, "mix.wav")
-    mix_audio(plan.get("song") or music["song"], plan, stinger, mix)
-    err = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", mix, "-af",
-                          f"loudnorm=I={I}:TP={TP}:LRA=11:print_format=json", "-f", "null", "-"],
-                         capture_output=True, text=True).stderr
-    m = json.loads(err[err.rindex("{"):err.rindex("}") + 1])
-    final = os.path.join(outdir, f"{project.out_stem(cut, fmt)}{'_draft' if draft else ''}.mp4")
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", video, "-i", mix, "-map", "0:v", "-map", "1:a",
-                    "-af", f"loudnorm=I={I}:TP={TP}:LRA=11:linear=true:measured_I={m['input_i']}:"
-                           f"measured_TP={m['input_tp']}:measured_LRA={m['input_lra']}:"
-                           f"measured_thresh={m['input_thresh']}:offset={m['target_offset']},aresample=48000",
-                    "-c:v", "copy", "-bsf:v", hw.VUI, "-c:a", "aac", "-b:a", "320k", "-shortest",
-                    "-movflags", "+faststart",
-                    final + ".part.mp4"], check=True)
-    os.replace(final + ".part.mp4", final)
+    with timer("stinger, join, mix and mux"):
+        if stinger:                                    # the stinger as the last "shot", conformed to size and rate
+            sting = os.path.join(work, f"stinger_{hw.enc_tag()}_{W}x{H}_{hw.ENC_VERSION}.mp4")
+            if not os.path.exists(sting):
+                hw.run_enc(["ffmpeg", "-v", "error", "-y", "-i", stinger, "-an",
+                            "-vf", f"scale={W}:{H}:flags=lanczos,fps={FPS},setsar=1,format=yuv420p",
+                            *hw.enc(final=True), sting + ".part.mp4"])
+                os.replace(sting + ".part.mp4", sting)
+            files = [*files, sting]
+        lst = os.path.join(work, "list.txt")
+        with open(lst, "w") as f:
+            f.writelines("file '" + p.replace("'", "'\\''") + "'\n" for p in files)   # (concat's own quoting)
+        video = os.path.join(work, "video.mp4")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", video],
+                       check=True)
+        mix = os.path.join(work, "mix.wav")
+        mix_audio(song, plan, stinger, mix)
+        err = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", mix, "-af",
+                              f"loudnorm=I={I}:TP={TP}:LRA=11:print_format=json", "-f", "null", "-"],
+                             capture_output=True, text=True).stderr
+        m = json.loads(err[err.rindex("{"):err.rindex("}") + 1])
+        final = os.path.join(outdir, f"{project.out_stem(cut, fmt)}{'_draft' if draft else ''}.mp4")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", video, "-i", mix, "-map", "0:v", "-map", "1:a",
+                        "-af", f"loudnorm=I={I}:TP={TP}:LRA=11:linear=true:measured_I={m['input_i']}:"
+                               f"measured_TP={m['input_tp']}:measured_LRA={m['input_lra']}:"
+                               f"measured_thresh={m['input_thresh']}:offset={m['target_offset']},aresample=48000",
+                        "-c:v", "copy", "-bsf:v", hw.VUI, "-c:a", "aac", "-b:a", "320k", "-shortest",
+                        "-movflags", "+faststart",
+                        final + ".part.mp4"], check=True)
+        os.replace(final + ".part.mp4", final)
     if not draft:                                            # the cut as rendered: what "keep": true re-cuts from
         project.dump(f"plan_{cut}_rendered.json", plan)
+    rep = timer.report()
+    with open(os.path.join(outdir, f"{cut}_timings.json"), "w") as f:
+        json.dump(dict(rep, size=[W, H], frames=sum(s["frames"] for s in plan["shots"])), f, indent=1)
+    print(f"[reel] {cut}: {W}x{H} in {rep['total']:.0f} s -- "
+          + ", ".join(f"{k} {v:.0f} s" for k, v in rep.items() if k != "total" and v >= 0.5))
     print(f"[reel] -> {final}")
     return final
