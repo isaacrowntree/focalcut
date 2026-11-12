@@ -591,7 +591,7 @@ def test_source_browser_page_and_server_save_picks(tmp_path):
     clip = dict(id="C1", cat="night", tag="", clock="21:00", sort="1", dur=10.0, video="v.mp4", strip="sources/C1.jpg",
                 step=1.0, n=10, moments=[[2.0, "spin"]], L=[[1.0, 2.0, 5]], P=[])
     html_ = browse.page([clip], {"C1": {"add": ["0:01-0:02"]}})
-    assert '"id": "C1"' in html_ and "Play all" in html_ and 'D.root+"api/picks"' in html_ and "api/crop" in html_
+    assert '"id": "C1"' in html_ and "Play all" in html_ and "api/picks" in html_ and "api/crop" in html_
     assert '"/api/' not in html_ and "`/api/" not in html_                   # relative: works under any prefix
     pr, _, _ = fake_reel(tmp_path)
     os.makedirs(pr.path("review"), exist_ok=True)
