@@ -32,6 +32,7 @@ Cut points sit on the frame nearest each beat counted from the reel's start, so 
 from __future__ import annotations
 
 import copy
+import functools
 import itertools
 import json
 import math
@@ -105,6 +106,7 @@ def config(project, fmt):
     cfg.update((project.config.get("plan") or {}).get(fmt, {}))
     cfg.setdefault("look", project.config.get("look"))      # a glitch look for the film (fx/glitch.py LOOKS)
     cfg.setdefault("mode", project.config.get("mode"))      # "picks": the reel is cut from the editor's picks
+    cfg.setdefault("stabilise", project.config.get("stabilise"))   # off: shaky footage is avoided, never warped
     return cfg
 
 
@@ -2449,14 +2451,28 @@ def _part_score(wins, x, y):
                default=0.0)
 
 
-def best_part(wins, a, b, length):
-    """Where a pick a..b trimmed to length seconds plays from: its clearest stretch on the scrub's windows (the
-    editor chose the stretch, the planner the best of it), the editor's own in-point when nothing tells them apart."""
-    if b - a <= length + 0.05 or not wins:
+PART_STEADY = 1.25       # best_part: stretches of a trimmed pick shaking this much more than its steadiest are passed
+                         # over (the camera's shake decides first, then the subject's clarity)
+
+
+def best_part(wins, a, b, length, shake=None):
+    """Where a pick a..b trimmed to length seconds plays from: its steadiest stretches (shake: shake.series' (t, j),
+    the camera's own shake, the same in every format) and of those the clearest on the scrub's windows (the editor
+    chose the stretch, the planner the best of it), the editor's own in-point when nothing tells them apart."""
+    if b - a <= length + 0.05:
         return a
     xs = np.arange(a, b - length + 1e-6, 0.1)
+    if shake is not None:
+        js = np.array([_shake_over(*shake, x, length, 1.0) or np.nan for x in xs])
+        if np.isfinite(js).any() and np.nanmax(js) > PART_STEADY * np.nanmin(js):
+            keep = js <= PART_STEADY * np.nanmin(js)         # (the in-point among them when it is steady)
+            xs, js = xs[keep], js[keep]
+            if not wins:
+                return a if xs[0] == a else float(xs[int(np.argmin(js))])
+    if not wins:
+        return a
     sc = [_part_score(wins, x, x + length) for x in xs]
-    return float(xs[int(np.argmax(sc))]) if max(sc) > sc[0] + 1e-6 else a
+    return float(xs[int(np.argmax(sc))]) if max(sc) > sc[0] + 1e-6 or xs[0] != a else a
 
 
 SHUFFLE_REACH = 12       # card_shuffle: a pick moves at most this many places from its own to mend the cut
@@ -2544,6 +2560,7 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
       - every format plays the same picks in the same order at the same lengths: nothing here depends on framing.
 
     Returns (shots, acts, the picks left out as [unit id, from, to])."""
+    from . import shake
     recs = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
     P = Picker(fmt, recs)
     beat = music["beat"]
@@ -2689,7 +2706,7 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
         if s is None:                                        # a pick: whole, or its clearest part at its length
             n = beats[id(m)]
             if n < want(m):
-                a = best_part(wins.get(r["unit"]["id"]), *m["span"], n * beat)
+                a = best_part(wins.get(r["unit"]["id"]), *m["span"], n * beat, shake.series(project, r["unit"]["score"]))
                 m = dict(m, whole=m["span"], span=[round(a, 3), round(min(m["span"][1], a + n * beat), 3)],
                          t=round(a + n * beat / 2, 2))
             s = P.take(r, m, beats=n, act="night")
@@ -3882,6 +3899,10 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
         if pace_shots(plan["shots"], cfg):                        # a slot that changed footage takes its own pace:
             snap_windows(project, fmt, plan["shots"], fm, cfg)    # on passing windows at that length too
         end_clean(project, fmt, plan["shots"], fm, cfg)
+    steady_shots(project, fmt, plan["shots"], fm, cfg)       # the planner's own shots: their clip's steadiest part
+    if not cfg.get("stabilise"):                             # (reel.json "stabilise": true warps what still shakes)
+        for s in plan["shots"]:
+            s["stab"] = False
     mo = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
     plan["units_total"] = len({r["id"] for r in mo})
     plan["music_length"] = music["length"]
@@ -4220,6 +4241,97 @@ def window_exempt(s):
     return bool((s.get("span") and not s.get("reuse")) or (s.get("add") and not s.get("person")) or s.get("ending")
                 or s.get("open") or s.get("logo")
                 or s.get("logo_image") or s.get("title"))
+
+
+STEADY_FLOOR = 0.5       # steady_shots: a shot shaking less than this share of the "shake" low mark stays where it is
+STEADY_GAIN = 0.75       # steady_shots: it moves only onto a stretch shaking this share of what it did, or less
+STEADY_STEP = 0.25       # steady_shots: in-points tried along the clip, this far apart (s)
+STEADY_NEAR = 0.02       # steady_shots: each second moved counts as this much more shake (of two as steady, the nearer)
+
+
+def _shake_over(zt, zj, x, L, w):
+    """Mean shake over source x..x + L (shake.series' t, j) over the crop's width w, or None where unmeasured."""
+    m = (zt >= x) & (zt <= x + L)
+    return float(zj[m].mean()) / w if m.any() else None
+
+
+def editors(s):
+    """A shot the editor chose, which plays as they chose it: a pick (and the close among them), the ending, the
+    opening they set. (The planner's B-roll under the logo, its fillers and the people it brought in are its own.)"""
+    return bool((s.get("span") and not s.get("reuse")) or (s.get("add") and not s.get("person")) or s.get("ending")
+                or s.get("open") or s.get("close"))
+
+
+def steady_shots(project, fmt, shots, moments, cfg, W=None):
+    """Every shot the planner chose plays the steadiest stretch of its own clip it can (shake.jitter over the crop's
+    width), instead of being stabilised: in-points along the unit, clear of the editor's bans and of the unit's
+    other shots, on passing windows when the shot was on them. It moves only when it shook more than STEADY_FLOOR of
+    the "shake" low mark and the new stretch shakes STEADY_GAIN of that or less. A shot built round a move (a
+    dancer's move, a velocity edit, a speed effect) keeps a move: it tries only the unit's other moments of that
+    kind. In portrait the new stretch must frame about as well. The editor's picks, the ending and their opening
+    play as shot. Returns how many moved."""
+    from . import shake
+    W = load_windows(project, fmt) if W is None else W
+    lo = cfg["shake"][0]
+    recs = {r["id"]: r for r in moments}
+    moved, before, after = 0, [], []
+
+    def free(uid, a, b, me):
+        for x in shots:
+            if x is not me and x["unit"]["id"] == uid:
+                xa, xl = played(x)
+                if min(b, xa + xl) - max(a, xa) > -SNAP_GAP:
+                    return False
+        return True
+
+    for s in shots:
+        if editors(s) or s.get("title") or s.get("logo_image"):
+            continue
+        u = s["unit"]
+        z = shake.series(project, u["score"])
+        if z is None:
+            continue
+        zt, zj = z
+        a, L = played(s)
+        w = max((s.get("crop") or {}).get("w", 1.0), 0.2)
+        jit = functools.partial(_shake_over, zt, zj, L=L, w=w)
+        j0 = jit(a)
+        if j0 is None or j0 <= STEADY_FLOOR * lo:
+            continue
+        on = span_ok(W.get(u["id"]), a, a + L)
+        move = (s.get("kind") in MOVES or s.get("lead_beats") or s.get("velocity")
+                or any(f in SPEED for f in s["fx"]))
+        if move:                                             # a move for a move: the unit's other moments of its kind
+            r = recs.get(u["id"])
+            dts = [m["t"] - s["t"] for m in (r["moments"] if r else ()) if m.get("kind") == s.get("kind")]
+        else:
+            dts = list(np.arange(u["t0"], u["t1"] - L + 1e-6, STEADY_STEP) - a)
+        cands = []
+        for dt in dts:
+            na = round(a + dt, 3)
+            if abs(dt) < 0.05 or na < u["t0"] - 1e-6 or na + L > u["t1"] + 1e-6 or in_bans(na, L, u):
+                continue
+            ok = span_ok(W.get(u["id"]), na, na + L)          # on passing windows if it was; never onto failing
+            if (ok is not True if on is True else ok is False) or not free(u["id"], na, na + L, s):
+                continue
+            j = jit(na)
+            if j is not None and j <= STEADY_GAIN * j0:
+                cands.append((j * (1 + STEADY_NEAR * abs(dt)), dt, j))
+        g0 = framed(s.get("crop"), u["role"]) if fmt == "portrait" else None
+        for _, dt, j in sorted(cands)[:6]:
+            c = reframe(project, u, s["src_in"] + dt, s["length"], fmt) if s.get("crop") or fmt == "portrait" else None
+            if fmt == "portrait" and framed(c, u["role"]) < min(RECAST, 0.85 * g0):
+                continue
+            s.update(t=round(s["t"] + dt, 3), src_in=round(s["src_in"] + dt, 3), steadied=round(dt, 2), crop=c or s.get("crop"))
+            s.pop("land", None); s.pop("land_fits", None)
+            s["jitter"] = round(jit(played(s)[0]) or j, 5)
+            before.append(j0); after.append(s["jitter"])
+            moved += 1
+            break
+    if moved:
+        print(f"[reel] {fmt}: {moved} planner's shots moved to steadier stretches of their own clips "
+              f"(shake {np.mean(before):.4f} -> {np.mean(after):.4f})")
+    return moved
 
 
 END_FILL = ("band", "singer", "stage", "dj", "crowd")   # what follows a last shot cut short, in that order

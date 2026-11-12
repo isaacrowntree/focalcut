@@ -70,6 +70,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **No stabilisation by default; shaky footage is avoided instead.** The planner's own shots (fillers, B-roll under
+  the logo, people it brought in) move along their clip to its steadiest stretch (`plan.steady_shots`: clear of
+  bans and the clip's other shots, on passing windows, a move for a move, framing as well in portrait), and a pick
+  trimmed to fit plays the steadiest part of what was picked (`best_part`), the same part in every format. The
+  editor's picks play as shot. reel.json `"stabilise": true` brings vidstab back; a render ignores an older plan's
+  stabilised shots unless it is set.
 - **The review pages' front end is files** (`focalcut/reel/web/`: `ui.css`, `picks.js`, `app.js`, a page's own
   HTML / CSS / JS), put together inline by `webui.document()`; no build step, and a page still works opened as a
   file. The picks model (`picks.js`) is tested under Node and the pages in a headless Chromium when one is there

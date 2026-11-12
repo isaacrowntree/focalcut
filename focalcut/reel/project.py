@@ -50,6 +50,9 @@ reel.json keys (all optional except song):
                                          frame; {"landscape": "4k", "portrait": "1080p"} sets it per format, and a
                                          cut can carry its own. Shots, effects, the overlay, the stinger and the
                                          XML's sequence all follow it (render.py)
+    stabilise          true: shaky stretches the planner keeps play stabilised (vidstab). Off by default: the
+                                         planner plays the steadiest stretch of a clip it chose instead
+                                         (plan.steady_shots), and the editor's picks play as shot
     stab_analysis      "half": measure a stabilised shot's camera shake on a half-size picture (render.stab): about
                                          7x less CPU, the heaviest thing a render does; the stabilised picture
                                          then sits within a pixel or two of the full-size analysis's. Default: full

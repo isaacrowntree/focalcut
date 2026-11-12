@@ -525,6 +525,9 @@ def run(project, fmt, draft=False, cut=None) -> str:
     timer = Timer()
     global STAB_ANALYSIS
     STAB_ANALYSIS = "half" if str(project.config.get("stab_analysis") or "").lower() == "half" else "full"
+    if not project.config.get("stabilise"):                  # off unless reel.json asks: shaky footage is avoided
+        for s in plan["shots"]:                              # (plan.steady_shots), never warped (old plans too)
+            s["stab"] = False
     outdir, work = project.path("out"), project.path("work", cut)
     os.makedirs(outdir, exist_ok=True); os.makedirs(work, exist_ok=True)
     marked = exposure.mark(project, plan)                    # reel.json "exposure": blown-out / dark subjects
