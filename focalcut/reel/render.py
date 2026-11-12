@@ -25,8 +25,10 @@ Each stage's wall-clock time is printed at the end and saved to out/<cut>_timing
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -43,11 +45,18 @@ FPS = 50
 # the most. Every shot holds an NVENC session while it renders and consumer drivers allow 12 at once: these, the
 # effect shot beside them and the MilkDrop layer make 11
 DECODERS = {"qsv": 6, "cpu": 3}
-# vidstab's motion analysis is the heaviest thing a render does on the CPU (about 0.4 core-seconds per 4K frame).
+# vidstab's motion analysis is the heaviest thing a render does on the CPU (about half a core-second per 4K frame).
 # It spreads over every core with OpenMP, at two thirds the efficiency of one thread; so each analysis gets
-# STAB_THREADS and STAB_JOBS of them run at once (FOCALCUT_STAB_JOBS)
-STAB_THREADS = 2
-STAB_JOBS = max(2, (os.cpu_count() or 4) // STAB_THREADS)
+# STAB_THREADS and STAB_JOBS of them run at once (FOCALCUT_STAB_JOBS). Measured on 24 cores, 2,400 frames:
+# 24 x 1 thread 52 s, 12 x 2 72 s, 8 x 3 67 s
+STAB_THREADS = 1         # (render_shots gives a few analyses more threads each: a re-render of one changed shot)
+# ... and each analysis holds about 0.6 GB (a stabilised 4K render 1.6 GB, a 4K effect shot 10 GB and more), so no
+# more of them than a 2.5 GB share of the machine's memory each: 16 on a 40 GB machine. Past its memory a render
+# swaps and takes twice as long
+STAB_JOBS = max(2, min(os.cpu_count() or 4, int((hw.mem_gb("MemTotal") or 64) / 2.5)))
+MEM_FLOOR = 4.0          # GB free below which a new analysis or stabilised render waits for others to finish
+STAB_ANALYSIS = "full"   # reel.json "stab_analysis": "half" measures the shake on a half-size picture (7x less CPU;
+#                          the stabilised picture then sits within a pixel or two of the full-size analysis's)
 
 
 def __getattr__(name):                                      # render.ENC: the encoder arguments (found on first use)
@@ -111,20 +120,49 @@ _stab_locks, _stab_guard = {}, threading.Lock()
 def stab(path, t, dur, rot):
     """Pass 1 of vidstab over exactly the stretch the shot decodes: the camera's shake, frame by frame."""
     os.makedirs(STAB, exist_ok=True)
-    name = hashlib.md5(f"{path}|{t:.3f}|{dur:.3f}|{rot}".encode()).hexdigest()[:12] + ".trf"
+    half = STAB_ANALYSIS == "half"
+    name = hashlib.md5(f"{path}|{t:.3f}|{dur:.3f}|{rot}{'|half' if half else ''}".encode()).hexdigest()[:12] + ".trf"
     trf = os.path.join(STAB, name)
     with _stab_guard:                              # (the same stretch asked for twice at once is analysed once)
         lock = _stab_locks.setdefault(name, threading.Lock())
     with lock:
         if not os.path.exists(trf):                # run in STAB with a bare file name: no filter-string escaping
             pre = (rot + ",") if rot else ""
+            pre += "scale=iw/2:ih/2:flags=bilinear," if half else ""
             part = f"{name}.{os.getpid()}.part"    # (another render analysing it too writes its own)
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-threads", str(STAB_THREADS), "-ss", f"{t:.3f}",
+            # (below the effect shots and the encodes in the CPU's queue: they are what the render waits for)
+            nice = ["nice", "-n", "10"] if shutil.which("nice") else []
+            subprocess.run([*nice, "ffmpeg", "-v", "error", "-y", "-threads", str(STAB_THREADS), "-ss", f"{t:.3f}",
                             "-t", f"{dur:.3f}", "-i", path, "-an",
                             "-vf", f"{pre}vidstabdetect=shakiness=6:accuracy=12:result={part}", "-f", "null", "-"],
                            check=True, cwd=STAB, env={**os.environ, "OMP_NUM_THREADS": str(STAB_THREADS)})
+            if half:
+                scale_motion(os.path.join(STAB, part), 2)
             os.replace(os.path.join(STAB, part), trf)   # (a render stopped mid-pass leaves no half a motion file)
     return trf
+
+
+def scale_motion(trf, k):
+    """A vidstab motion file measured on a picture 1/k the size, rewritten for the full-size one: every local
+    motion's vector, field position and field size times k. Only the text format ("VID.STAB 1") is understood."""
+    import re
+    with open(trf, "rb") as f:
+        raw = f.read()
+    if not raw.startswith(b"VID.STAB 1"):
+        raise RuntimeError("this ffmpeg's vidstab writes binary motion files: reel.json \"stab_analysis\": \"half\" "
+                           "needs the text format (libvidstab 1.1.0)")
+    lm = re.compile(r"\(LM (-?\d+) (-?\d+) (-?\d+) (-?\d+) (\d+) ")
+    out = lm.sub(lambda m: "(LM " + " ".join(str(int(v) * k) for v in m.groups()) + " ", raw.decode())
+    with open(trf, "w") as f:
+        f.write(out)
+
+
+def room(wait=180.0):
+    """Hold a memory-heavy step back while the machine has under MEM_FLOOR GB free (others are finishing): for a
+    while, never for good."""
+    t0 = time.time()
+    while (hw.mem_gb() or 1e9) < MEM_FLOOR and time.time() - t0 < wait:
+        time.sleep(1.0)
 
 
 def read_length(s) -> float:
@@ -162,6 +200,7 @@ def key(s, beat=None, size=None):
     u = s["unit"]
     k = json.dumps([u["id"], u["source"], u.get("rotate"), u["role"], s["src_in"], s["frames"], s.get("fx"),
                     s.get("crop"), s["peak"], s.get("logo"), s.get("stab"), s["kind"] == "closeup", beat, 3, hw.enc_tag()]
+                   + (["half"] if s.get("stab") and STAB_ANALYSIS == "half" else [])
                    + ([s["span"]] if s.get("span") else []) + ([s["logo_image"]] if s.get("logo_image") else [])
                    + ([["pull", s["pull"]]] if s.get("pull") else [])
                    + ([["lift", s["lift"]]] if s.get("lift") else [])
@@ -263,16 +302,17 @@ def read_frames(path, start=0, count=None):
     return frames
 
 
-def write_frames(frames, out):
-    """RGB frames (a list, or anything that yields arrays or raw bytes) encoded by hw.enc."""
+def write_frames(frames, out, pix_fmt="rgb24", size=None):
+    """Frames (a list, or anything that yields arrays or raw bytes) encoded by hw.enc: RGB arrays, or with
+    pix_fmt="yuv420p" and size=(W, H) raw 4:2:0 frames."""
     frames = iter(frames)
     first = next(frames)
-    H, W = first.shape[:2]
-    p = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
-                          "-r", str(FPS), "-i", "-", *hw.enc(), out], stdin=subprocess.PIPE)
+    W, H = size or first.shape[1::-1]
+    tags = hw.RAW_YUV if pix_fmt.startswith("yuv") else []
+    p = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", pix_fmt, "-s", f"{W}x{H}",
+                          "-r", str(FPS), *tags, "-i", "-", *hw.enc(), out], stdin=subprocess.PIPE)
     try:
-        p.stdin.write(np.ascontiguousarray(first).data)
-        for f in frames:
+        for f in itertools.chain([first], frames):
             p.stdin.write(f if isinstance(f, (bytes, bytearray, memoryview)) else np.ascontiguousarray(f).data)
         p.stdin.close()
     except BrokenPipeError:
@@ -283,13 +323,27 @@ def write_frames(frames, out):
         raise subprocess.CalledProcessError(p.returncode, "ffmpeg (write_frames)")
 
 
+def rgb_to_yuv420(f) -> bytes:
+    """An RGB frame as raw yuv420p, BT.709 limited range (what the shots are): luma per pixel, chroma averaged over
+    each 2 x 2."""
+    import cv2
+    x = f.astype(np.float32)
+    H, W = x.shape[:2]
+    y = cv2.transform(x, np.float32([[0.2126, 0.7152, 0.0722]]))
+    cb = ((x[..., 2] - y) * (224 / 255 / 1.8556)).reshape(H // 2, 2, W // 2, 2).mean((1, 3)) + 128
+    cr = ((x[..., 0] - y) * (224 / 255 / 1.5748)).reshape(H // 2, 2, W // 2, 2).mean((1, 3)) + 128
+    planes = (y * (219 / 255) + 16, cb, cr)
+    return b"".join(np.clip(p + 0.5, 16, 240 if k else 235).astype(np.uint8).tobytes() for k, p in enumerate(planes))
+
+
 def splice(src, out, at, new):
-    """src re-encoded to out with its frames from `at` on replaced by `new`: streamed, so a long shot at 4K is never
-    held in memory whole."""
+    """src re-encoded to out with its frames from `at` on replaced by `new` (RGB arrays). Streamed in the shot's own
+    4:2:0, so a long shot at 4K is never held in memory whole and the frames outside the blend are re-encoded from
+    exactly what was decoded: no trip through RGB."""
     W, H = frame_size(src)
-    size_ = W * H * 3
+    size_ = W * H * 3 // 2
     rd = subprocess.Popen(["ffmpeg", "-v", "error", "-i", src, "-fps_mode", "passthrough", "-f", "rawvideo",
-                           "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
+                           "-pix_fmt", "yuv420p", "-"], stdout=subprocess.PIPE)
 
     def frames():
         k = 0
@@ -297,13 +351,10 @@ def splice(src, out, at, new):
             b = rd.stdout.read(size_)
             if len(b) < size_:
                 break
-            if at <= k < at + len(new):
-                yield new[k - at]
-            else:                                           # (the first as an array: write_frames reads its size)
-                yield np.frombuffer(b, np.uint8).reshape(H, W, 3) if k == 0 else b
+            yield rgb_to_yuv420(new[k - at]) if at <= k < at + len(new) else b
             k += 1
     try:
-        write_frames(frames(), out)
+        write_frames(frames(), out, "yuv420p", (W, H))
     finally:
         rd.stdout.close()
         rd.wait()
@@ -333,6 +384,8 @@ def render_shots(project, plan, fmt, work, draft=False, timer=None):
         if not os.path.exists(out):
             kind = slots.get()
             try:
+                if s.get("stab"):
+                    room()
                 cut_shot(project, s, fmt, out + ".part.mp4", qsv=kind == "qsv")
                 os.replace(out + ".part.mp4", out)
             finally:
@@ -347,22 +400,27 @@ def render_shots(project, plan, fmt, work, draft=False, timer=None):
         (fxs if fx else jobs).append((s, out))
     failed = []
 
-    def shaky(s, out):                                      # a stabilised shot: its pass 1 (CPU alone, no encoder
-        if not os.path.exists(out):                         # session), then its render as soon as a slot is free
+    def plains():                                           # the steady shots straight to a render slot; a shaky
+        try:                                                # one once its pass 1 is done (CPU alone, no encoder
+            global STAB_THREADS                             # session: those never wait for a slot)
             t0 = time.time()
-            path, t = project.decode_from(s["unit"]["source"], s["src_in"])
-            stab(path, t, read_length(s), s["unit"].get("rotate"))
-            timer.add("measuring camera shake (summed over shots)", time.time() - t0)
-        plain(s, out)
-
-    def plains():                                           # the steady shots, and the shaky ones through both passes
-        try:
-            t0 = time.time()
-            with ThreadPoolExecutor(max(slots.qsize(), 1)) as ex, \
-                    ThreadPoolExecutor(int(os.environ.get("FOCALCUT_STAB_JOBS") or STAB_JOBS)) as ex2:
+            todo = sum(1 for s, out in jobs if s.get("stab") and not os.path.exists(out))
+            njobs = int(os.environ.get("FOCALCUT_STAB_JOBS") or STAB_JOBS)
+            STAB_THREADS = max(1, min(6, (os.cpu_count() or 4) // max(min(todo, njobs), 1)))   # (few to do: more each)
+            with ThreadPoolExecutor(max(slots.qsize(), 1)) as ex, ThreadPoolExecutor(njobs) as ex2:
+                def shaky(s, out):
+                    if not os.path.exists(out):
+                        room()
+                        t1 = time.time()
+                        path, t = project.decode_from(s["unit"]["source"], s["src_in"])
+                        stab(path, t, read_length(s), s["unit"].get("rotate"))
+                        timer.add("measuring camera shake (summed over shots)", time.time() - t1)
+                    return ex.submit(plain, s, out)
                 futs = [(ex2.submit(shaky, s, out) if s.get("stab") else ex.submit(plain, s, out)) for s, out in jobs]
-                for f in futs:
-                    f.result()
+                for (s, _), f in zip(jobs, futs, strict=True):
+                    r = f.result()
+                    if s.get("stab"):
+                        r.result()
             timer.add("shots", time.time() - t0)
         except BaseException as e:                          # (raised by the main thread, below)
             failed.append(e)
@@ -437,6 +495,8 @@ def run(project, fmt, draft=False, cut=None) -> str:
     music = project.load(project.music_file) if os.path.exists(project.path(project.music_file)) else {}
     W, H = size(project, fmt)
     timer = Timer()
+    global STAB_ANALYSIS
+    STAB_ANALYSIS = "half" if str(project.config.get("stab_analysis") or "").lower() == "half" else "full"
     outdir, work = project.path("out"), project.path("work", cut)
     os.makedirs(outdir, exist_ok=True); os.makedirs(work, exist_ok=True)
     marked = exposure.mark(project, plan)                    # reel.json "exposure": blown-out / dark subjects

@@ -152,6 +152,13 @@ def test_splice_replaces_the_tail_and_streams_the_rest(tmp_path, monkeypatch):
     assert len(got) == n
     assert [abs(int(g.mean()) - (20 + 15 * k)) <= 2 for k, g in enumerate(got[:n - 3])] == [True] * (n - 3)
     assert all(g.mean() > 245 for g in got[n - 3:])
+    red = np.zeros((H, W, 3), np.uint8)
+    red[..., 0] = 200
+    yuv = np.frombuffer(render.rgb_to_yuv420(red), np.uint8)                  # BT.709, limited range
+    assert yuv.size == W * H * 3 // 2 and (yuv[0], yuv[W * H], yuv[-1]) == (53, 108, 216)
+    render.splice(src, out, 2, [red])
+    px = render.read_frames(out, 2, 1)[0][H // 2, W // 2]
+    assert abs(int(px[0]) - 200) <= 4 and px[1] <= 4 and px[2] <= 4           # ... and comes back the colour it was
     render.splice(src, out, 0, [np.full((H, W, 3), 250, np.uint8)] * 2)       # ... and a head
     got = render.read_frames(out)
     assert len(got) == n and got[0].mean() > 245 and got[1].mean() > 245 and abs(int(got[2].mean()) - 50) <= 2
@@ -203,3 +210,51 @@ def test_masks_of_a_4k_shot_are_made_small_and_scaled_as_used(monkeypatch):
     assert m[1].shape == (2160, 3840) and m[-1].dtype == np.float32 and [x.shape for x in m] == [(2160, 3840)] * 2
     small = [np.zeros((1080, 1920, 3), np.uint8)] * 2
     assert fx.Context().masks(small).shape == (2, 1080, 1920) and seen[-1] == (2, 1080, 1920, 3)
+
+
+def test_half_size_shake_analysis_scales_the_motion_file(tmp_path):
+    f = tmp_path / "x.trf"
+    f.write_text("VID.STAB 1\n#      accuracy = 12\nFrame 1 (List 2 [(LM -5 9 924 1407 112 0.691864 0.885643),"
+                 "(LM 14 -42 2916 1080 112 0.641755 2.862883)])\n")
+    render.scale_motion(str(f), 2)
+    assert f.read_text() == ("VID.STAB 1\n#      accuracy = 12\nFrame 1 (List 2 [(LM -10 18 1848 2814 224 0.691864 "
+                             "0.885643),(LM 28 -84 5832 2160 224 0.641755 2.862883)])\n")
+    f.write_bytes(b"TRF1\x0c\x00")
+    with pytest.raises(RuntimeError, match="stab_analysis"):
+        render.scale_motion(str(f), 2)
+
+
+def test_half_size_analysis_has_its_own_cache_key(monkeypatch):
+    s = shot(stab=True)
+    full = render.key(s, 0.5, (1920, 1080))
+    monkeypatch.setattr(render, "STAB_ANALYSIS", "half")
+    assert render.key(s, 0.5, (1920, 1080)) != full
+    monkeypatch.setattr(render, "STAB_ANALYSIS", "full")
+    assert render.key(s, 0.5, (1920, 1080)) == full
+
+
+def test_memory_readout_and_the_wait_for_room(monkeypatch):
+    m = hw.mem_gb()
+    assert m is None or m > 0
+    assert hw.mem_gb("NoSuchField") is None
+    waits = []
+    monkeypatch.setattr(render.time, "sleep", lambda s: waits.append(s))
+    levels = iter([1.0, 2.0, 9.0])
+    monkeypatch.setattr(hw, "mem_gb", lambda field="MemAvailable": next(levels))
+    render.room()                                               # waits while under the floor, then goes
+    assert len(waits) == 2
+    monkeypatch.setattr(hw, "mem_gb", lambda field="MemAvailable": None)
+    render.room()                                               # nothing to read: never waits
+    assert len(waits) == 2
+
+
+def test_raw_yuv_goes_through_the_encoder_as_bt709(tmp_path, monkeypatch):
+    """Raw 4:2:0 piped to the encoder is declared BT.709: undeclared, ffmpeg converts it from BT.601."""
+    monkeypatch.setattr(hw, "nvenc", lambda: False)
+    W, H = 64, 36
+    frame = bytes([126]) * (W * H) + bytes([100]) * (W * H // 4) + bytes([150]) * (W * H // 4)
+    out = str(tmp_path / "y.mp4")
+    render.write_frames([frame] * 5, out, "yuv420p", (W, H))
+    got = subprocess.run(["ffmpeg", "-v", "error", "-i", out, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv420p",
+                          "-"], capture_output=True, check=True).stdout
+    assert [abs(a - b) <= 1 for a, b in zip((got[0], got[W * H], got[-1]), (126, 100, 150), strict=True)] == [True] * 3

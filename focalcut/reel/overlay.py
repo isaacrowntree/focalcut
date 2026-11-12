@@ -872,8 +872,9 @@ def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, en
                           stdout=subprocess.PIPE)
     layer = subprocess.Popen(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", fmt_md, "-"],
                              stdout=subprocess.PIPE) if path else None
+    from . import hw
     wr = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", fmt_in, "-s", f"{W}x{H}",
-                           "-r", str(fps), "-i", "-", *enc, out], stdin=subprocess.PIPE)
+                           "-r", str(fps), *(hw.RAW_YUV if gpu else []), "-i", "-", *enc, out], stdin=subprocess.PIPE)
     for p in (rd.stdout, wr.stdin, layer.stdout if layer else None):
         if p:
             _pipe(p)

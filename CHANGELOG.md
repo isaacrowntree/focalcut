@@ -9,6 +9,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **4K reels.** reel.json `"resolution"`: `"1080p"` (default), `"1440p"`, `"4k"` or `[width, height]`, for the
+  project, per format (`{"landscape": "4k", "portrait": "1080p"}`) or per cut. Shots, effects, transitions, the
+  overlay, the stinger and the XML's sequence follow it; shots are cached per size. MilkDrop and the built-in
+  overlay effects keep their 1080p canvas and are scaled up, so a 4K reel has the same show.
+- **A much faster render** ([Rendering](docs/render.md) has the review and the timings). The overlay is composited
+  on the GPU (`composite.py`: the footage stays in 4:2:0 and the show is applied as `footage * a + b` on its
+  planes; `FOCALCUT_OVERLAY=cpu` keeps the numpy path), with the decode and the encode on threads of their own;
+  the MilkDrop layer renders beside the shots; stabilised shots have their shake measured many at once
+  (`FOCALCUT_STAB_JOBS`) and then render beside the steady and the effect shots; transitions stream their shots;
+  no joined copies of the cut are written. The render prints each stage's time and saves `out/<cut>_timings.json`.
+
 - **Picks per reel.** One `picks.json` serves the project's reel and its `cuts` (a 90 s version, say): a clip's
   `only` gives a selection, ban, prefer, opening, ending or `more` to some reels only. The source page has a Reel
   switch (each reel's shots in the lanes, other reels' picks faded; picks, bans, opening and ending made or removed
@@ -41,6 +52,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (description, keywords, classifiers, documentation, issues and changelog URLs); a README hero image.
 
 ### Fixed
+
+- A flash or dip to white in the cut is a full white frame under the overlay: its dark edges and MilkDrop burn out
+  with the footage (it was a white oval inside a black border).
+- The zoom and spin transitions blur with enough copies for the frame's size; five copies showed as ghost outlines.
+- The overlay dithers its output, the MilkDrop layer is kept 4:4:4 until it is keyed, and the delivered file has a
+  keyframe every second (it was every five) and spatial AQ; blended frames are rounded, not truncated.
+- An encode that finds every NVENC session taken (another render running) waits and retries instead of failing.
 
 - Portrait strips follow the subject's face when the body track misses it (`plan.face_track`): on close crowd shots
   the pose boxes lost the person or settled on the one beside them, and the strip showed a shoulder, a back or the
