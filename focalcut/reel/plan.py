@@ -3025,7 +3025,8 @@ def _reframe(project, unit, t0, length, fmt, pick=False):
             ub, ut = union[ok], ts
             ft = face_first(d["yf"], t0, length, grid, x, y, cw, ch, zz,
                             lambda t: (float(np.interp(t - t0, ut, ub[:, 3] - ub[:, 1])),
-                                       float(np.interp(t - t0, ut, ub[:, 1]))))
+                                       float(np.interp(t - t0, ut, ub[:, 1])),
+                                       float(np.interp(t - t0, ut, ub[:, 0])), float(np.interp(t - t0, ut, ub[:, 2]))))
         ft = ft or face_track(d["yf"], t0, length, grid, x, y, cw, ch, zz, main)
         if ft is not None:
             x, y, zz = ft["x"], ft["y"], zz * ft["zoom"]
@@ -3185,6 +3186,7 @@ PICK_FAR = 0.3           # ... and what a scan on a face away from the body trac
 PICK_SAME = 0.2          # ... a face this near (of the frame) where one was a scan ago is the same person's
 PICK_NEAR = 1.0          # ... a face within this many strip widths of the body tracker's strip is by its subject
 PICK_GONE = 1.0          # ... seconds the body tracker's strip must show no face before another person may take it
+PICK_BODY = 1.6          # ... a face by the strip this many times the ones it holds takes it (who the pick is of)
 PICK_FACE = 0.4          # ... a face under this share of the biggest one's size is someone behind them
 PICK_MIN_H = 0.09        # ... and one under this share of the frame's height is too far off to be what the pick is of
 PICK_CLOSE = 0.13        # ... (to take the strip from the planner's subject: this share, a face shot close)
@@ -3234,11 +3236,12 @@ def face_first(yf, t0, length, grid, x, y, cw, ch, zz=1.0, body=None):
     in it -- someone clear, facing the camera, at their best -- so where the body tracker's strip (x, y on grid)
     cuts a face at its edge or sits on a back, a shoulder or the person beside them, the strip follows the faces.
 
-    The planner's subject keeps the shot while the strip shows a face: the strip only re-centres, on the faces
-    near it (PICK_NEAR: their own face cut by its edge, a kiss at its side, the person right in front of them). Only when it shows no face for PICK_GONE seconds on end (the whole shot, if shorter) -- a back,
+    The planner's subject keeps the shot while the strip shows a face: the strip only re-centres, on the faces it
+    holds, the same people where it cuts them off (a face at its edge, a kiss at its side) and anyone by it
+    (PICK_NEAR) whose face dwarfs theirs (PICK_BODY: the person right in front of them is who the pick is of). Only when it shows no face for PICK_GONE seconds on end (the whole shot, if shorter) -- a back,
     hair, the gap between people -- may it go to someone else: a face big enough to be what the pick is of
     (PICK_FACE of the biggest, PICK_CLOSE of the frame, PICK_HEAD of the height of the person followed, body(t) ->
-    that height and their box's top: a far-off face never pulls the strip off a dancer whose own is hidden behind
+    that height, their box's top, left and right: a far-off face never pulls the strip off a dancer whose own is hidden behind
     hair or a mask, nor off someone filmed from further away whose small face the strip does show) and no smaller
     than the faces by the strip (PICK_OTHER).
 
@@ -3263,9 +3266,10 @@ def face_first(yf, t0, length, grid, x, y, cw, ch, zz=1.0, body=None):
     if body is not None:                                     # own subject's however small (someone filmed from
         small = (yf["t"] >= t0 - 0.3) & (yf["t"] <= t0 + length + 0.3) & (yf["score"] >= FACE_SCORE) & \
             (yf["h"] >= FACE_MIN_H) & (yf["h"] < PICK_MIN_H)                       # further off: still them)
-        for t, cx, cy, h in zip(*(np.asarray(yf[k])[small].tolist() for k in ("t", "cx", "cy", "h"))):
-            bh, top = body(t)
-            if _in_strip(cx, cy, h, at(x, t), at(y, t), cw, ch) and top - 0.05 <= cy <= top + 0.35 * bh:
+        for t, cx, cy in zip(*(np.asarray(yf[k])[small].tolist() for k in ("t", "cx", "cy"))):
+            bh, top = body(t)[:2]
+            if abs(cx - at(x, t)) <= 0.3 * cw and top - 0.05 <= cy <= top + 0.5 * bh:   # (down its middle, in
+                                                                                        #  their upper half)
                 shown.add(t)
     seen = [any(abs(q - t0 - t) <= 0.25 for q in shown) for t in np.arange(0, length + 1e-6, 0.1)]
     gone, run = 0, 0                                         # the longest stretch the strip shows no face
@@ -3273,20 +3277,27 @@ def face_first(yf, t0, length, grid, x, y, cw, ch, zz=1.0, body=None):
         run = 0 if ok else run + 1
         gone = max(gone, run)
     near = lambda r: abs(r[1] - at(x, r[0])) <= PICK_NEAR * cw
-    if (gone - 1) * 0.1 >= min(PICK_GONE, length) - 0.15:    # a back, hair, a gap: anyone big enough, and no
-        least = PICK_FACE * max(raw.values())                # smaller than the faces by the strip (its subject's)
-        floor = max(least, PICK_OTHER * min((raw[r] for r in rows if near(r)), default=0.0))
-        ok = {r for r in rows if raw[r] >= floor and r[3] >= PICK_CLOSE and (
-            body is None or r[3] >= PICK_HEAD * body(r[0])[0])}
-        times = sorted({r[0] for r in rows})
-        for order in (times, times[::-1]):                   # (and the same person a scan on, or back: a face
-            for ta, tb in zip(order, order[1:]):             #  that shrank as they stepped away is still theirs)
-                ok |= {r for r in rows if r[0] == tb and raw[r] >= least and any(
+    least = PICK_FACE * max(raw.values())
+    times = sorted({r[0] for r in rows})
+
+    def theirs(ok, among):                                   # ... and the same person a scan on, or back (a face
+        for order in (times, times[::-1]):                   # that moved, or shrank as they stepped away)
+            for ta, tb in zip(order, order[1:]):
+                ok |= {r for r in among if r[0] == tb and raw[r] >= least and any(
                     q[0] == ta and abs(q[1] - r[1]) <= PICK_SAME and r[3] >= 0.6 * q[3] for q in ok)}
-        ok = sorted(ok)
-    else:                                                    # the planner's subject keeps the shot: faces near it
-        ok = [r for r in rows if near(r)]
-        ok = [r for r in ok if raw[r] >= PICK_FACE * max(raw[q] for q in ok)]
+        return sorted(ok)
+    if (gone - 1) * 0.1 >= min(PICK_GONE, length) - 0.15:    # a back, hair, a gap: anyone big enough, and no
+        floor = max(least, PICK_OTHER * min((raw[r] for r in rows if near(r)), default=0.0))   # smaller than the
+        ok = theirs({r for r in rows if raw[r] >= floor and r[3] >= PICK_CLOSE and (           # faces by the strip
+            body is None or r[3] >= PICK_HEAD * body(r[0])[0])}, rows)
+    elif held:                                               # the planner's subject keeps the shot: the faces the
+        big = PICK_BODY * float(np.median([raw[r] for r in held]))   # strip holds, the same people where it cuts
+        by = [r for r in rows if near(r)]                    # them off, and anyone by it whose face dwarfs theirs
+        ok = theirs(held | {r for r in by if raw[r] >= big}, by)
+    else:                                                    # (it shows its subject's small face, someone
+        ok = [r for r in rows if near(r) and body(r[0])[2] - 0.02 <= r[1] <= body(r[0])[3] + 0.02]   # filmed from
+        ok = [r for r in ok if raw[r] >= PICK_FACE * max(raw[q] for q in ok)]   # further off: only a face in
+        #                                                      their own box, never the bigger one of someone nearer)
     if not ok:
         return None
     top = max(raw[r] for r in ok)

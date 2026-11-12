@@ -25,7 +25,7 @@ def test_a_picks_strip_leaves_a_back_for_the_face_beside_it():
     # the body tracker sits on someone at the frame's left edge (no face: a back); two friends face the camera
     yf = scan([(t, 0.70, 0.3, 0.2) for t in (10.0, 10.5, 11.0, 11.5)] + [(11.0, 0.42, 0.3, 0.2), (11.5, 0.45, 0.3, 0.2)])
     grid, x, y = strip(0.16, 1.5)
-    ft = P.face_first(yf, 10.0, 1.5, grid, x, y, CW, CH, body=lambda t: (0.9, 0.05))
+    ft = P.face_first(yf, 10.0, 1.5, grid, x, y, CW, CH, body=lambda t: (0.9, 0.05, 0.1, 0.9))
     assert ft is not None and ft["held"] == 1.0
     assert np.all(np.abs(ft["x"] - 0.70) < 0.03)                # on the face seen all through, not hopping to the other
     # the strip already on that face: left as it is
@@ -39,7 +39,7 @@ def test_two_friends_who_face_the_camera_in_turn_get_one_pan_not_a_ping_pong():
     a = [(t, 0.68, 0.3, 0.2) for t in (10.0, 10.5, 12.5, 13.0, 13.5)]            # turns away 11.0-12.0
     b = [(t, 0.27, 0.25, 0.22) for t in (10.0, 10.5, 11.0, 11.5, 12.0)]           # faces the camera till then
     grid, x, y = strip(0.68, 3.5)
-    ft = P.face_first(scan(a + b), 10.0, 3.5, grid, x, y, CW, CH, body=lambda t: (0.9, 0.05))
+    ft = P.face_first(scan(a + b), 10.0, 3.5, grid, x, y, CW, CH, body=lambda t: (0.9, 0.05, 0.1, 0.9))
     assert ft is not None
     xs = ft["x"]
     assert xs[0] < 0.4 and xs[15] < 0.4 and xs[-1] > 0.6        # on b while b faces the camera, on a at the end
@@ -57,7 +57,7 @@ def test_a_face_far_behind_never_takes_the_strip_and_the_face_by_the_strip_wins_
     # two faces of a size: the one by the body tracker's strip keeps the shot (its subject, their face cut off)
     two = scan([(t, 0.35, 0.3, 0.19) for t in (10.0, 10.5, 11.0)] + [(t, 0.75, 0.3, 0.21) for t in (10.0, 10.5, 11.0)])
     grid, x, y = strip(0.20, 1.0)                               # (the strip sits off their face: on the torso)
-    ft = P.face_first(two, 10.0, 1.0, grid, x, y, CW, CH, body=lambda t: (0.9, 0.05))
+    ft = P.face_first(two, 10.0, 1.0, grid, x, y, CW, CH, body=lambda t: (0.9, 0.05, 0.1, 0.9))
     assert ft is not None and np.all(np.abs(ft["x"] - 0.35) < 0.03)
     grid, x, y = strip(0.55, 1.0)                               # between the two: the bigger face
     ft = P.face_first(two, 10.0, 1.0, grid, x, y, CW, CH)
@@ -65,13 +65,23 @@ def test_a_face_far_behind_never_takes_the_strip_and_the_face_by_the_strip_wins_
     # a dancer whose face is hidden (hair, a mask) keeps the shot from a far-off face: too small for their build
     far = scan([(t, 0.8, 0.3, 0.14) for t in (10.0, 10.5, 11.0)])
     grid, x, y = strip(0.30, 1.0)
-    assert P.face_first(far, 10.0, 1.0, grid, x, y, CW, CH, body=lambda t: (0.95, 0.03)) is None
-    assert P.face_first(far, 10.0, 1.0, grid, x, y, CW, CH, body=lambda t: (0.5, 0.2)) is not None   # (a head's size there)
+    assert P.face_first(far, 10.0, 1.0, grid, x, y, CW, CH, body=lambda t: (0.95, 0.03, 0.1, 0.5)) is None
+    assert P.face_first(far, 10.0, 1.0, grid, x, y, CW, CH, body=lambda t: (0.5, 0.2, 0.15, 0.45)) is not None   # (a head's size there)
     # someone filmed from further off, their small face in the strip: a bigger face elsewhere doesn't take the shot
-    own = scan([(t, 0.30, 0.25, 0.06) for t in (10.0, 10.5, 11.0)] + [(t, 0.8, 0.3, 0.14) for t in (10.0, 10.5, 11.0)])
-    assert P.face_first(own, 10.0, 1.0, grid, x, y, CW, CH, body=lambda t: (0.5, 0.2)) is None
+    own = scan([(t, 0.30, 0.25, 0.06) for t in (10.0, 10.5, 11.0)] + [(t, 0.10, 0.3, 0.14) for t in (10.0, 10.5, 11.0)])
+    assert P.face_first(own, 10.0, 1.0, grid, x, y, CW, CH, body=lambda t: (0.5, 0.2, 0.15, 0.45)) is None
+    # the strip holds its subject's face: a smaller, steadier face beside them never takes it, one that dwarfs
+    # theirs does (the person right in front of them is who the pick is of)
+    grid, x, y = strip(0.45, 1.0)
+    mine = [(10.0, 0.50, 0.3, 0.2), (10.5, 0.42, 0.3, 0.2), (11.0, 0.48, 0.3, 0.2)]
+    beside = scan(mine + [(t, 0.25, 0.3, 0.15) for t in (10.0, 10.5, 11.0)])
+    ft = P.face_first(beside, 10.0, 1.0, grid, x, y, CW, CH)
+    assert ft is None or np.all(np.abs(ft["x"] - 0.46) < 0.06)
+    front = scan(mine + [(t, 0.25, 0.3, 0.4) for t in (10.0, 10.5, 11.0)])
+    ft = P.face_first(front, 10.0, 1.0, grid, x, y, CW, CH)
+    assert ft is not None and np.all(np.abs(ft["x"] - 0.25) < 0.03)
     tiny = scan([(t, 0.8, 0.3, 0.1) for t in (10.0, 10.5, 11.0)])                               # never a distant face
-    assert P.face_first(tiny, 10.0, 1.0, grid, x, y, CW, CH, body=lambda t: (0.5, 0.2)) is None
+    assert P.face_first(tiny, 10.0, 1.0, grid, x, y, CW, CH, body=lambda t: (0.5, 0.2, 0.15, 0.45)) is None
 
 
 def test_a_face_bigger_than_the_strip_is_centred_and_a_friend_who_fits_shares_it():
