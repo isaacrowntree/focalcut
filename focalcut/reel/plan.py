@@ -2311,6 +2311,8 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
         split_long(P, seq, recs, home)                       # none too short to read (the grid stays as it is)
         merge_flashes(P, seq)
         unclump_clips(seq)
+    if cfg.get("reuse") is False:
+        no_reuse(seq, music["beat"])
     if cfg.get("open_broll"):
         open_broll(P, seq, recs, cfg["open_broll"] if isinstance(cfg["open_broll"], list) else ("teaser", "arrival"))
     if cfg.get("open_with"):
@@ -2318,6 +2320,31 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
     if cfg.get("end_with"):
         open_with(seq, cfg["end_with"], end=True, beat=music["beat"])
     return seq, acts
+
+
+def no_reuse(seq, beat):
+    """No pick seen twice (cfg "reuse": false): the quick cuts made from picks already in the reel (their trimmed
+    ends, their openings again) go, and their beats go to the picks beside them, as far as each pick's own in-out
+    has footage for, the nearest first (else to the B-roll beside them, else the shot before). The grid stays."""
+    def room(x):                                             # beats of the pick's own footage it doesn't play yet
+        w = x.get("whole") or x.get("span")
+        return max(0, int((w[1] - w[0]) / beat + 0.25) - x["beats"]) if w else 0
+    for r in [x for x in seq if x.get("reuse")]:
+        k = next(i for i, x in enumerate(seq) if x is r)
+        seq.pop(k)
+        n = r["beats"]
+        near = sorted(range(len(seq)), key=lambda i: (abs(i - k + 0.5), i))
+        for i in near:                                       # picks with footage to spare, nearest first
+            x = seq[i]
+            if n and x.get("span") and not any(x.get(f) for f in ("ending", "logo", "open")):
+                g = min(n, room(x))
+                x["beats"] += g; n -= g
+        for i in near:                                       # then B-roll beside it (it can hold)
+            x = seq[i]
+            if n and not x.get("span") and x["unit"]["role"] == "transition" and not x.get("ending"):
+                x["beats"] += n; n = 0
+        if n:
+            seq[max(0, k - 1)]["beats"] += n
 
 
 def open_with(seq, specs, end=False, beat=None):
