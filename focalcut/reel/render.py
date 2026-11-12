@@ -50,11 +50,18 @@ DECODERS = {"qsv": 6, "cpu": 3}
 # STAB_THREADS and STAB_JOBS of them run at once (FOCALCUT_STAB_JOBS). Measured on 24 cores, 2,400 frames:
 # 24 x 1 thread 52 s, 12 x 2 72 s, 8 x 3 67 s
 STAB_THREADS = 1         # (render_shots gives a few analyses more threads each: a re-render of one changed shot)
-# ... and each analysis holds about 0.6 GB (a stabilised 4K render 1.6 GB, a 4K effect shot 10 GB and more), so no
-# more of them than a 2.5 GB share of the machine's memory each: 16 on a 40 GB machine. Past its memory a render
-# swaps and takes twice as long
-STAB_JOBS = max(2, min(os.cpu_count() or 4, int((hw.mem_gb("MemTotal") or 64) / 2.5)))
+STAB_JOBS = max(2, os.cpu_count() or 4)
 MEM_FLOOR = 4.0          # GB free below which a new analysis or stabilised render waits for others to finish
+
+
+def stab_jobs(dim) -> int:
+    """Analyses at once for a render at size dim: one per core, but each holds about 0.6 GB, and above 1080p a
+    stabilised render holds 1.6 GB and an effect shot 10 GB and more, so there no more than a 2.5 GB share of the
+    machine's memory each (16 on a 40 GB machine). Past its memory a render swaps and takes twice as long."""
+    n = int(os.environ.get("FOCALCUT_STAB_JOBS") or STAB_JOBS)
+    if dim[0] * dim[1] > 1920 * 1080 * 1.5 and not os.environ.get("FOCALCUT_STAB_JOBS"):
+        n = max(2, min(n, int((hw.mem_gb("MemTotal") or 64) / 2.5)))
+    return n
 STAB_ANALYSIS = "full"   # reel.json "stab_analysis": "half" measures the shake on a half-size picture (7x less CPU;
 #                          the stabilised picture then sits within a pixel or two of the full-size analysis's)
 
@@ -405,7 +412,7 @@ def render_shots(project, plan, fmt, work, draft=False, timer=None):
             global STAB_THREADS                             # session: those never wait for a slot)
             t0 = time.time()
             todo = sum(1 for s, out in jobs if s.get("stab") and not os.path.exists(out))
-            njobs = int(os.environ.get("FOCALCUT_STAB_JOBS") or STAB_JOBS)
+            njobs = stab_jobs(dim)
             STAB_THREADS = max(1, min(6, (os.cpu_count() or 4) // max(min(todo, njobs), 1)))   # (few to do: more each)
             with ThreadPoolExecutor(max(slots.qsize(), 1)) as ex, ThreadPoolExecutor(njobs) as ex2:
                 def shaky(s, out):
@@ -447,12 +454,23 @@ def render_shots(project, plan, fmt, work, draft=False, timer=None):
 
 def apply_transitions(plan, files):
     """Rewrite the tail of the outgoing shot and the head of the incoming one at every planned transition. Only the
-    frames inside the blend are held; the rest of both shots streams through."""
+    frames inside the blend are held; the rest of both shots streams through. Transitions that share no shot are
+    done side by side (a run of neighbouring ones in order: each reads the file the one before wrote), and a
+    transition's two shots are written at once."""
+    from concurrent.futures import ThreadPoolExecutor
+
     from .. import fx
-    for i, s in enumerate(plan["shots"]):
-        name = s.get("transition")
-        if not name or i == 0:
-            continue
+    at = [i for i, s in enumerate(plan["shots"]) if s.get("transition") and i]
+    runs = []
+    for i in at:                                   # neighbours (i, i + 1) share shot i: one run
+        if runs and runs[-1][-1] == i - 1:
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+
+    def one(i):
+        s = plan["shots"][i]
+        name = s["transition"]
         tag = hashlib.md5((files[i - 1] + files[i] + name).encode()).hexdigest()[:6]
         a_out, b_out = files[i - 1].replace(".mp4", f"_o{tag}.mp4"), files[i].replace(".mp4", f"_i{tag}.mp4")
         if not (os.path.exists(a_out) and os.path.exists(b_out)):
@@ -464,10 +482,20 @@ def apply_transitions(plan, files):
             if len(tail) != n // 2 or len(head) != n // 2:
                 raise RuntimeError(f"transition {name} at shot {i}: read {len(tail)} + {len(head)} frames, not {n}")
             mid = tr.apply(tail, head, ctx)
-            splice(files[i - 1], a_out + ".part.mp4", na - n // 2, mid[:n // 2])
-            splice(files[i], b_out + ".part.mp4", 0, mid[n // 2:])
+            with ThreadPoolExecutor(2) as two:
+                w = [two.submit(splice, files[i - 1], a_out + ".part.mp4", na - n // 2, mid[:n // 2]),
+                     two.submit(splice, files[i], b_out + ".part.mp4", 0, mid[n // 2:])]
+                for f in w:
+                    f.result()
             os.replace(a_out + ".part.mp4", a_out); os.replace(b_out + ".part.mp4", b_out)
         files[i - 1], files[i] = a_out, b_out
+
+    def run(idx):
+        for i in idx:
+            one(i)
+    with ThreadPoolExecutor(3) as ex:              # (3 runs x 2 shots: six encoder sessions at most)
+        for f in [ex.submit(run, idx) for idx in runs]:
+            f.result()
     return files
 
 

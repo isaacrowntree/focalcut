@@ -654,6 +654,8 @@ def frame(f, k, show, F, G, S, preset, opts, md=None):
             continue
         img = getattr(show, e)(c) * wgt
         light = img if light is None else light + img
+    if light is not None and float(light.max()) < 1.0:           # (faded out: under one code value anywhere)
+        light = None
     if light is not None:
         dark = 1.15 - x.mean(-1, keepdims=True) / 255            # light goes mostly into the dark: faces stay clean
         light = cv2.resize(np.clip(light, 0, 255), up, interpolation=cv2.INTER_LINEAR)
@@ -811,10 +813,11 @@ def prerender(work: str, plan: dict, music: dict, song: str, opts: dict, W: int,
         milkdrop_layer(work, song, plan["music_start"], c["n"], fps, *c["layer"], c["names"], plan["beat"])
 
 
-def _read(pipe, size):
-    """Exactly size bytes from a pipe as a bytearray, or None at its end."""
-    buf = bytearray(size)
-    view, got = memoryview(buf), 0
+def _read(pipe, size, buf=None):
+    """Exactly size bytes from a pipe, into buf (anything with a writable buffer of that size) or a new bytearray;
+    None at the pipe's end."""
+    buf = bytearray(size) if buf is None else buf
+    view, got = memoryview(buf).cast("B"), 0
     while got < size:
         r = pipe.readinto(view[got:])
         if not r:
@@ -879,15 +882,33 @@ def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, en
         if p:
             _pipe(p)
     q_in, q_out, failed = queue.Queue(6), queue.Queue(6), []
+    comp = composite.Compositor(show, F, G, S, opts, dev) if gpu else None
+    # On the GPU the frames travel in a few page-locked buffers that go round and round (pipe -> buffer -> GPU,
+    # GPU -> buffer -> pipe): a fresh 12 MB buffer per 4K frame costs more in page faults than the composite does
+    pools = {}
+    if gpu:
+        for name, nbytes in (("in", size), ("md", lw * lh * 3), ("out", size)):
+            pools[name] = queue.Queue()
+            for _ in range(9 if nbytes else 0):
+                pools[name].put(comp.t.empty(nbytes, dtype=comp.t.uint8).pin_memory().numpy())
+
+    def take(name):                                              # a free buffer (None on the CPU path: _read makes one)
+        while gpu:
+            try:
+                return pools[name].get(timeout=0.5)
+            except queue.Empty:
+                if failed:
+                    raise RuntimeError("overlay stopped") from None
+        return None
 
     def reader():                                                # decode, composite and encode overlap: the pipes
         try:                                                     # are read and written off the compositing thread
             k = 0
             while True:
-                b = _read(rd.stdout, size)
+                b = _read(rd.stdout, size, take("in"))
                 if b is None:
                     break
-                lb = _read(layer.stdout, lw * lh * 3) if layer is not None and k < n else None
+                lb = _read(layer.stdout, lw * lh * 3, take("md")) if layer is not None and k < n else None
                 q_in.put((b, lb))
                 k += 1
         except Exception as e:                                   # (handed to the main thread)
@@ -900,7 +921,9 @@ def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, en
                 b = q_out.get()
                 if b is None:
                     break
-                wr.stdin.write(b)
+                wr.stdin.write(memoryview(b).cast("B"))
+                if gpu:
+                    pools["out"].put(b)
         except Exception as e:
             failed.append(e)
             while q_out.get() is not None:                       # (keep draining, so the main thread never blocks)
@@ -909,7 +932,6 @@ def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, en
     threads = [threading.Thread(target=reader, daemon=True), threading.Thread(target=writer, daemon=True)]
     for t in threads:
         t.start()
-    comp = composite.Compositor(show, F, G, S, opts, dev) if gpu else None
     k = 0
     try:
         while not failed:
@@ -917,12 +939,19 @@ def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, en
             if item is None:
                 break
             b, lb = item
-            if k >= n:                                           # past the cut: as it came
+            if gpu:
+                g = take("out")
+                if k >= n:                                       # past the cut: as it came
+                    g[:] = b
+                else:
+                    with comp.t.inference_mode():
+                        md = comp.from_yuv444(lb, lw, lh) if lb is not None else None
+                        comp.to_yuv420(*comp.frame(*comp.from_yuv420(b), k, P[k], md), out=g)
+                pools["in"].put(b)
+                if lb is not None:
+                    pools["md"].put(lb)
+            elif k >= n:
                 g = b
-            elif gpu:
-                with comp.t.inference_mode():
-                    md = comp.from_yuv444(lb, lw, lh) if lb is not None else None
-                    g = comp.to_yuv420(*comp.frame(*comp.from_yuv420(b), k, P[k], md))
             else:
                 f = np.frombuffer(b, np.uint8).reshape(H, W, 3)
                 md = np.frombuffer(lb, np.uint8).reshape(lh, lw, 3) if lb is not None else None

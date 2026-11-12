@@ -258,3 +258,39 @@ def test_raw_yuv_goes_through_the_encoder_as_bt709(tmp_path, monkeypatch):
     got = subprocess.run(["ffmpeg", "-v", "error", "-i", out, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv420p",
                           "-"], capture_output=True, check=True).stdout
     assert [abs(a - b) <= 1 for a, b in zip((got[0], got[W * H], got[-1]), (126, 100, 150), strict=True)] == [True] * 3
+
+
+def test_analyses_at_once_follow_the_size_and_the_memory(monkeypatch):
+    monkeypatch.delenv("FOCALCUT_STAB_JOBS", raising=False)
+    monkeypatch.setattr(render, "STAB_JOBS", 24)
+    monkeypatch.setattr(hw, "mem_gb", lambda field="MemAvailable": 41.0)
+    assert render.stab_jobs((1920, 1080)) == 24 and render.stab_jobs((1080, 1920)) == 24
+    assert render.stab_jobs((3840, 2160)) == 16 and render.stab_jobs((2160, 3840)) == 16
+    monkeypatch.setattr(hw, "mem_gb", lambda field="MemAvailable": None)       # nothing to read: by the cores
+    assert render.stab_jobs((3840, 2160)) == 24
+    monkeypatch.setenv("FOCALCUT_STAB_JOBS", "5")
+    assert render.stab_jobs((3840, 2160)) == 5
+
+
+def test_transitions_in_runs_keep_their_order_and_their_frames(tmp_path, monkeypatch):
+    """Two neighbouring transitions (they share the middle shot) and one apart: every shot keeps its length, the
+    blends land on the cuts, and the shared shot carries both."""
+    monkeypatch.setattr(hw, "nvenc", lambda: False)
+    W, H, n = 64, 36, 30
+    files, levels = [], (40, 90, 140, 190, 230)
+    for k, v in enumerate(levels):
+        f = str(tmp_path / f"shot_{k:03d}_x.mp4")
+        render.write_frames([np.full((H, W, 3), v, np.uint8)] * n, f)
+        files.append(f)
+    plan = dict(beat=0.24, shots=[dict(frames=n), dict(frames=n, transition="fade"), dict(frames=n, transition="fade"),
+                                  dict(frames=n), dict(frames=n, transition="flash")])
+    out = render.apply_transitions(plan, list(files))
+    assert out[0] != files[0] and out[1] != files[1] and out[2] != files[2] and out[3] != files[3] and out[4] != files[4]
+    assert "_i" in out[1] and "_o" in out[1]                    # the shared shot: its head, then its tail
+    got = [[float(g.mean()) for g in render.read_frames(f)] for f in out]
+    assert [len(g) for g in got] == [n] * 5
+    for k, v in enumerate(levels):
+        assert abs(got[k][n // 2] - v) <= 3                     # the middle of every shot is untouched
+    assert got[0][-1] > levels[0] + 10 and got[1][0] < levels[1] - 5          # fading 40 -> 90 across the first cut
+    assert got[1][-1] > levels[1] + 10 and got[2][0] < levels[2] - 5          # ... and 90 -> 140 across the second
+    assert got[3][-1] > levels[3] + 20 and got[4][0] > 240                    # the flash: white at the cut

@@ -205,6 +205,8 @@ class Compositor:
                 continue
             img = getattr(show, e)(c) * wgt
             light = img if light is None else light + img
+        if light is not None and float(light.max()) < 1.0:           # (faded out: under one code value anywhere)
+            light = None
         if sh or a > 0.02 or d > 0.02 or light is not None:
             E = self.E
             c2 = self.fit(uv, H, W)
@@ -217,10 +219,10 @@ class Compositor:
             if d > 0.02:
                 x = x * (1 - d * E) + self.duotone(f) * (d * E)
             if light is not None:
-                dark = 1.15 - x.mean(0) / 255
                 lt = torch.from_numpy(np.ascontiguousarray(np.clip(light, 0, 255), np.float32)).to(self.dev)
-                lt = self.fit(lt.permute(2, 0, 1), H, W)
-                x = 255 - (255 - x) * (255 - lt * (s * dark).clamp(max=1.0) * E) / 255
+                lt = self.fit(lt.permute(2, 0, 1), H, W)             # (a new tensor: scaled in place below)
+                lt *= ((1.15 - x.mean(0) / 255) * s).clamp_(max=1.0).mul_(E)
+                x = torch.addcmul(x + lt, x, lt, value=-1 / 255)     # screen: 255 - (255 - x) * (255 - lt) / 255
             y, cb, cr = rgb_to_yuv(x)
             uv = self.fit(torch.stack([cb, cr]), *uv.shape[-2:])
         # everything else is footage * ka + kb: built at the MilkDrop layer's size, in RGB ----------------------
@@ -284,7 +286,8 @@ class Compositor:
 
     # raw 4:2:0 in and out ----------------------------------------------------------------------------------------
     def from_yuv420(self, buf, W=None, H=None):
-        """A raw yuv420p frame (a writable buffer) -> its luma (H, W) and chroma (2, H/2, W/2) as floats."""
+        """A raw yuv420p frame (a writable buffer; page-locked memory uploads fastest) -> its luma (H, W) and
+        chroma (2, H/2, W/2) as floats."""
         torch = self.t
         W, H = W or self.W, H or self.H
         a = torch.frombuffer(buf, dtype=torch.uint8).to(self.dev).float()
@@ -296,9 +299,10 @@ class Compositor:
         a = torch.frombuffer(buf, dtype=torch.uint8).to(self.dev).float().view(3, h, w)
         return yuv_to_rgb(a[0], a[1], a[2])
 
-    def to_yuv420(self, y, uv):
-        """The planes as a raw yuv420p frame (uint8 array), dithered by half a code value of noise before rounding:
-        a plane the show left alone comes out as it went in, a smooth synthetic gradient as fine grain, not bands."""
+    def to_yuv420(self, y, uv, out=None):
+        """The planes as a raw yuv420p frame (uint8 array; written into `out` when given), dithered by half a code
+        value of noise before rounding: a plane the show left alone comes out as it went in, a smooth synthetic
+        gradient as fine grain, not bands."""
         torch = self.t
         n = y.numel() + uv.numel()
         if self.noise is None or self.noise.shape[1] != n:           # a few frames of noise, made once: each frame
@@ -312,4 +316,7 @@ class Compositor:
         o.round_()
         o[:y.numel()].clamp_(16, 235)
         o[y.numel():].clamp_(16, 240)
-        return o.to(torch.uint8).cpu().numpy()
+        if out is None:
+            return o.to(torch.uint8).cpu().numpy()
+        torch.from_numpy(out).copy_(o.to(torch.uint8))
+        return out
