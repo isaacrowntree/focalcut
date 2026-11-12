@@ -120,3 +120,13 @@ def test_bans_prefers_more_and_roles_go_to_their_reels_too(tmp_path):
     assert main["open"] == "0:01-0:02" and main["add"] == ["0:01-0:02"]
     assert short["ban"] == ["all", "0:20-0:22"] and short["prefer"] == ["0:30-0:31"] and short["more"] == 2
     assert short["open"] == "0:00-0:03" and short["add"] == ["0:01-0:02"]   # (reel.json's opening, as no pick is)
+
+
+def test_a_clip_picked_only_for_other_reels_gives_this_one_nothing(tmp_path):
+    folder = project(tmp_path, dict(short=dict(length=90)))
+    d = tmp_path / "focalcut" / "reel"
+    json.dump({"C1-01_couple": {"add": ["0:01-0:02"], "only": {"0:01-0:02": ["main"]}},
+               "C3": {"add": ["0:05-0:06"], "only": {"0:05-0:06": ["main"]}}}, open(d / "picks.json", "w"))
+    assert Project(folder, "short").picks()["C1-01_couple"]["ban"] == ["all"]
+    assert "ban" not in Project(folder).picks()["C1-01_couple"]
+    assert "ban" not in Project(folder, "short").picks()["C3"]          # (the reel's named opening: kept)

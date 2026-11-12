@@ -14,6 +14,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   switch (each reel's shots in the lanes, other reels' picks faded; picks, bans, opening and ending made or removed
   for the reel being picked for) and a tick per reel on every pick; a cut's review page edits for its own reel; the
   planner takes each reel's own. The source page also shows the cuts' shots, and a cut's review step refreshes it.
+- A clip whose picks are all for other reels gives a reel nothing of it (not the planner's choice either), unless
+  the reel's settings name it (an opening, ending, close, `open_with` / `end_with`); `end_with` puts picks just
+  before the ending, and picks moved by `open_with` / `end_with` play whole.
 - **Stars.** Rate a pick 1-5 (keys 1-5, or the stars on it; picks `"stars": {range: n}`): when a reel has more
   picks than room, the most starred are lengthened first and dropped last.
 - **Follow a person.** In portrait framing, `G` (or Follow person) then a click on a dancer: the crop tracks that

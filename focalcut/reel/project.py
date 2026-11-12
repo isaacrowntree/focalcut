@@ -194,11 +194,18 @@ class Project:
         """The editor's picks: focalcut/reel/picks.json, with reel.json's "picks" merged over it, and its "reject"
         stretches added to their files' bans (rejects=False: the editor's own calls only). A clip's "only" maps a
         selection ("add" range, as written) to the reels it is for (["main"], ["short"], ...); one not listed is for
-        every reel. reel=True keeps this reel's selections only; reel=False leaves them all (the source page)."""
+        every reel. reel=True keeps this reel's selections only; reel=False leaves them all (the source page). A clip
+        whose picks are all for other reels gives this one nothing (banned whole), unless the reel's settings name it."""
         out = {**self._picks_file(), **(self.config.get("picks") or {})}
         if reel:
+            raw = out
             out = {k: only_reel(v, self.reel_id) if isinstance(v, dict) and not k.startswith("_") else v
                    for k, v in out.items()}
+            named = self._named()
+            for k, e in out.items():                     # every pick of a clip for other reels: this reel takes
+                if isinstance(e, dict) and not k.startswith("_") and (raw[k] or {}).get("add") and \
+                        not e.get("add") and k not in named:      # nothing of it (not the planner's choice either)
+                    out[k] = {**e, "ban": [*e.get("ban", []), "all"]}
         for k, spans in (self.config.get("reject") or {}).items() if rejects else ():
             e = dict(out.get(k) or {})
             e["ban"] = [*e.get("ban", []), *spans]
@@ -209,6 +216,18 @@ class Project:
         if not any(isinstance(e, dict) and e.get("open") for e in out.values()):
             for clip, v in (self.config.get("open") or {}).items():   # reel.json "open": {clip: in-out} -- the
                 out[clip] = {**out.get(clip, {}), "open": v}           # opening, unless a pick is marked as it
+        return out
+
+    def _named(self) -> set:
+        """Clips the reel's settings name on purpose (an opening, ending, close, open_with / end_with pick): never
+        banned for having their picks in other reels only."""
+        out = set((self.config.get("open") or {}).keys())
+        for p in (self.config.get("plan") or {}).values():
+            for key in ("ending", "close"):
+                if isinstance(p.get(key), list) and p[key]:
+                    out.add(p[key][0])
+            for key in ("open_with", "end_with"):
+                out.update(x[0] for x in p.get(key) or ())
         return out
 
     def _cut_ids(self) -> set:
