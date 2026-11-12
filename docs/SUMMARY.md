@@ -7,6 +7,7 @@
 - [Recap reels](recipes/recap-reel.md)
 - [The editor's picks](picks.md)
 - [Editing concepts](concepts.md)
+- [Rendering: speed and quality](render.md)
 - [Hardware](hardware.md)
 - [Security](security.md)
 - [Contributing](contributing.md)

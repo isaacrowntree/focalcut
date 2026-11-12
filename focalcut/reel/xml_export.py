@@ -4,7 +4,8 @@
 
 V1  every shot. Uncropped plain shots reference the original camera file scaled to fit, with the source's own
     handles for trimming and slipping. Reframed shots (most of them: the crop follows the subject), shots with
-    effect modules or a transition, and rotated clips use their rendered 1080p files (from render's manifest),
+    effect modules or a transition, and rotated clips use their rendered files (from render's manifest, at the
+    reel's own size: reel.json "resolution"),
     copied to out/<fmt>_media/.
 V2  (disabled) the original source under each rendered shot, lined up, for redoing it by hand.
 A1  the song from the reel's start point.   A2  the stinger's sound.   The stinger video closes V1.
@@ -21,7 +22,7 @@ from xml.sax.saxutils import escape
 from . import hw
 
 FPS = 50
-SIZE = {"landscape": (1920, 1080), "portrait": (1080, 1920)}
+SIZE = {"landscape": (1920, 1080), "portrait": (1080, 1920)}   # the default; a project's own: render.size
 
 
 def pathurl(path: str) -> str:
@@ -46,8 +47,8 @@ def probe(path):
 
 
 class Files:
-    def __init__(self):
-        self.ids, self.info = {}, {}
+    def __init__(self, sizes=None):
+        self.ids, self.info, self.sizes = {}, {}, sizes or SIZE
 
     def ref(self, path):
         """<file> element: full definition the first time, then just the id."""
@@ -68,7 +69,7 @@ class Files:
     def fit(self, path, fmt):
         """Basic Motion scale (percent) that fits a source into the sequence frame."""
         p = self.info.get(path) or probe(path)
-        W, H = SIZE[fmt]
+        W, H = self.sizes[fmt]
         return round(100 * min(W / max(p["w"], 1), H / max(p["h"], 1)), 3)
 
 
@@ -97,9 +98,14 @@ def run(project, fmt, cut=None) -> str:
     fmt = plan.get("format", fmt)
     song = plan.get("song") or project.load(project.music_file)["song"]
     manifest = project.load(os.path.join("out", f"{cut}_shots.json"))      # final file per shot, from render
-    W, H = SIZE[fmt]
+    from concurrent.futures import ThreadPoolExecutor
+    from functools import partial
+
+    from .render import size
+    W, H = size(project, fmt)                      # the sequence is the reel's size, as the rendered shots are
     media = project.path("out", f"{cut}_media"); os.makedirs(media, exist_ok=True)
-    files = Files()
+    files = Files({fmt: (W, H)})
+    copies = []
     v1, v2, n, rec, written = [], [], 0, 0, set()
     for i, s in enumerate(plan["shots"]):
         u = s["unit"]
@@ -114,15 +120,18 @@ def run(project, fmt, cut=None) -> str:
             keep = os.path.join(media, f'{i + 1:03d}_{u["id"].replace("#", "-")}_{s["kind"]}'
                                        f'{"_" + "+".join(s["fx"]) if s.get("fx") else ""}'
                                        f'{"_" + s["transition"] if s.get("transition") else ""}.mp4')
-            hw.retag(project.path(manifest[i]), keep)
+            copies.append((project.path(manifest[i]), keep))
             written.add(os.path.basename(keep))
-            n += 1; v1.append(clip(f"v1-{n}", files, keep, start, end, 0, label))
-            n += 1; v2.append(clip(f"v2-{n}", files, src, start, end, round(s["src_in"] * FPS), f"{label} (source)",
+            n += 1; v1.append(partial(clip, f"v1-{n}", files, keep, start, end, 0, label))
+            n += 1; v2.append(partial(clip, f"v2-{n}", files, src, start, end, round(s["src_in"] * FPS), f"{label} (source)",
                                    fmt=fmt, enabled=False))
         else:
-            n += 1; v1.append(clip(f"v1-{n}", files, src, start, end, round(s["src_in"] * FPS), label, fmt=fmt))
+            n += 1; v1.append(partial(clip, f"v1-{n}", files, src, start, end, round(s["src_in"] * FPS), label, fmt=fmt))
         rec = end
     total = rec
+    with ThreadPoolExecutor(8) as ex:              # the rendered shots, copied (re-tagged) beside the XML: many small
+        list(ex.map(lambda c: hw.retag(*c), copies))   # files, so several at once
+    v1, v2 = [f() for f in v1], [f() for f in v2]  # (their <file> entries are probed once the copies exist)
     for f in os.listdir(media):                    # an earlier cut's shots go: the folder is this cut's media alone
         if f.endswith(".mp4") and f not in written:
             os.remove(os.path.join(media, f))

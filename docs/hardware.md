@@ -9,10 +9,17 @@ and found at run time (`focalcut/reel/hw.py`).
 |---|---|
 | CPU | crop, scale and stabilise every shot (filters); decodes the shots the GPUs can't |
 | Intel iGPU (media engine) | decodes camera files the other paths can't, with Quick Sync (via a Windows ffmpeg on WSL) |
-| NVIDIA GPU | encodes every shot (NVENC); SAM 3, BiRefNet and the other models; the MilkDrop overlay |
+| NVIDIA GPU | encodes every shot (NVENC); SAM 3, BiRefNet and the other models; the MilkDrop layer and the overlay's composite (torch) |
 
-Plain shots render several at once (`render.DECODERS`, or `FOCALCUT_DECODERS="qsv=5,cpu=2"`); effect shots, which
-run their own GPU models, go one at a time beside them.
+Plain shots render several at once (`render.DECODERS`, or `FOCALCUT_DECODERS="qsv=6,cpu=3"`); a stabilised shot
+first has its camera shake measured on the CPU (`FOCALCUT_STAB_JOBS` at once, one per core by default); effect
+shots, which run their own GPU models, go one at a time beside them; the MilkDrop layer renders beside all of
+those. Where a render's time goes, stage by stage, is in [Rendering](render.md).
+
+**NVENC sessions.** A consumer NVIDIA driver allows 12 encode sessions at once across every program (measured:
+the 13th fails with "OpenEncodeSessionEx failed"). Every shot being rendered holds one, so the defaults add up to
+11 (9 shots, an effect shot, the MilkDrop layer). An encode that finds none free waits and retries, so two renders
+at once slow each other down rather than fail.
 
 ## Sony XAVC HS (10-bit 4:2:2 HEVC) and hardware decode
 
@@ -42,7 +49,8 @@ Decoded frames are pixel-identical to the CPU decode. **`-async_depth 1` is requ
 
 With 3 Intel + 3 CPU shots at once on a 24-thread Core Ultra 9 285K, the plain shots of a 140-shot landscape reel
 took about 4.5 minutes (one at a time on the CPU with libx264: about 30), with the CPU at about 85% and the iGPU's
-decoder at about 40%; hence the default of 5 + 2.
+decoder at about 40%. The default is now 6 + 3: stabilised shots (most of a handheld reel) decode on the CPU
+whatever slot they take, and their cost is vidstab, not the decode.
 
 ### Setting it up (WSL)
 
@@ -53,6 +61,9 @@ decoder at about 40%; hence the default of 5 + 2.
    vidstab motion file lives there).
 3. Encoding uses NVENC if the GPU has it (constant quality 16, SPS/PPS in every keyframe so shots from either ffmpeg
    join by stream copy). `FOCALCUT_ENCODER=x264` forces libx264. The encoder is part of each shot's cache key.
+   On night footage constant quality 16 already runs into the H.264 level's bitrate ceiling (about 42 Mb/s at
+   1080p50, 130 Mb/s at 4K50; PSNR about 45.7 dB against the scaled source, and a lower `-cq` changes nothing
+   without a `-maxrate`), and each further generation costs about 0.6 dB.
 
 ### VA-API in WSL (for the formats it does support)
 
@@ -86,9 +97,14 @@ the fix are covered.
 - **Cap SAM 3 in crowds:** the masks module tracks at most 6 confident people at 960 px.
 - **The MilkDrop overlay** renders natively with projectM 4 (`focalcut/reel/milkdrop/mdrender.cpp`, built once by
   `milkdrop/build.sh` into `~/.cache/focalcut/bin`; needs cmake, g++ and the EGL / GL headers): about 100 fps at
-  1080p on an RTX 4070 Ti, frames read back raw and encoded on NVENC. On WSL it reaches the GPU through Mesa's D3D12
-  driver (`GALLIUM_DRIVER=d3d12`, `MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA`, `LD_LIBRARY_PATH=/usr/lib/wsl/lib`, set
-  by the overlay).
+  1080p on an RTX 4070 Ti, frames read back raw and encoded 4:4:4 on NVENC. On WSL it reaches the GPU through Mesa's
+  D3D12 driver (`GALLIUM_DRIVER=d3d12`, `MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA`, `LD_LIBRARY_PATH=/usr/lib/wsl/lib`,
+  set by the overlay). The layer keeps a 1080p canvas in a 4K reel (overlay `"milkdrop_side"`).
+- **The overlay's composite** runs on the NVIDIA GPU when torch has CUDA (`reel/composite.py`; about 170 frames a
+  second at 1080p and 70 at 4K for the composite alone; `FOCALCUT_OVERLAY=cpu` forces the numpy path, about 4 a
+  second at 1080p).
+- **Windows drives over 9P** read at 280-420 MB/s here: a 90 s reel reads about 2.5 GB of camera files, so the
+  drive is not what a render waits for.
 - Set `FOCALCUT_DISABLE_CUDNN=1` if your torch build has broken cuDNN engines.
 - **Another Mac or PC** could take shots too (ffmpeg with VideoToolbox, over SSH and a shared folder), but it only
   speeds up plain shots; measure where a render's time goes first.

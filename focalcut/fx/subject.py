@@ -20,9 +20,18 @@ class Spotlight(Effect):
 
     def apply(self, frames, ctx):
         masks, ramp, out = ctx.masks(frames), max(1, int(ctx.beat * ctx.fps)), []
+        amount, sat = 0.42, 0.25                              # base.dim's: how dark and how grey the room goes
+        grey = np.full((1, 3), 1 / 3, np.float32)
         for i, (f, m) in enumerate(zip(frames, masks)):
-            f = f.astype(np.float32); k = min(1.0, i / ramp); a = m[..., None]
-            out.append(to_u8(f * a + (f * (1 - k) + dim(f) * k) * (1 - a)))
+            # f * a + (f * (1 - k) + dim(f) * k) * (1 - a), gathered into one weight on the frame and one on its
+            # grey, both single-channel: a third of the arithmetic on a 4K frame
+            k = min(1.0, i / ramp)
+            c1, c2 = (1 - k) + k * amount * sat, k * amount * (1 - sat)
+            x = f.astype(np.float32)
+            g = cv2.transform(x, grey)
+            x *= (c1 + m * (1 - c1))[..., None]
+            x += (g * ((1 - m) * c2))[..., None]
+            out.append(to_u8(x))
         return out
 
 

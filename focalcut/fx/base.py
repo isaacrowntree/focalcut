@@ -13,6 +13,7 @@ Everything that needs the performers' masks asks ctx.masks(frames) -- SAM 3 runs
 import numpy as np
 
 EFFECTS, TRANSITIONS = {}, {}
+MASK_SIDE = 1920                                              # performer masks are made on frames this size at most
 
 
 def register(cls):
@@ -32,12 +33,40 @@ class Context:
         """Performer masks (float 0..1) for these frames; computed with SAM 3 once and cached."""
         if self._masks is None or self._mask_frames != len(frames):
             from .masks import performer_masks
-            self._masks = performer_masks(np.stack(frames), group=bool(self.params.get("group")))
+            H, W = frames[0].shape[:2]
+            k = MASK_SIDE / max(H, W)
+            if k < 1:                                          # a 4K shot: masks made at 1080p size (SAM 3 tracks
+                import cv2
+
+                w, h = round(W * k), round(H * k)              # at 960 px and the matte at 1024 either way), each
+                                                               # scaled up as it is used
+                small = np.stack([cv2.resize(f, (w, h), interpolation=cv2.INTER_AREA) for f in frames])
+                self._masks = Scaled(performer_masks(small, group=bool(self.params.get("group"))), W, H)
+            else:
+                self._masks = performer_masks(np.stack(frames), group=bool(self.params.get("group")))
             self._mask_frames = len(frames)
         return self._masks
 
     def peak_frame(self, n):
         return int(np.clip(round((self.peak if self.peak is not None else n / self.fps / 2) * self.fps), 0, n - 1))
+
+
+class Scaled:
+    """Masks kept small and scaled up to (H, W) one at a time, as an effect asks for them (masks[i], or in a loop):
+    a 4K shot's masks at full size would be 33 MB a frame, gigabytes for a long shot."""
+
+    def __init__(self, small, W, H):
+        self.small, self.size = small, (W, H)
+
+    def __len__(self):
+        return len(self.small)
+
+    def __getitem__(self, i):
+        import cv2
+        return cv2.resize(self.small[i], self.size, interpolation=cv2.INTER_CUBIC).clip(0, 1)
+
+    def __iter__(self):
+        return (self[i] for i in range(len(self.small)))
 
 
 class Effect:
@@ -85,4 +114,5 @@ def dim(f, amount=0.42, sat=0.25):
 
 
 def to_u8(f):
-    return np.clip(f, 0, 255).astype(np.uint8)
+    """Float picture to 8 bits, rounded (cutting the fraction off darkens every blended frame by half a step)."""
+    return np.clip(f + 0.5, 0, 255).astype(np.uint8)

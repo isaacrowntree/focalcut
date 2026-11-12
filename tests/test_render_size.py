@@ -1,0 +1,296 @@
+"""The reel's size (reel.json "resolution") through the project, the shot filter and cache key, the MilkDrop layer,
+the encoder arguments and the XML; and the render's streamed transition rewrite."""
+import json
+import subprocess
+
+import numpy as np
+import pytest
+
+from focalcut.reel import hw, overlay, render
+from focalcut.reel.project import Project, frame_size
+
+
+def project(tmp_path, config=None, cut=None):
+    reel = tmp_path / "focalcut" / "reel"
+    reel.mkdir(parents=True, exist_ok=True)
+    (reel / "reel.json").write_text(json.dumps(config or {}))
+    return Project(str(tmp_path), cut)
+
+
+@pytest.mark.parametrize("res,land,port", [
+    (None, (1920, 1080), (1080, 1920)),
+    ("1080p", (1920, 1080), (1080, 1920)),
+    ("4k", (3840, 2160), (2160, 3840)),
+    ("4K", (3840, 2160), (2160, 3840)),
+    ("UHD", (3840, 2160), (2160, 3840)),
+    ("2160p", (3840, 2160), (2160, 3840)),
+    ("1440p", (2560, 1440), (1440, 2560)),
+    ("720p", (1280, 720), (720, 1280)),
+    ([3840, 2160], (3840, 2160), (2160, 3840)),
+    ([2160, 3840], (3840, 2160), (2160, 3840)),                 # either way round: the format decides
+    ({"landscape": "4k"}, (3840, 2160), (1080, 1920)),          # per format; the other stays 1080p
+    ({"landscape": "4k", "portrait": [1216, 2160]}, (3840, 2160), (1216, 2160)),
+])
+def test_frame_size(res, land, port):
+    assert frame_size(res, "landscape") == land and frame_size(res, "portrait") == port
+
+
+@pytest.mark.parametrize("bad", ["huge", "p", [3840], [3840, 2160, 1], "0p", [0, 0]])
+def test_frame_size_says_what_is_wrong(bad):
+    with pytest.raises(ValueError, match="resolution"):
+        frame_size(bad, "landscape")
+
+
+def test_project_size_and_a_cut_of_its_own(tmp_path):
+    cfg = {"resolution": "1080p", "cuts": {"short": {"resolution": "4k"}, "plain": {}}}
+    assert project(tmp_path, cfg).size("portrait") == (1080, 1920)
+    assert project(tmp_path, cfg, "short").size("portrait") == (2160, 3840)
+    assert project(tmp_path, cfg, "plain").size("landscape") == (1920, 1080)
+    assert project(tmp_path, {}).size("landscape") == (1920, 1080)
+    assert render.size(project(tmp_path, {"resolution": "4k"}), "landscape") == (3840, 2160)
+    assert render.size(None, "portrait") == (1080, 1920)        # no project: 1080p
+
+
+def shot(**over):
+    return dict(dict(unit=dict(id="C1", source="C1.MP4", rotate=None, role="dance"), src_in=1.0, length=2.0,
+                     frames=100, fx=[], crop=dict(w=0.3164, h=1.0, z=1.0, path=[[0, 0.5, 0.5]]), peak=1.0,
+                     kind="spin"), **over)
+
+
+def test_shot_filter_scales_to_the_projects_size(tmp_path):
+    s = shot()
+    assert "scale=1080:1920:flags=lanczos" in render.shot_filter(s, "portrait", project(tmp_path))
+    f = render.shot_filter(s, "portrait", project(tmp_path, {"resolution": "4k"}))
+    assert "scale=2160:3840:flags=lanczos" in f and f.index("crop=") < f.index("scale=") and f.endswith("format=yuv420p")
+    assert "scale=3840:2160" in render.shot_filter(s, "landscape", project(tmp_path, {"resolution": "4k"}))
+    assert "scale=1920:1080" in render.shot_filter(s, "landscape")           # no project: 1080p, as before
+
+
+def test_cache_key_follows_the_size_and_the_encode_but_not_the_seed(monkeypatch):
+    s = shot()
+    hd, uhd = render.key(s, 0.5, (1920, 1080)), render.key(s, 0.5, (3840, 2160))
+    assert hd != uhd and hd == render.key(dict(s), 0.5, (1920, 1080))
+    assert render.key(s, 0.5, (1920, 1080)) != render.key(shot(src_in=1.02), 0.5, (1920, 1080))
+    seed = render.key(s)                                        # the effects' seed: the shot alone, at any size
+    monkeypatch.setattr(hw, "ENC_VERSION", hw.ENC_VERSION + 1)
+    assert render.key(s, 0.5, (1920, 1080)) != hd and render.key(s) == seed
+
+
+def test_read_length_covers_a_paced_shot():
+    assert render.read_length(shot()) == pytest.approx(2.1)
+    assert render.read_length(shot(speed=1.25)) == pytest.approx(2.6)
+
+
+def test_layer_size_keeps_a_1080p_canvas():
+    opts = overlay.options({"engine": "milkdrop"})
+    assert overlay.layer_size(1920, 1080, opts) == (1920, 1080)
+    assert overlay.layer_size(3840, 2160, opts) == (1920, 1080)
+    assert overlay.layer_size(2160, 3840, opts) == (1080, 1920)
+    assert overlay.layer_size(1080, 1920, opts) == (1080, 1920)
+    assert overlay.layer_size(3840, 2160, dict(opts, milkdrop_side=2560)) == (2560, 1440)
+    assert overlay.layer_size(1280, 720, opts) == (1280, 720)                # never bigger than the reel
+    assert "yuv444p" in overlay.layer_enc()
+
+
+def test_effect_canvas_is_the_same_at_4k():
+    assert overlay.effect_divisor(1920, 1080) == 2 and overlay.effect_divisor(1080, 1920) == 2
+    assert overlay.effect_divisor(3840, 2160) == 4 and overlay.effect_divisor(2160, 3840) == 4
+    assert overlay.effect_divisor(320, 180) == 2
+    a = overlay.Show(1920, 1080, 50, 0.5, np.random.default_rng(0))
+    b = overlay.Show(3840, 2160, 50, 0.5, np.random.default_rng(0))
+    assert (a.w, a.h) == (b.w, b.h) == (960, 540)
+
+
+def test_whites_follow_the_cuts_flashes():
+    beat = 0.48
+    plan = dict(beat=beat, shots=[dict(frames=50), dict(frames=50, transition="flash"), dict(frames=50, transition="swipe"),
+                                  dict(frames=6, transition="dipwhite"), dict(frames=50, transition="dipwhite")])
+    w = overlay.whites(plan, 206, 50)
+    assert w.shape == (206,) and w[50] == pytest.approx(1.0) and w[49] > 0.5 and w[30] == 0 and w[70] == 0
+    assert w[94:106].max() == 0                                 # a swipe is not a flash
+    assert w[150] == pytest.approx(1.0) and w[146] == 0 and w[148] > 0      # no longer than the short shot after it
+    assert w[156] == pytest.approx(1.0) and 0 < w[157] < 1 and w[170] == 0   # ... or the one before
+
+
+def test_final_encode_has_a_keyframe_a_second_and_bt709(monkeypatch):
+    monkeypatch.setattr(hw, "nvenc", lambda: False)
+    e, f = hw.enc(), hw.enc(final=True)
+    assert "-g" not in e and f[f.index("-g") + 1] == "50" and f[:len(e)] == e
+    assert e[e.index("-pix_fmt") + 1] == "yuv420p" and e[e.index("-colorspace") + 1] == "bt709"
+
+
+def test_run_enc_waits_for_an_encoder_session(monkeypatch):
+    calls = []
+
+    def fake(cmd, **kw):
+        calls.append(cmd)
+        busy = len(calls) < 3
+        return subprocess.CompletedProcess(cmd, 1 if busy else 0, "", "OpenEncodeSessionEx failed" if busy else "")
+    monkeypatch.setattr(hw.subprocess, "run", fake)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    hw.run_enc(["ffmpeg", "x"])
+    assert len(calls) == 3
+    calls.clear()
+    monkeypatch.setattr(hw.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "No such file"))
+    with pytest.raises(subprocess.CalledProcessError):          # any other failure: at once
+        hw.run_enc(["ffmpeg", "x"])
+
+
+def test_splice_replaces_the_tail_and_streams_the_rest(tmp_path, monkeypatch):
+    monkeypatch.setattr(hw, "nvenc", lambda: False)
+    W, H, n = 64, 36, 12
+    src, out = str(tmp_path / "a.mp4"), str(tmp_path / "b.mp4")
+    frames = [np.full((H, W, 3), 20 + 15 * k, np.uint8) for k in range(n)]
+    render.write_frames(frames, src)
+    assert render.frame_count(src) == n and render.frame_size(src) == (W, H)
+    tail = render.read_frames(src, n - 3, 3)
+    assert len(tail) == 3 and abs(int(tail[0].mean()) - (20 + 15 * 9)) <= 2
+    head = render.read_frames(src, 0, 2)
+    assert len(head) == 2 and abs(int(head[1].mean()) - 35) <= 2
+    render.splice(src, out, n - 3, [np.full((H, W, 3), 250, np.uint8)] * 3)
+    got = render.read_frames(out)
+    assert len(got) == n
+    assert [abs(int(g.mean()) - (20 + 15 * k)) <= 2 for k, g in enumerate(got[:n - 3])] == [True] * (n - 3)
+    assert all(g.mean() > 245 for g in got[n - 3:])
+    red = np.zeros((H, W, 3), np.uint8)
+    red[..., 0] = 200
+    yuv = np.frombuffer(render.rgb_to_yuv420(red), np.uint8)                  # BT.709, limited range
+    assert yuv.size == W * H * 3 // 2 and (yuv[0], yuv[W * H], yuv[-1]) == (53, 108, 216)
+    render.splice(src, out, 2, [red])
+    px = render.read_frames(out, 2, 1)[0][H // 2, W // 2]
+    assert abs(int(px[0]) - 200) <= 4 and px[1] <= 4 and px[2] <= 4           # ... and comes back the colour it was
+    render.splice(src, out, 0, [np.full((H, W, 3), 250, np.uint8)] * 2)       # ... and a head
+    got = render.read_frames(out)
+    assert len(got) == n and got[0].mean() > 245 and got[1].mean() > 245 and abs(int(got[2].mean()) - 50) <= 2
+
+
+def test_timer_adds_up_stages():
+    t = render.Timer()
+    with t("shots"):
+        pass
+    t.add("shots", 2.0)
+    t.add("overlay", 1.26)
+    r = t.report()
+    assert r["shots"] >= 2.0 and r["overlay"] == 1.3 and "total" in r
+
+
+def test_spotlight_is_the_same_picture_with_less_arithmetic():
+    from focalcut import fx
+    from focalcut.fx.base import dim, to_u8
+    rng = np.random.default_rng(0)
+    n, H, W = 6, 36, 64
+    frames = [rng.integers(0, 256, (H, W, 3), dtype=np.uint8) for _ in range(n)]
+    masks = rng.random((n, H, W)).astype(np.float32)
+    ctx = fx.Context(fps=50, beat=0.08)
+    ctx._masks, ctx._mask_frames = masks, n
+    got = fx.EFFECTS["spotlight"]().apply(frames, ctx)
+    ramp = max(1, int(ctx.beat * ctx.fps))
+    for i, (f, m) in enumerate(zip(frames, masks, strict=True)):
+        f = f.astype(np.float32); k = min(1.0, i / ramp); a = m[..., None]
+        want = to_u8(f * a + (f * (1 - k) + dim(f) * k) * (1 - a))             # as the effect reads
+        assert np.abs(got[i].astype(int) - want.astype(int)).max() <= 1
+        assert (got[i] != want).mean() < 1e-3
+
+
+def test_masks_of_a_4k_shot_are_made_small_and_scaled_as_used(monkeypatch):
+    import sys
+    import types
+
+    from focalcut import fx
+    from focalcut.fx.base import Scaled
+    seen = []
+
+    def fake(frames, group=False):
+        seen.append(frames.shape)
+        return np.full(frames.shape[:3], 0.5, np.float32)
+    monkeypatch.setitem(sys.modules, "focalcut.fx.masks", types.SimpleNamespace(performer_masks=fake))
+    big = [np.zeros((2160, 3840, 3), np.uint8)] * 2
+    m = fx.Context().masks(big)
+    assert seen == [(2, 1080, 1920, 3)] and isinstance(m, Scaled) and len(m) == 2
+    assert m[1].shape == (2160, 3840) and m[-1].dtype == np.float32 and [x.shape for x in m] == [(2160, 3840)] * 2
+    small = [np.zeros((1080, 1920, 3), np.uint8)] * 2
+    assert fx.Context().masks(small).shape == (2, 1080, 1920) and seen[-1] == (2, 1080, 1920, 3)
+
+
+def test_half_size_shake_analysis_scales_the_motion_file(tmp_path):
+    f = tmp_path / "x.trf"
+    f.write_text("VID.STAB 1\n#      accuracy = 12\nFrame 1 (List 2 [(LM -5 9 924 1407 112 0.691864 0.885643),"
+                 "(LM 14 -42 2916 1080 112 0.641755 2.862883)])\n")
+    render.scale_motion(str(f), 2)
+    assert f.read_text() == ("VID.STAB 1\n#      accuracy = 12\nFrame 1 (List 2 [(LM -10 18 1848 2814 224 0.691864 "
+                             "0.885643),(LM 28 -84 5832 2160 224 0.641755 2.862883)])\n")
+    f.write_bytes(b"TRF1\x0c\x00")
+    with pytest.raises(RuntimeError, match="stab_analysis"):
+        render.scale_motion(str(f), 2)
+
+
+def test_half_size_analysis_has_its_own_cache_key(monkeypatch):
+    s = shot(stab=True)
+    full = render.key(s, 0.5, (1920, 1080))
+    monkeypatch.setattr(render, "STAB_ANALYSIS", "half")
+    assert render.key(s, 0.5, (1920, 1080)) != full
+    monkeypatch.setattr(render, "STAB_ANALYSIS", "full")
+    assert render.key(s, 0.5, (1920, 1080)) == full
+
+
+def test_memory_readout_and_the_wait_for_room(monkeypatch):
+    m = hw.mem_gb()
+    assert m is None or m > 0
+    assert hw.mem_gb("NoSuchField") is None
+    waits = []
+    monkeypatch.setattr(render.time, "sleep", lambda s: waits.append(s))
+    levels = iter([1.0, 2.0, 9.0])
+    monkeypatch.setattr(hw, "mem_gb", lambda field="MemAvailable": next(levels))
+    render.room()                                               # waits while under the floor, then goes
+    assert len(waits) == 2
+    monkeypatch.setattr(hw, "mem_gb", lambda field="MemAvailable": None)
+    render.room()                                               # nothing to read: never waits
+    assert len(waits) == 2
+
+
+def test_raw_yuv_goes_through_the_encoder_as_bt709(tmp_path, monkeypatch):
+    """Raw 4:2:0 piped to the encoder is declared BT.709: undeclared, ffmpeg converts it from BT.601."""
+    monkeypatch.setattr(hw, "nvenc", lambda: False)
+    W, H = 64, 36
+    frame = bytes([126]) * (W * H) + bytes([100]) * (W * H // 4) + bytes([150]) * (W * H // 4)
+    out = str(tmp_path / "y.mp4")
+    render.write_frames([frame] * 5, out, "yuv420p", (W, H))
+    got = subprocess.run(["ffmpeg", "-v", "error", "-i", out, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv420p",
+                          "-"], capture_output=True, check=True).stdout
+    assert [abs(a - b) <= 1 for a, b in zip((got[0], got[W * H], got[-1]), (126, 100, 150), strict=True)] == [True] * 3
+
+
+def test_analyses_at_once_follow_the_size_and_the_memory(monkeypatch):
+    monkeypatch.delenv("FOCALCUT_STAB_JOBS", raising=False)
+    monkeypatch.setattr(render, "STAB_JOBS", 24)
+    monkeypatch.setattr(hw, "mem_gb", lambda field="MemAvailable": 41.0)
+    assert render.stab_jobs((1920, 1080)) == 24 and render.stab_jobs((1080, 1920)) == 24
+    assert render.stab_jobs((3840, 2160)) == 16 and render.stab_jobs((2160, 3840)) == 16
+    monkeypatch.setattr(hw, "mem_gb", lambda field="MemAvailable": None)       # nothing to read: by the cores
+    assert render.stab_jobs((3840, 2160)) == 24
+    monkeypatch.setenv("FOCALCUT_STAB_JOBS", "5")
+    assert render.stab_jobs((3840, 2160)) == 5
+
+
+def test_transitions_in_runs_keep_their_order_and_their_frames(tmp_path, monkeypatch):
+    """Two neighbouring transitions (they share the middle shot) and one apart: every shot keeps its length, the
+    blends land on the cuts, and the shared shot carries both."""
+    monkeypatch.setattr(hw, "nvenc", lambda: False)
+    W, H, n = 64, 36, 30
+    files, levels = [], (40, 90, 140, 190, 230)
+    for k, v in enumerate(levels):
+        f = str(tmp_path / f"shot_{k:03d}_x.mp4")
+        render.write_frames([np.full((H, W, 3), v, np.uint8)] * n, f)
+        files.append(f)
+    plan = dict(beat=0.24, shots=[dict(frames=n), dict(frames=n, transition="fade"), dict(frames=n, transition="fade"),
+                                  dict(frames=n), dict(frames=n, transition="flash")])
+    out = render.apply_transitions(plan, list(files))
+    assert out[0] != files[0] and out[1] != files[1] and out[2] != files[2] and out[3] != files[3] and out[4] != files[4]
+    assert "_i" in out[1] and "_o" in out[1]                    # the shared shot: its head, then its tail
+    got = [[float(g.mean()) for g in render.read_frames(f)] for f in out]
+    assert [len(g) for g in got] == [n] * 5
+    for k, v in enumerate(levels):
+        assert abs(got[k][n // 2] - v) <= 3                     # the middle of every shot is untouched
+    assert got[0][-1] > levels[0] + 10 and got[1][0] < levels[1] - 5          # fading 40 -> 90 across the first cut
+    assert got[1][-1] > levels[1] + 10 and got[2][0] < levels[2] - 5          # ... and 90 -> 140 across the second
+    assert got[3][-1] > levels[3] + 20 and got[4][0] > 240                    # the flash: white at the cut
