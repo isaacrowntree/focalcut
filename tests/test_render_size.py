@@ -143,7 +143,7 @@ def test_splice_replaces_the_tail_and_streams_the_rest(tmp_path, monkeypatch):
     frames = [np.full((H, W, 3), 20 + 15 * k, np.uint8) for k in range(n)]
     render.write_frames(frames, src)
     assert render.frame_count(src) == n and render.frame_size(src) == (W, H)
-    tail = render.read_frames(src, n - 3)
+    tail = render.read_frames(src, n - 3, 3)
     assert len(tail) == 3 and abs(int(tail[0].mean()) - (20 + 15 * 9)) <= 2
     head = render.read_frames(src, 0, 2)
     assert len(head) == 2 and abs(int(head[1].mean()) - 35) <= 2
@@ -165,3 +165,41 @@ def test_timer_adds_up_stages():
     t.add("overlay", 1.26)
     r = t.report()
     assert r["shots"] >= 2.0 and r["overlay"] == 1.3 and "total" in r
+
+
+def test_spotlight_is_the_same_picture_with_less_arithmetic():
+    from focalcut import fx
+    from focalcut.fx.base import dim, to_u8
+    rng = np.random.default_rng(0)
+    n, H, W = 6, 36, 64
+    frames = [rng.integers(0, 256, (H, W, 3), dtype=np.uint8) for _ in range(n)]
+    masks = rng.random((n, H, W)).astype(np.float32)
+    ctx = fx.Context(fps=50, beat=0.08)
+    ctx._masks, ctx._mask_frames = masks, n
+    got = fx.EFFECTS["spotlight"]().apply(frames, ctx)
+    ramp = max(1, int(ctx.beat * ctx.fps))
+    for i, (f, m) in enumerate(zip(frames, masks, strict=True)):
+        f = f.astype(np.float32); k = min(1.0, i / ramp); a = m[..., None]
+        want = to_u8(f * a + (f * (1 - k) + dim(f) * k) * (1 - a))             # as the effect reads
+        assert np.abs(got[i].astype(int) - want.astype(int)).max() <= 1
+        assert (got[i] != want).mean() < 1e-3
+
+
+def test_masks_of_a_4k_shot_are_made_small_and_scaled_as_used(monkeypatch):
+    import sys
+    import types
+
+    from focalcut import fx
+    from focalcut.fx.base import Scaled
+    seen = []
+
+    def fake(frames, group=False):
+        seen.append(frames.shape)
+        return np.full(frames.shape[:3], 0.5, np.float32)
+    monkeypatch.setitem(sys.modules, "focalcut.fx.masks", types.SimpleNamespace(performer_masks=fake))
+    big = [np.zeros((2160, 3840, 3), np.uint8)] * 2
+    m = fx.Context().masks(big)
+    assert seen == [(2, 1080, 1920, 3)] and isinstance(m, Scaled) and len(m) == 2
+    assert m[1].shape == (2160, 3840) and m[-1].dtype == np.float32 and [x.shape for x in m] == [(2160, 3840)] * 2
+    small = [np.zeros((1080, 1920, 3), np.uint8)] * 2
+    assert fx.Context().masks(small).shape == (2, 1080, 1920) and seen[-1] == (2, 1080, 1920, 3)

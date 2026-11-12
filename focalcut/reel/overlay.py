@@ -833,13 +833,15 @@ def _pipe(p):
 
 
 def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, enc: list, fps: int) -> None:
-    """The show over the joined shots. On a CUDA GPU the frames are composited there (composite.py) from raw 4:2:0
+    """The show over the cut: src is a video, or an ffmpeg concat list (.txt) of the shots in order. On a CUDA GPU the frames are composited there (composite.py) from raw 4:2:0
     and back, with the decode and the encode on threads of their own; without one, overlay.frame on the CPU."""
     import queue
 
     from . import composite
+    inp = ["-f", "concat", "-safe", "0", "-i", src] if src.endswith(".txt") else ["-i", src]   # a list of shots
     W, H = map(int, subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-                                             "stream=width,height", "-of", "csv=p=0", src]).decode().split(",")[:2])
+                                             "stream=width,height", "-of", "csv=p=0", *inp[:-2], inp[-1]])
+               .decode().split()[0].split(",")[:2])
     c = setup(plan, music, opts, W, H, fps)
     n, G, P = c["n"], c["G"], c["P"]
     F = features(song, plan["music_start"], n, fps)
@@ -866,7 +868,7 @@ def apply(src: str, out: str, plan: dict, music: dict, song: str, opts: dict, en
     gpu = dev is not None
     fmt_in, fmt_md = ("yuv420p", "yuv444p") if gpu else ("rgb24", "rgb24")
     size = W * H * 3 // 2 if gpu else W * H * 3
-    rd = subprocess.Popen(["ffmpeg", "-v", "error", "-i", src, "-f", "rawvideo", "-pix_fmt", fmt_in, "-"],
+    rd = subprocess.Popen(["ffmpeg", "-v", "error", *inp, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", fmt_in, "-"],
                           stdout=subprocess.PIPE)
     layer = subprocess.Popen(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", fmt_md, "-"],
                              stdout=subprocess.PIPE) if path else None

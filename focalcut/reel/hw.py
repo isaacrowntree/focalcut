@@ -49,9 +49,13 @@ GOP = FPS                # the delivered file's keyframe interval: a second, so 
 
 def enc(final: bool = False) -> list[str]:
     """Video encoder arguments for every intermediate and final picture (any size, FPS, BT.709). final: the encode
-    that is delivered as it is (the overlay's pass, the stinger), with a keyframe every GOP frames."""
+    that is delivered as it is (the overlay's pass, the stinger): a keyframe every GOP frames and, on NVENC, spatial
+    adaptive quantisation, which spends more of the same bitrate on dark, flat areas (night skies, the overlay's
+    fade to black), where coarse quantisation shows as banding. Shots stay without it: they are decoded again, and
+    plain constant quality keeps their pixels closest to the source."""
     return [*(NVENC if nvenc() else X264), "-pix_fmt", "yuv420p", "-r", str(FPS), *COLOUR,
-            *(["-g", str(GOP)] if final else [])]
+            *(["-g", str(GOP)] if final else []),
+            *(["-spatial-aq", "1", "-aq-strength", "8"] if final and nvenc() else [])]
 
 
 def run_enc(cmd: list[str], tries: int = 4) -> None:

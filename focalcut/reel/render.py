@@ -9,14 +9,16 @@ file used for each shot, read by the Premiere export).
 
 Where the time goes, and what runs beside what (measured: docs/render.md):
 
-  stabilise   pass 1 of every stabilised shot (vidstab's motion analysis, one CPU core each, no encoder), STAB_JOBS
-              at once, before anything encodes; cached per source stretch in ~/.cache/focalcut/stab
-  shots       plain shots several at once (DECODERS: Quick Sync and CPU decodes, each with an NVENC session),
-              effect shots one at a time beside them; every shot cached in work/ by a key of all that shapes it
+  shots       plain shots several at once (DECODERS: Quick Sync and CPU decodes, each with an NVENC session). A
+              stabilised shot first has its camera shake measured (vidstab's pass 1: CPU alone, no encoder,
+              STAB_JOBS at once, cached per source stretch in ~/.cache/focalcut/stab), then renders as soon as
+              a slot is free. The effect shots (SAM 3, BiRefNet) go one at a time beside all of those, from the
+              start. Every shot is cached in work/ by a key of all that shapes it
   overlay     the MilkDrop layer renders beside the shots (it needs the music and the acts, not the pictures); the
               composite runs on the GPU (composite.py), decode and encode on threads of their own
-  the rest    transitions (two shots each, streamed: only the frames inside the blend are held), the join, the mix
-              and the mux are seconds
+  the rest    transitions (two shots each, streamed: only the frames inside the blend are held), the mix and the
+              mux are seconds; the shots are read as one by the overlay and joined straight into the delivered
+              file, with no joined copies written in between
 
 Each stage's wall-clock time is printed at the end and saved to out/<cut>_timings.json.
 """
@@ -41,7 +43,11 @@ FPS = 50
 # the most. Every shot holds an NVENC session while it renders and consumer drivers allow 12 at once: these, the
 # effect shot beside them and the MilkDrop layer make 11
 DECODERS = {"qsv": 6, "cpu": 3}
-STAB_JOBS = max(2, (os.cpu_count() or 4) // 2)                 # motion analyses at once (FOCALCUT_STAB_JOBS)
+# vidstab's motion analysis is the heaviest thing a render does on the CPU (about 0.4 core-seconds per 4K frame).
+# It spreads over every core with OpenMP, at two thirds the efficiency of one thread; so each analysis gets
+# STAB_THREADS and STAB_JOBS of them run at once (FOCALCUT_STAB_JOBS)
+STAB_THREADS = 2
+STAB_JOBS = max(2, (os.cpu_count() or 4) // STAB_THREADS)
 
 
 def __getattr__(name):                                      # render.ENC: the encoder arguments (found on first use)
@@ -113,9 +119,10 @@ def stab(path, t, dur, rot):
         if not os.path.exists(trf):                # run in STAB with a bare file name: no filter-string escaping
             pre = (rot + ",") if rot else ""
             part = f"{name}.{os.getpid()}.part"    # (another render analysing it too writes its own)
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.3f}", "-t", f"{dur:.3f}", "-i", path, "-an",
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-threads", str(STAB_THREADS), "-ss", f"{t:.3f}",
+                            "-t", f"{dur:.3f}", "-i", path, "-an",
                             "-vf", f"{pre}vidstabdetect=shakiness=6:accuracy=12:result={part}", "-f", "null", "-"],
-                           check=True, cwd=STAB)
+                           check=True, cwd=STAB, env={**os.environ, "OMP_NUM_THREADS": str(STAB_THREADS)})
             os.replace(os.path.join(STAB, part), trf)   # (a render stopped mid-pass leaves no half a motion file)
     return trf
 
@@ -241,13 +248,19 @@ def frame_size(path) -> tuple:
 
 
 def read_frames(path, start=0, count=None):
-    """A shot file's frames as RGB arrays: all of them, or count of them from frame start."""
+    """A shot file's frames as RGB arrays: all of them, or count of them from frame start. Every decoded frame comes
+    out once (ffmpeg's constant-rate output would repeat the first frame of a trimmed stretch to fill the time
+    before it)."""
     W, H = frame_size(path)
     trim = [] if not start and count is None else \
-        ["-vf", f"trim=start_frame={start}" + (f":end_frame={start + count}" if count is not None else "")]
-    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, *trim, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
-                         capture_output=True, check=True).stdout
-    return list(np.frombuffer(raw, np.uint8).reshape(-1, H, W, 3))
+        ["-vf", f"trim=start_frame={start}" + (f":end_frame={start + count}" if count is not None else "")
+         + ",setpts=PTS-STARTPTS"]
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, *trim, "-fps_mode", "passthrough", "-f", "rawvideo",
+                          "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+    frames = list(np.frombuffer(raw, np.uint8).reshape(-1, H, W, 3))
+    if count is not None and len(frames) > count:
+        raise RuntimeError(f"{path}: asked for {count} frames from {start}, decoded {len(frames)}")
+    return frames
 
 
 def write_frames(frames, out):
@@ -275,8 +288,8 @@ def splice(src, out, at, new):
     held in memory whole."""
     W, H = frame_size(src)
     size_ = W * H * 3
-    rd = subprocess.Popen(["ffmpeg", "-v", "error", "-i", src, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
-                          stdout=subprocess.PIPE)
+    rd = subprocess.Popen(["ffmpeg", "-v", "error", "-i", src, "-fps_mode", "passthrough", "-f", "rawvideo",
+                           "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
 
     def frames():
         k = 0
@@ -299,8 +312,8 @@ def splice(src, out, at, new):
 def render_shots(project, plan, fmt, work, draft=False, timer=None):
     """Every shot's file (cached by key): plain shots several at once -- DECODERS["qsv"] decoding on the Intel iGPU
     and DECODERS["cpu"] on the CPU, each encoding with NVENC where there is one -- while the effect shots (which run
-    their own GPU models) go one at a time beside them. The stabilised shots' motion analysis runs first, on the CPU
-    alone, many at once."""
+    their own GPU models) go one at a time beside them. A stabilised shot's motion analysis comes first, on the CPU
+    alone, STAB_JOBS of them at once."""
     import queue
     from concurrent.futures import ThreadPoolExecutor
     timer = timer or Timer()
@@ -332,27 +345,44 @@ def render_shots(project, plan, fmt, work, draft=False, timer=None):
         out = os.path.join(work, f"shot_{i:03d}_{key(s, plan['beat'], dim)}{'_fx' if fx else ''}.mp4")
         files.append(out)
         (fxs if fx else jobs).append((s, out))
-    shaky = [s for s, out in jobs if s.get("stab") and not os.path.exists(out)]
-    if shaky:                                               # pass 1 of each, ahead of the encodes
-        def analyse(s):
+    failed = []
+
+    def shaky(s, out):                                      # a stabilised shot: its pass 1 (CPU alone, no encoder
+        if not os.path.exists(out):                         # session), then its render as soon as a slot is free
+            t0 = time.time()
             path, t = project.decode_from(s["unit"]["source"], s["src_in"])
             stab(path, t, read_length(s), s["unit"].get("rotate"))
-        with timer("stabilise"), ThreadPoolExecutor(int(os.environ.get("FOCALCUT_STAB_JOBS") or STAB_JOBS)) as ex:
-            for k, _ in enumerate(ex.map(analyse, shaky)):
-                print(f"\r[reel] {fmt}: camera shake measured on {k + 1}/{len(shaky)} shots", end="", flush=True)
-        print()
-    with timer("shots"), ThreadPoolExecutor(max(slots.qsize(), 1)) as ex:
-        futs = [ex.submit(plain, s, out) for s, out in jobs]
-        for s, out in fxs:
-            if not os.path.exists(out):
-                t0 = time.time()
-                fx_shot(project, s, fmt, s.get("beat", plan["beat"]), out + ".part.mp4")
-                os.replace(out + ".part.mp4", out)
-                timer.add("effect shots (beside the shots)", time.time() - t0)
-                print(f"\n  {'+'.join(s['fx'])}: {s['unit']['id']} @ {s['t']}s", flush=True)
-            tick()
-        for f in futs:
-            f.result()
+            timer.add("measuring camera shake (summed over shots)", time.time() - t0)
+        plain(s, out)
+
+    def plains():                                           # the steady shots, and the shaky ones through both passes
+        try:
+            t0 = time.time()
+            with ThreadPoolExecutor(max(slots.qsize(), 1)) as ex, \
+                    ThreadPoolExecutor(int(os.environ.get("FOCALCUT_STAB_JOBS") or STAB_JOBS)) as ex2:
+                futs = [(ex2.submit(shaky, s, out) if s.get("stab") else ex.submit(plain, s, out)) for s, out in jobs]
+                for f in futs:
+                    f.result()
+            timer.add("shots", time.time() - t0)
+        except BaseException as e:                          # (raised by the main thread, below)
+            failed.append(e)
+
+    side = threading.Thread(target=plains, daemon=True)
+    side.start()
+    t0 = time.time()
+    for s, out in fxs:                                      # the effect shots meanwhile, one at a time
+        if failed:
+            break
+        if not os.path.exists(out):
+            fx_shot(project, s, fmt, s.get("beat", plan["beat"]), out + ".part.mp4")
+            os.replace(out + ".part.mp4", out)
+            print(f"\n  {'+'.join(s['fx'])}: {s['unit']['id']} @ {s['t']}s", flush=True)
+        tick()
+    if fxs:
+        timer.add("effect shots (beside the shots)", time.time() - t0)
+    side.join()
+    if failed:
+        raise failed[0]
     print()
     return files
 
@@ -372,7 +402,10 @@ def apply_transitions(plan, files):
             ctx = fx.Context(fps=FPS, beat=s.get("beat", plan["beat"]), seed=i)
             tr = fx.TRANSITIONS[name]()
             n = min(tr.frames(ctx), na, nb) // 2 * 2
-            mid = tr.apply(read_frames(files[i - 1], na - n // 2), read_frames(files[i], 0, n // 2), ctx)
+            tail, head = read_frames(files[i - 1], na - n // 2, n // 2), read_frames(files[i], 0, n // 2)
+            if len(tail) != n // 2 or len(head) != n // 2:
+                raise RuntimeError(f"transition {name} at shot {i}: read {len(tail)} + {len(head)} frames, not {n}")
+            mid = tr.apply(tail, head, ctx)
             splice(files[i - 1], a_out + ".part.mp4", na - n // 2, mid[:n // 2])
             splice(files[i], b_out + ".part.mp4", 0, mid[n // 2:])
             os.replace(a_out + ".part.mp4", a_out); os.replace(b_out + ".part.mp4", b_out)
@@ -440,16 +473,14 @@ def run(project, fmt, draft=False, cut=None) -> str:
         lst = os.path.join(work, "list_shots.txt")
         with open(lst, "w") as f:
             f.writelines("file '" + p.replace("'", "'\\''") + "'\n" for p in files)
-        joined, layered = os.path.join(work, "shots.mp4"), os.path.join(work, "shots_overlay.mp4")
-        with timer("join"):
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", joined],
-                           check=True)
+        layered = os.path.join(work, "shots_overlay.mp4")
         with timer("milkdrop layer (waited for)"):
             ahead.join()
         if ahead_err:
             raise ahead_err[0]
         with timer("overlay"):
-            overlay.apply(joined, layered, plan, music, song, ov, hw.enc(final=True), FPS)
+            overlay.apply(lst, layered, plan, music, song, ov, hw.enc(final=True), FPS)   # (the shots, read as
+                                                                                           # one: no joined copy)
         files = [layered]
     stinger = project.stinger(fmt) if plan.get("stinger") else None
     with timer("stinger, join, mix and mux"):
@@ -464,9 +495,6 @@ def run(project, fmt, draft=False, cut=None) -> str:
         lst = os.path.join(work, "list.txt")
         with open(lst, "w") as f:
             f.writelines("file '" + p.replace("'", "'\\''") + "'\n" for p in files)   # (concat's own quoting)
-        video = os.path.join(work, "video.mp4")
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", video],
-                       check=True)
         mix = os.path.join(work, "mix.wav")
         mix_audio(song, plan, stinger, mix)
         err = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", mix, "-af",
@@ -474,7 +502,8 @@ def run(project, fmt, draft=False, cut=None) -> str:
                              capture_output=True, text=True).stderr
         m = json.loads(err[err.rindex("{"):err.rindex("}") + 1])
         final = os.path.join(outdir, f"{project.out_stem(cut, fmt)}{'_draft' if draft else ''}.mp4")
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", video, "-i", mix, "-map", "0:v", "-map", "1:a",
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-i", mix,
+                        "-map", "0:v", "-map", "1:a",      # (the picture joined straight into the delivered file)
                         "-af", f"loudnorm=I={I}:TP={TP}:LRA=11:linear=true:measured_I={m['input_i']}:"
                                f"measured_TP={m['input_tp']}:measured_LRA={m['input_lra']}:"
                                f"measured_thresh={m['input_thresh']}:offset={m['target_offset']},aresample=48000",

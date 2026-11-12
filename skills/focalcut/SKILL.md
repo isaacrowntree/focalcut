@@ -17,7 +17,7 @@ cd <repo> && python -m venv .venv && .venv/bin/pip install -e ".[reel]"   # once
 
 ## What every deliverable includes
 
-- **Rendered video:** 1080p 50 fps, music at −14 LUFS.
+- **Rendered video:** 1080p 50 fps (or 4K: reel.json `"resolution": "4k"`, top level, per format or per cut), music at −14 LUFS.
 - **FCP7 XML for Premiere:** the editor finishes there. Rendered shots go on V1, untouched sources on a disabled V2.
 - **Review page:** `review/<cut>.html` shows one frame per shot with a copyable picks line. Open it in a
   browser (on WSL, for example: `explorer.exe "$(wslpath -w review/<cut>.html)"`).

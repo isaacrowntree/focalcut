@@ -38,11 +38,10 @@ class Context:
             if k < 1:                                          # a 4K shot: masks made at 1080p size (SAM 3 tracks
                 import cv2
 
-                w, h = round(W * k), round(H * k)              # at 960 px and the matte at 1024 either way) and
-                                                               # scaled up, so they cost what a 1080p shot's do
+                w, h = round(W * k), round(H * k)              # at 960 px and the matte at 1024 either way), each
+                                                               # scaled up as it is used
                 small = np.stack([cv2.resize(f, (w, h), interpolation=cv2.INTER_AREA) for f in frames])
-                m = performer_masks(small, group=bool(self.params.get("group")))
-                self._masks = np.stack([cv2.resize(x, (W, H), interpolation=cv2.INTER_CUBIC) for x in m]).clip(0, 1)
+                self._masks = Scaled(performer_masks(small, group=bool(self.params.get("group"))), W, H)
             else:
                 self._masks = performer_masks(np.stack(frames), group=bool(self.params.get("group")))
             self._mask_frames = len(frames)
@@ -50,6 +49,24 @@ class Context:
 
     def peak_frame(self, n):
         return int(np.clip(round((self.peak if self.peak is not None else n / self.fps / 2) * self.fps), 0, n - 1))
+
+
+class Scaled:
+    """Masks kept small and scaled up to (H, W) one at a time, as an effect asks for them (masks[i], or in a loop):
+    a 4K shot's masks at full size would be 33 MB a frame, gigabytes for a long shot."""
+
+    def __init__(self, small, W, H):
+        self.small, self.size = small, (W, H)
+
+    def __len__(self):
+        return len(self.small)
+
+    def __getitem__(self, i):
+        import cv2
+        return cv2.resize(self.small[i], self.size, interpolation=cv2.INTER_CUBIC).clip(0, 1)
+
+    def __iter__(self):
+        return (self[i] for i in range(len(self.small)))
 
 
 class Effect:
