@@ -9,6 +9,23 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Picks mode** (reel.json `"mode": "picks"`, at the top or inside a cut; `plan.pick_story`): the reel is cut from
+  the editor's picks. Every pick plays once, whole, in the story's order with the clips woven through each other;
+  when the picks overrun the reel they give up beats in proportion, the least starred first, none under two beats,
+  and only then do picks go (named in the log); when they leave room, B-roll the editor left alone fills it; the
+  opening, `open_with`, `end_with`, `ending` and `close` are honoured; every format plays the same picks in the
+  same order at the same lengths; no coverage, people, band, quick-cut or recast pass runs. The plan log says how
+  many beats the picks ask for against what the reel has. `pick_hold`, `pick_grow`, `pick_share`,
+  `pick_clip_share`, `pick_by`, `pick_whole`, `pick_like`, `reuse` and `open_broll` are accepted and not needed.
+- **A pick's portrait strip goes to the faces first** (`plan.face_first`): on a pick, the strip re-centres on the
+  faces by it (a face cut by its edge, a kiss at its side), and where it shows no face for a second on end (a back,
+  hair, the gap between people) it goes to a face shot close instead, staying with a person through a turn of the
+  head and panning once between two friends who face the camera in turn. A far-off face never takes the strip
+  from a dancer whose own is hidden. Focal points and Follow clicks still override it;
+  `portrait_rules: {"pick_faces": false}` turns it off.
+- `plan.<fmt>.ending`'s crop centre takes `"follow"`: a single performer is framed like a pick, where a number holds
+  the scene centred.
+
 - **Picks per reel.** One `picks.json` serves the project's reel and its `cuts` (a 90 s version, say): a clip's
   `only` gives a selection, ban, prefer, opening, ending or `more` to some reels only. The source page has a Reel
   switch (each reel's shots in the lanes, other reels' picks faded; picks, bans, opening and ending made or removed
@@ -42,6 +59,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A pick on a clip the moments step found nothing in was dropped without a word; it plays now.
+- A cut that sets its own `ending` or `end_with` no longer inherits the project's `close`, which took over its
+  last shot unless the cut set `"close": null`.
 - Portrait strips follow the subject's face when the body track misses it (`plan.face_track`): on close crowd shots
   the pose boxes lost the person or settled on the one beside them, and the strip showed a shoulder, a back or the
   gap between people. Only the shot's main people's faces count, and only one near the strip already, so a bigger

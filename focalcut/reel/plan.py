@@ -80,7 +80,8 @@ _COMMON = dict(
     member_clips=[],
     band_in=dict(shows=2, night=3, climax=3),                  # band-member inserts per act
     # the reel's last shot: [export file name, from, to(, crop centre x)] in that file's own seconds (e.g. the whole
-    # room's hands in the middle, bursting up as the music ends); None: one last slow-motion move
+    # room's hands in the middle, bursting up as the music ends; crop centre "follow": one performer, followed like
+    # any shot instead of the scene held centred); None: one last slow-motion move
     ending=None,
     # shake.py's hf over the crop's width: above the second a stretch is unusable (another part of the clip is used),
     # above the first it plays stabilised
@@ -103,6 +104,7 @@ def config(project, fmt):
     cfg = copy.deepcopy(CFG[fmt])
     cfg.update((project.config.get("plan") or {}).get(fmt, {}))
     cfg.setdefault("look", project.config.get("look"))      # a glitch look for the film (fx/glitch.py LOOKS)
+    cfg.setdefault("mode", project.config.get("mode"))      # "picks": the reel is cut from the editor's picks
     return cfg
 
 
@@ -1258,8 +1260,8 @@ def apply_picks(recs, picks, only=True):
             opening = v is p.get("open")
             a, b = span(v)
             t = (a + b) / 2
-            if not r["moments"]:
-                continue
+            if not r["moments"]:                             # a clip the moments step found nothing in: the pick
+                r["moments"].append(dict(t=round(t, 2), score=0.5, kind="energy", face=0.0))   # is a moment
             near = min(r["moments"], key=lambda m: abs(m["t"] - t))
             m = near if abs(near["t"] - t) < 0.3 else dict(near, t=round(t, 2))
             if m is not near:
@@ -2402,6 +2404,326 @@ def open_broll(P, seq, recs, acts=("teaser", "arrival")):
         seq.insert(0, seq.pop(lg))
 
 
+PICK_FLOOR = 2           # picks mode: a pick trimmed for room keeps this many beats (or its own length, when shorter)
+FILL_BEATS = 3           # picks mode: a filler B-roll shot is about this long (2 to 4 beats)
+LEGACY_PICK_KEYS = ("pick_hold", "pick_grow", "pick_share", "pick_clip_share", "pick_by", "pick_whole", "pick_like",
+                    "reuse", "only_picks")   # what picks mode does by itself: accepted, not needed
+
+
+def picks_mode(cfg):
+    """Is the reel cut from the editor's picks (reel.json "mode": "picks", or plan.<fmt>.mode)?"""
+    return cfg.get("mode") == "picks"
+
+
+def home_acts(recs, cfg):
+    """record id -> the act its footage belongs in, as story() casts it: the late footage (the headliner's set) in
+    the climax, its B-roll in the finale; day B-roll and day shows in the arrival; the stage in the shows; the
+    night's shows, the social floor and the rest of the B-roll in the night."""
+    tag = lambda r: r["unit"].get("tag", "")
+    cat = lambda r: r.get("category", "")
+    out = {}
+    for r in recs:
+        if any(k in cat(r) or k in tag(r) for k in cfg["late"]):
+            out[r["id"]] = "finale" if r["role"] == "transition" else "climax"
+        elif r["role"] == "transition":
+            out[r["id"]] = "arrival" if any(k in tag(r) for k in cfg["day"]) else "night"
+        elif r["role"] == "show":
+            out[r["id"]] = "arrival" if any(k in cat(r) for k in cfg["day_shows"]) else \
+                "night" if any(k in cat(r) for k in cfg["night_shows"]) else "shows"
+        else:
+            out[r["id"]] = "night"
+    return out
+
+
+def _clarity(z):
+    """How clearly a scrub window shows its subject: framed, every rule passed, their face showing (B-roll: its
+    framing alone)."""
+    q = z["score"] * (1.0 if z["ok"] else 0.4)
+    face = (z.get("person") or {}).get("face")
+    return q * (0.5 + 0.5 * max(face)) if face else q
+
+
+def _part_score(wins, x, y):
+    """The clearest scrub window lying mostly inside x..y (0.0: none)."""
+    return max((_clarity(z) for z in wins or () if min(y, z["t1"]) - max(x, z["t0"]) >= 0.6 * min(y - x, z["t1"] - z["t0"])),
+               default=0.0)
+
+
+def best_part(wins, a, b, length):
+    """Where a pick a..b trimmed to length seconds plays from: its clearest stretch on the scrub's windows (the
+    editor chose the stretch, the planner the best of it), the editor's own in-point when nothing tells them apart."""
+    if b - a <= length + 0.05 or not wins:
+        return a
+    xs = np.arange(a, b - length + 1e-6, 0.1)
+    sc = [_part_score(wins, x, x + length) for x in xs]
+    return float(xs[int(np.argmax(sc))]) if max(sc) > sc[0] + 1e-6 else a
+
+
+SHUFFLE_REACH = 12       # card_shuffle: a pick moves at most this many places from its own to mend the cut
+
+
+def card_shuffle(items, key, broll=lambda x: False, beats=None, before=None, after=None):
+    """Picks in the order they play: the story's acts in turn (key(item) -> (act index, clip, source time)), and in
+    an act the clips in shooting order with each clip's picks fanned out around its place, so clips shot near each
+    other weave through each other and none plays as a block (a B-roll clip with many picks, the crowd, runs
+    through its whole act). Then the cut is mended by swapping picks a few places apart (SHUFFLE_REACH, inside their
+    act or into the one beside it), the fewest that do it: no clip twice in a row, no B-roll beside B-roll, and with
+    beats (item -> its length in beats) no more than two one-beat shots running nor four of the same length. before
+    / after: the clip and B-roll flag of the shots this run sits between ((clip, is B-roll) or None). The same for
+    every format: nothing here looks at framing."""
+    out = []
+    for act in sorted({key(x)[0] for x in items}):
+        group = [x for x in items if key(x)[0] == act]
+        clips = sorted({key(x)[1] for x in group})
+        pos = []
+        for ci, clip in enumerate(clips):
+            mine = sorted((x for x in group if key(x)[1] == clip), key=lambda x: key(x)[2])
+            half = min(0.5, max(1.5 * len(mine) / len(group), 1.0 / len(clips)))
+            mid = (ci + 0.5) / len(clips)
+            if broll(mine[0]) and len(mine) >= 4:            # a B-roll clip with many picks (the crowd) runs
+                mid = half = 0.5                             # through the whole act
+            for j, x in enumerate(mine):
+                pos.append((mid + ((j + 0.5) / len(mine) - 0.5) * 2 * half, clip, j, x))
+        out += [x for _, _, _, x in sorted(pos, key=lambda p: p[:3])]
+    n = len(out)
+    home = {id(x): k for k, x in enumerate(out)}
+    act, clip, br = (lambda x: key(x)[0]), (lambda x: key(x)[1]), broll
+    nb = (lambda x: beats(x)) if beats else (lambda x: None)
+    edge = lambda e: (e[0], e[1], None) if e else (None, False, None)
+
+    def at(seq, k):                                          # (clip, B-roll, beats) at k, the neighbours past the ends
+        return edge(before) if k < 0 else edge(after) if k >= n else (clip(seq[k]), br(seq[k]), nb(seq[k]))
+
+    def cost(seq, lo=0, hi=None):                            # what is wrong with the cut between lo and hi
+        c = 0.0
+        for k in range(max(lo, 0), min(n if hi is None else hi, n)):
+            (c0, b0, n0), (c1, b1, _) = at(seq, k), at(seq, k - 1)
+            c += 100 * (c0 == c1) + 10 * (b0 and b1)
+            if n0 is not None:
+                run = 1
+                while run < 5 and k - run >= 0 and at(seq, k - run)[2] == n0:
+                    run += 1
+                c += 5 * (n0 == 1 and run >= 3) + 2 * (run >= 5)
+            c += 0.01 * abs(home[id(seq[k])] - k)
+        if (hi is None or hi >= n) and after:                # the shot after the run
+            c += 100 * (at(seq, n - 1)[0] == after[0]) + 10 * (at(seq, n - 1)[1] and after[1]) if n else 0
+        return c
+    for _ in range(4 * n):                                   # the swap that mends most, until none does
+        best = None
+        for i in range(n):
+            for j in range(i + 1, min(n, i + SHUFFLE_REACH + 1)):
+                if abs(act(out[i]) - act(out[j])) > 1:
+                    continue
+                lo, hi = i - 1, j + 6
+                was = cost(out, lo, hi)
+                out[i], out[j] = out[j], out[i]
+                gain = was - cost(out, lo, hi)
+                out[i], out[j] = out[j], out[i]
+                if gain > 1e-9 and (best is None or gain > best[0]):
+                    best = (gain, i, j)
+        if best is None:
+            break
+        _, i, j = best
+        out[i], out[j] = out[j], out[i]
+    return out
+
+
+def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
+    """The reel cut from the editor's picks (reel.json "mode": "picks"): what they chose, as they chose it.
+
+      - every pick plays once, whole (to the nearest beat), in the story's order (card_shuffle); nothing is replayed,
+        cut into pieces or made into quick cuts;
+      - the picks are longer than the reel: the longest give a beat each, the least starred first (picks "stars";
+        unrated 3), none under PICK_FLOOR beats; only when that is not enough do picks go, the least starred, then
+        the least clearly seen (B-roll among B-roll, people among people), and each one is named in the log;
+      - the reel is longer than the picks: B-roll the editor left alone fills it (never a clip they picked from, or
+        banned; people footage they didn't pick only when there is no B-roll left, and the log says so);
+      - it opens on the editor's opening (picks "open", reel.json "open") under the logo, else on B-roll; the picks of
+        "open_with" follow it; the picks of "end_with" lead into the ending ("ending", picks "end"), or into the pick
+        named by "close", which then ends the reel;
+      - every format plays the same picks in the same order at the same lengths: nothing here depends on framing.
+
+    Returns (shots, acts, the picks left out as [unit id, from, to])."""
+    recs = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
+    P = Picker(fmt, recs)
+    beat = music["beat"]
+    acts = {name: (a * 4, b * 4) for name, a, b in (cfg["acts"] or default_acts(cfg, total_beats // 4))}
+    home = home_acts(recs, cfg)
+    order = {a: k for k, a in enumerate(ACT_NAMES)}
+    want = lambda m: max(1, min(PICK_BEATS, round((m["span"][1] - m["span"][0]) / beat)))
+    picks = [(r, m) for r in recs for m in r["moments"] if m.get("add") and m.get("span") and not m.get("open")]
+    picked = {r["id"] for r in recs for m in r["moments"] if m.get("add") or m.get("open")}
+
+    def used(r, m):                                          # a pick placed by hand: out of the ones to order
+        picks[:] = [x for x in picks if x[1] is not m]
+
+    # the opening: the editor's, else two B-roll clips of the event (ones they left alone first), under the logo
+    tb = max(1, min(acts["teaser"][1], video_beats) - acts["teaser"][0])
+    head = []
+    opener = next(((r, m) for r in recs for m in r["moments"] if m.get("open")), None)
+    if opener:
+        r, m = opener
+        need = round((m["span"][1] - m["span"][0]) / beat) if m.get("span") else 0
+        s = P.take(r, m, beats=max(tb, need), act="teaser")
+        s["logo"], s["open"] = "in", True
+        head.append(s)
+    else:
+        tag_rank = lambda r: next((k for k, t in enumerate(cfg["opening"]) if t in r["unit"].get("tag", "")), None)
+        wide = sorted((r for r in recs if r["role"] == "transition" and home.get(r["id"]) != "arrival"
+                       and tag_rank(r) is not None), key=lambda r: (r["id"] in picked, r["orient"] != fmt, tag_rank(r)))
+        wide = [r for k, r in enumerate(wide) if all(r["unit"]["clip"] != q["unit"]["clip"] for q in wide[:k])]
+        wide = ([r for r in wide if r["id"] not in picked] or wide)[:2]   # (a pick goes under the logo only when
+        for k, r in enumerate(wide):                         # every such clip is picked from: the most starred, the
+            mine = [m for m in r["moments"] if m.get("add") and m.get("span")]   # longest -- in every format)
+            x = (r, max(mine, key=lambda m: (m.get("stars") or 3, m["span"][1] - m["span"][0], -m["t"]))) if mine \
+                else P.best([r])
+            s = P.take(*x, beats=max(1, tb // len(wide) + (tb % len(wide) if k == 0 else 0)), act="teaser")
+            s["logo"] = "in" if k == 0 else "hold"
+            if x[1].get("add"):
+                s["add"] = True
+                used(*x)
+            head.append(s)
+
+    # the ending: the pick named by "close" ends the reel; else the configured ending shot
+    last, close = None, cfg.get("close")
+    if close:
+        c = max((x for x in picks if x[0]["unit"]["id"].startswith(close[0])
+                 and x[1]["span"][0] - 0.5 <= close[1] <= x[1]["span"][1]),
+                key=lambda x: x[1]["span"][1] - x[1]["span"][0], default=None)
+        if c:
+            used(*c)
+            last = P.take(*c, beats=want(c[1]), act="finale")
+            last["add"] = last["close"] = True
+        else:
+            print(f"[reel] {fmt}: the close {close} isn't among this reel's picks: left out")
+    end = ending_record(recs, cfg) if last is None else None
+    if end:
+        r, t = end
+        e = cfg["ending"]
+        x0 = r["unit"].get("export_t0", 0.0)
+        near = min(r["moments"], key=lambda m: abs(m["t"] - t))
+        last = P.take(r, dict(near, t=round(t, 2), kind="crowd"), act="finale",
+                      beats=max(2, math.ceil(round((e[2] - e[1]) / beat, 3))))
+        last["ending"], last["span"] = True, [round(x0 + e[1], 3), round(x0 + e[2], 3)]
+        last.pop("whole", None)
+        for x in [x for x in picks if x[0] is r and abs(x[1]["span"][0] - last["span"][0]) < 0.05]:
+            used(*x)                                         # (a pick that is the ending plays as the ending)
+
+    def named(specs, what):                                  # the picks a setting names, in its order
+        out = []
+        for uid, t in specs or ():
+            t = _secs(t) if isinstance(t, str) else float(t)
+            x = next((x for x in picks if x[0]["unit"]["id"] == uid
+                      and abs(x[1]["span"][0] - x[0]["unit"].get("export_t0", 0.0) - t) < 0.05), None)
+            if x is None:
+                print(f"[reel] {fmt}: {what}: no pick of {uid} at {t:.2f} in this reel")
+                continue
+            used(*x)
+            out.append(x)
+        return out
+    first, lead_out = named(cfg.get("open_with"), "open_with"), named(cfg.get("end_with"), "end_with")
+    pinned = {id(m) for _, m in first + lead_out}
+
+    # lengths: every pick whole; over the room, the longest give a beat each (the least starred first), then picks go
+    room = video_beats - sum(s["beats"] for s in head) - (last["beats"] if last else 0)
+    every = first + picks + lead_out
+    beats = {id(m): want(m) for _, m in every}
+    stars = lambda m: 9 if id(m) in pinned else m.get("stars") or 3
+    asked = sum(beats.values())
+    over = asked - room
+    while over > 0:
+        c = [m for _, m in every if beats[id(m)] > min(want(m), PICK_FLOOR)]
+        if not c:
+            break
+        m = max(c, key=lambda m: (-stars(m), beats[id(m)] / want(m), beats[id(m)]))   # (each the same share
+        beats[id(m)] -= 1                                    # of its length: a long pick stays a long shot)
+        over -= 1
+    dropped = []
+    if over > 0:                                             # still over at the floor: the least wanted picks go
+        wins = load_windows(project, "landscape") or load_windows(project, fmt) or {}
+        q = {}
+        for grp in (True, False):                            # each pick's place among its own kind
+            g = sorted((x for x in picks if (x[0]["role"] == "transition") == grp),
+                       key=lambda x: (_part_score(wins.get(x[0]["unit"]["id"]), *x[1]["span"]), x[1]["span"][0]))
+            q.update({id(x[1]): (k + 1) / len(g) for k, x in enumerate(g)})
+        for x in sorted(picks, key=lambda x: (stars(x[1]), q[id(x[1])])):
+            if over <= 0:
+                break
+            over -= beats.pop(id(x[1]))
+            picks.remove(x)
+            dropped.append(x)
+    while over < 0:                                          # (a dropped pick freed more than was over)
+        c = [m for _, m in first + picks + lead_out if beats[id(m)] < want(m)]
+        if not c:
+            break
+        m = max(c, key=lambda m: (stars(m), want(m) - beats[id(m)]))
+        beats[id(m)] += 1
+        over += 1
+
+    # room left: B-roll the editor left alone, a few beats each, in its own place in the story
+    fill, spare, people = [], -over, 0
+    if spare > 0:
+        free = [r for r in recs if r["id"] not in picked and (last is None or r["unit"]["id"] != last["unit"]["id"])]
+        for pool in ([r for r in free if r["role"] == "transition"], [r for r in free if r["role"] != "transition"]):
+            while spare - sum(x[2] for x in fill) >= 2:
+                x = P.best(pool, strict=True) if P.pool(pool) else None
+                if x is None:
+                    break
+                left = spare - sum(x[2] for x in fill)
+                s = P.take(*x, beats=left if left <= FILL_BEATS + 1 else FILL_BEATS, act="night")
+                s["fill"] = True
+                fill.append((x[0], x[1], s["beats"], s))
+                people += x[0]["role"] != "transition"
+        spare -= sum(x[2] for x in fill)
+
+    # the order: the acts in turn, the clips of an act woven through each other
+    key = lambda x: (order.get(home.get(x[0]["id"]), 3), x[0]["unit"]["clip"], x[1]["t"])
+    flank = lambda u: (u["clip"], u["role"] == "transition") if u else None
+    body = card_shuffle([(r, m, None, None) for r, m in picks] + fill, key, lambda x: x[0]["role"] == "transition",
+                        lambda x: x[2] if x[3] is not None else beats[id(x[1])],
+                        flank(first[-1][0]["unit"] if first else head[-1]["unit"] if head else None),
+                        flank(lead_out[0][0]["unit"] if lead_out else last["unit"] if last else None))
+    wins = load_windows(project, fmt) or {}
+    seq = list(head)
+    for r, m, n, s in [(r, m, None, None) for r, m in first] + body + [(r, m, None, None) for r, m in lead_out]:
+        if s is None:                                        # a pick: whole, or its clearest part at its length
+            n = beats[id(m)]
+            if n < want(m):
+                a = best_part(wins.get(r["unit"]["id"]), *m["span"], n * beat)
+                m = dict(m, whole=m["span"], span=[round(a, 3), round(min(m["span"][1], a + n * beat), 3)],
+                         t=round(a + n * beat / 2, 2))
+            s = P.take(r, m, beats=n, act="night")
+            s["add"] = True
+        seq.append(s)
+    if last:
+        seq.append(last)
+    spare = video_beats - sum(s["beats"] for s in seq)
+    if spare > 0:                                            # nothing left to fill with: the B-roll holds longer
+        hold = [s for s in seq if s["unit"]["role"] == "transition" and not s.get("logo")] or seq[-1:]
+        for k in range(spare):
+            hold[k % len(hold)]["beats"] += 1
+    while spare < 0 and any(s["beats"] > 1 for s in seq):    # (no picks at all, and an opening longer than the reel)
+        max(seq, key=lambda s: s["beats"])["beats"] -= 1
+        spare += 1
+    at = 0
+    for s in seq:                                            # each shot in the act its first beat falls in
+        if not s.get("logo") and s is not last:
+            s["act"] = next((a for a in ACT_NAMES if a in acts and acts[a][0] <= at < acts[a][1]), "finale")
+        at += s["beats"]
+    n_trim = sum(1 for _, m in first + picks + lead_out if beats[id(m)] < want(m))
+    x0 = lambda r: r["unit"].get("export_t0", 0.0)
+    print(f"[reel] {fmt}: picks mode: {len(first) + len(picks) + len(lead_out)} picks placed once each; they ask "
+          f"for {asked} beats and the reel has {room}"
+          + (f": {n_trim} trimmed to fit, the least starred first (star a pick to keep it whole; about "
+             f"{math.ceil((asked - room) / max(asked / max(len(every), 1), 1))} fewer picks would play them all whole)"
+             if n_trim else "")
+          + (f", {len(fill)} filler shots ({people} of people the editor didn't pick)" if fill else "")
+          + (f"; {len(dropped)} left out for room: "
+             + ", ".join(f"{r['unit']['id']} {m['span'][0] - x0(r):.2f}-{m['span'][1] - x0(r):.2f}" for r, m in dropped)
+             if dropped else ""))
+    return seq, acts, [[r["unit"]["id"], *m["span"]] for r, m in dropped]
+
+
 def transitions(seq, music, cfg, direction=None):
     """Mostly hard cuts on the beat. Each act has its own short list of transitions and a cap on each (grammar.py),
     the change of act its signature one, and a transition goes in only where the cut has its reason."""
@@ -2517,12 +2839,15 @@ def glitch_look(seq, music, look):
             seq[i]["fx"] = [name]
 
 
-def reframe(project, unit, t0, length, fmt, focus=True):
+def reframe(project, unit, t0, length, fmt, focus=True, pick=None):
     """A crop that keeps the subject centred: one zoom for the shot, the centre gliding with the dancers. None when
     the source fills the frame as it is and there is nothing to follow. The editor's focal points for this format
-    (picks "<fmt>", set in the source browser) take over the centre where there are any (focus=False: as derived)."""
-    c = _reframe(project, unit, t0, length, fmt)
+    (picks "<fmt>", set in the source browser) take over the centre where there are any (focus=False: as derived).
+    pick: the shot is one the editor chose (None: when it plays one of their in-out picks) -- a portrait strip
+    goes to the faces first (face_first)."""
     picks = project.picks()
+    pick = in_pick(picks, unit, t0, length) if pick is None else pick
+    c = _reframe(project, unit, t0, length, fmt, pick=fmt == "portrait" and pick)
     if fmt == "portrait" and (picks.get(unit["id"]) or {}).get("follow"):   # the editor's chosen person
         dense = project.path("scores", f"faces_dense_{unit['id']}.npz")
         yf = _cached(dense, lambda f: dict(np.load(f))) if os.path.exists(dense) else None
@@ -2621,7 +2946,9 @@ def _cached(path, load, also=()):
     return hit[1]
 
 
-def _reframe(project, unit, t0, length, fmt):
+def _reframe(project, unit, t0, length, fmt, pick=False):
+    """The derived crop (no focal points or follow clicks). pick: the shot is one of the editor's picks -- a narrow
+    strip goes to the faces first (face_first)."""
     W, H = SIZE[fmt]
     stem = project.path("scores", unit["score"])
     d = _cached(stem + ".npz", FR.load, (stem + "_focus.npz", stem + "_subject.npz"))
@@ -2693,7 +3020,13 @@ def _reframe(project, unit, t0, length, fmt):
     ft = None
     if narrow and person and not pan and "yf" in d:          # the strip off the face it should be on: follow the face
         main = _cached(project.path("scores", f'persons_{unit["id"].replace("#", "-")}.npz'), lambda f: dict(np.load(f)))
-        ft = face_track(d["yf"], t0, length, grid, x, y, cw, ch, zz, main)
+        ft = None
+        if pick and R["pick_faces"]:                         # an editor's pick: on the faces they picked it for
+            ub, ut = union[ok], ts
+            ft = face_first(d["yf"], t0, length, grid, x, y, cw, ch, zz,
+                            lambda t: (float(np.interp(t - t0, ut, ub[:, 3] - ub[:, 1])),
+                                       float(np.interp(t - t0, ut, ub[:, 1]))))
+        ft = ft or face_track(d["yf"], t0, length, grid, x, y, cw, ch, zz, main)
         if ft is not None:
             x, y, zz = ft["x"], ft["y"], zz * ft["zoom"]
             cw, ch = cw0 / zz, ch0 / zz
@@ -2845,6 +3178,167 @@ def face_track(yf, t0, length, grid, x, y, cw, ch, zz=1.0, main=None):
     return dict(x=xs, y=ys, zoom=zoom, held=round(now, 2))
 
 
+PICK_UNSEEN = 2.5        # face_first: what a scan (half a second) with no face in the strip costs
+PICK_MOVE = 3.0          # ... against moving the strip to another face, per frame width moved
+PICK_SWITCH = 1.5        # ... and this on top when it is another person's (further than PICK_SAME from the last)
+PICK_FAR = 0.3           # ... and what a scan on a face away from the body tracker's strip costs (not its subject)
+PICK_SAME = 0.2          # ... a face this near (of the frame) where one was a scan ago is the same person's
+PICK_NEAR = 1.0          # ... a face within this many strip widths of the body tracker's strip is by its subject
+PICK_GONE = 1.0          # ... seconds the body tracker's strip must show no face before another person may take it
+PICK_FACE = 0.4          # ... a face under this share of the biggest one's size is someone behind them
+PICK_MIN_H = 0.09        # ... and one under this share of the frame's height is too far off to be what the pick is of
+PICK_CLOSE = 0.13        # ... (to take the strip from the planner's subject: this share, a face shot close)
+PICK_HEAD = 0.15         # ... as is one under this share of the height of the person the body tracker follows
+PICK_OTHER = 0.9         # ... and nobody takes it with a face under this share of those by the strip (its subject's)
+PICK_GAIN = 0.1          # ... its strip is taken when it holds the faces this much more of the shot
+
+
+def in_pick(picks, unit, t0, length):
+    """Does a shot play one of the editor's in-out picks of this unit (most of it inside one "add" range)?"""
+    p = picks.get(unit["id"]) or {}
+    x0 = unit.get("export_t0", 0.0)
+    for v in p.get("add") or ():
+        n = _norm(v)
+        if isinstance(n, tuple) and min(t0 + length, x0 + n[1]) - max(t0, x0 + n[0]) >= 0.5 * min(length, n[1] - n[0]):
+            return True
+    return False
+
+
+def _in_strip(cx, cy, h, sx, sy, cw, ch):
+    """A face comfortably inside a strip: its middle half its height inside the strip's sides (a face as wide as
+    the strip: centred in it) and inside its top and bottom."""
+    return abs(cx - sx) <= max(cw / 2 - 0.5 * h, 0.15 * cw) and abs(cy - sy) <= ch / 2 - 0.6 * h
+
+
+def faces_held(scans, length, grid, x, y, cw, ch):
+    """How much of a shot a strip (x, y on grid; cw x ch) holds a face comfortably inside it (_in_strip), the faces
+    weighed by how much they matter: scans is [(shot time, [(cx, cy, h, worth), ...])] (the face scan, twice a
+    second); every tenth of a second the scan nearest (within 0.3 s) says where the faces are, and the worthiest
+    one in the strip counts. 1.0: the main face held throughout."""
+    if not scans:
+        return 0.0
+    ts = np.arange(0, length + 1e-6, 0.1)
+    st = np.array([t for t, _ in scans])
+    out = 0.0
+    for t in ts:
+        k = int(np.abs(st - t).argmin())
+        if abs(st[k] - t) > 0.3:
+            continue
+        sx, sy = float(np.interp(t, grid, x)), float(np.interp(t, grid, y))
+        out += max((w for cx, cy, h, w in scans[k][1] if _in_strip(cx, cy, h, sx, sy, cw, ch)), default=0.0)
+    return out / len(ts)
+
+
+def face_first(yf, t0, length, grid, x, y, cw, ch, zz=1.0, body=None):
+    """The portrait strip of an editor's pick, on the faces (concepts §12): the editor picks a stretch for the faces
+    in it -- someone clear, facing the camera, at their best -- so where the body tracker's strip (x, y on grid)
+    cuts a face at its edge or sits on a back, a shoulder or the person beside them, the strip follows the faces.
+
+    The planner's subject keeps the shot while the strip shows a face: the strip only re-centres, on the faces
+    near it (PICK_NEAR: their own face cut by its edge, a kiss at its side, the person right in front of them). Only when it shows no face for PICK_GONE seconds on end (the whole shot, if shorter) -- a back,
+    hair, the gap between people -- may it go to someone else: a face big enough to be what the pick is of
+    (PICK_FACE of the biggest, PICK_CLOSE of the frame, PICK_HEAD of the height of the person followed, body(t) ->
+    that height and their box's top: a far-off face never pulls the strip off a dancer whose own is hidden behind
+    hair or a mask, nor off someone filmed from further away whose small face the strip does show) and no smaller
+    than the faces by the strip (PICK_OTHER).
+
+    Through the faces that count, scan by scan (the persons step's, twice a second), the strip takes the cheapest
+    way: on a smaller face costs a little, on one away from the body tracker's strip a little more (PICK_FAR),
+    moving costs by how far (PICK_MOVE, and PICK_SWITCH more to another person), and staying where a face was once
+    it is gone costs PICK_UNSEEN a scan -- so it stays with a person
+    through a turn of the head, pans once between two friends who face the camera in turn, and never flickers
+    between them. Someone beside the face it is on who fits shares the strip; the face sits in the upper third,
+    and one too big for the strip zooms out as far as the frame allows.
+
+    None when no face counts, or the body tracker's strip already holds the faces nearly as well (PICK_GAIN).
+    Returns x, y on grid, the zoom factor (<= 1: out), and held: the share of the shot a face is in the new strip."""
+    sel = (yf["t"] >= t0 - 0.3) & (yf["t"] <= t0 + length + 0.3) & (yf["score"] >= FACE_SCORE) & (yf["h"] >= PICK_MIN_H)
+    rows = sorted(zip(*(np.asarray(yf[k])[sel].tolist() for k in ("t", "cx", "cy", "h", "score"))))
+    if not rows:
+        return None
+    at = lambda v, t: float(np.interp(min(max(t - t0, 0.0), length), grid, v))
+    raw = {r: r[3] * r[4] for r in rows}
+    held = {r for r in rows if _in_strip(r[1], r[2], r[3], at(x, r[0]), at(y, r[0]), cw, ch)}
+    shown = {r[0] for r in held}                             # when the strip shows a face: one it holds, or its
+    if body is not None:                                     # own subject's however small (someone filmed from
+        small = (yf["t"] >= t0 - 0.3) & (yf["t"] <= t0 + length + 0.3) & (yf["score"] >= FACE_SCORE) & \
+            (yf["h"] >= FACE_MIN_H) & (yf["h"] < PICK_MIN_H)                       # further off: still them)
+        for t, cx, cy, h in zip(*(np.asarray(yf[k])[small].tolist() for k in ("t", "cx", "cy", "h"))):
+            bh, top = body(t)
+            if _in_strip(cx, cy, h, at(x, t), at(y, t), cw, ch) and top - 0.05 <= cy <= top + 0.35 * bh:
+                shown.add(t)
+    seen = [any(abs(q - t0 - t) <= 0.25 for q in shown) for t in np.arange(0, length + 1e-6, 0.1)]
+    gone, run = 0, 0                                         # the longest stretch the strip shows no face
+    for ok in seen:
+        run = 0 if ok else run + 1
+        gone = max(gone, run)
+    near = lambda r: abs(r[1] - at(x, r[0])) <= PICK_NEAR * cw
+    if (gone - 1) * 0.1 >= min(PICK_GONE, length) - 0.15:    # a back, hair, a gap: anyone big enough, and no
+        least = PICK_FACE * max(raw.values())                # smaller than the faces by the strip (its subject's)
+        floor = max(least, PICK_OTHER * min((raw[r] for r in rows if near(r)), default=0.0))
+        ok = {r for r in rows if raw[r] >= floor and r[3] >= PICK_CLOSE and (
+            body is None or r[3] >= PICK_HEAD * body(r[0])[0])}
+        times = sorted({r[0] for r in rows})
+        for order in (times, times[::-1]):                   # (and the same person a scan on, or back: a face
+            for ta, tb in zip(order, order[1:]):             #  that shrank as they stepped away is still theirs)
+                ok |= {r for r in rows if r[0] == tb and raw[r] >= least and any(
+                    q[0] == ta and abs(q[1] - r[1]) <= PICK_SAME and r[3] >= 0.6 * q[3] for q in ok)}
+        ok = sorted(ok)
+    else:                                                    # the planner's subject keeps the shot: faces near it
+        ok = [r for r in rows if near(r)]
+        ok = [r for r in ok if raw[r] >= PICK_FACE * max(raw[q] for q in ok)]
+    if not ok:
+        return None
+    top = max(raw[r] for r in ok)
+    times = sorted({r[0] for r in ok})
+    far = {(r[1], r[2], r[3]): PICK_FAR * (not near(r)) for r in ok}
+    scans = [(t - t0, [(r[1], r[2], r[3], raw[r] / top) for r in ok if r[0] == t]) for t in times]
+    on = lambda f: 0.4 * (1 - f[3]) + far[f[:3]]            # what a scan on this face costs
+    # the cheapest way through: a state is a face of a scan, or one of an earlier scan held where it was (unseen)
+    states = [[(f, False) for f in fs] for _, fs in scans]
+    for k in range(1, len(states)):
+        states[k] += [(f, True) for f, _ in states[k - 1]]
+    best = [[on(f) for f, _ in states[0]]]
+    back = []
+    for k in range(1, len(states)):
+        cur, prev = [], []
+        for f, unseen in states[k]:
+            opts = [best[-1][j] + ((0.0 if g is f else 1e9) if unseen else
+                                   PICK_MOVE * abs(f[0] - g[0]) + (PICK_SWITCH if abs(f[0] - g[0]) > PICK_SAME else 0.0))
+                    for j, (g, _) in enumerate(states[k - 1])]
+            j = int(np.argmin(opts))
+            cur.append(opts[j] + (PICK_UNSEEN if unseen else on(f)))
+            prev.append(j)
+        best.append(cur)
+        back.append(prev)
+    j = int(np.argmin(best[-1]))
+    path = [states[-1][j][0]]
+    for k in range(len(back) - 1, -1, -1):
+        j = back[k][j]
+        path.append(states[k][j][0])
+    path = path[::-1]
+    tt = np.array([t for t, _ in scans])
+    px, py, ph = (np.array([f[i] for f in path]) for i in range(3))
+    zoom = max(min(1.0, FACE_FIT * ch / max(float(np.median(ph)), 1e-3)), 1 / zz)
+    cw2, ch2 = cw / zoom, ch / zoom
+    for k, (f, (_, fs)) in enumerate(zip(path, scans)):      # someone beside them who fits: both in the strip
+        o = next((g for g in fs if g is not f and abs(g[0] - f[0]) + (f[2] + g[2]) * 0.5 < 0.85 * cw2
+                  and g[2] >= 0.6 * f[2]), None)
+        if o and any(g is f for g in fs):
+            px[k] = 0.6 * f[0] + 0.4 * o[0]
+    g = np.exp(-0.5 * (np.arange(-9, 10) / 3) ** 2)
+    g /= g.sum()                                             # ~0.3 s, as the body track is smoothed
+    xs = np.convolve(np.pad(np.interp(grid, tt, px), 9, mode="edge"), g, mode="valid")
+    ys = np.convolve(np.pad(np.interp(grid, tt, py + (0.5 - FACE_TOP) * ch2), 9, mode="edge"), g, mode="valid")
+    xs, ys = np.clip(xs, cw2 / 2, 1 - cw2 / 2), np.clip(ys, ch2 / 2, 1 - ch2 / 2)
+    flat = [(t, [(cx, cy, h, 1.0) for cx, cy, h, _ in fs]) for t, fs in scans]
+    now = faces_held(flat, length, grid, xs, ys, cw2, ch2)
+    if faces_held(scans, length, grid, xs, ys, cw2, ch2) < faces_held(scans, length, grid, x, y, cw, ch) + PICK_GAIN \
+            and now < faces_held(flat, length, grid, x, y, cw, ch) + PICK_GAIN:
+        return None                                          # (no more of the faces, nor more of the main one)
+    return dict(x=xs, y=ys, zoom=zoom, held=round(now, 2))
+
+
 FILL_GOOD = 0.55         # window_ok: a subject this tall in the crop (of its height) or more scores in full
 
 RULES = dict(            # portrait rules: reel.json plan.<fmt>.portrait_rules (a profile can set them)
@@ -2858,6 +3352,7 @@ RULES = dict(            # portrait rules: reel.json plan.<fmt>.portrait_rules (
     look_player=0.25,    # ... a performer's further: their drums, keys, the crowd they sing to
     torn=0.3,            # share of the shot the dance partner is half in the strip, or in and out of it
     sliver=0.4,          # someone the frame edge slices, this tall (of the subject) or more, half in the strip: split
+    pick_faces=True,     # an editor's pick is framed on the faces first (face_first); false: as any other shot
     rank=0.15)           # how far an unusable moment ranks down (another part of the clip, or recast, wins)
 R = dict(RULES)          # the rules in force (build() sets them from the config)
 
@@ -3319,14 +3814,19 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     portrait_rules(cfg)
     end = pick_ending(picks)
     if end:                                                  # the editor's ending pick over reel.json's
-        cfg["ending"] = [*end, (list(cfg.get("ending") or []) + [None] * 4)[3] or 0.5]
+        cfg["ending"] = [*end, (list(cfg.get("ending") or []) + [None] * 4)[3] or 0.5]   # (its crop: as configured)
     if os.path.exists(project.path("people.json")):          # everyone in it (the people step)
         cfg["people"] = project.load("people.json")
     moments = [r for r in copy.deepcopy(moments) if project.in_cut(r["unit"])]   # a cut: its own footage
     if picks:
         apply_picks(moments, picks, only=cfg.get("only_picks", True))   # a picked clip: the editor's picks alone
     picks_only(moments, project.config.get("picks_only", ()))
-    condensed = []
+    condensed, mode = [], picks_mode(cfg)
+    if mode:                                                 # cut from the picks (pick_story): none of the
+        cfg["pick_hold"] = None                              # pick-fitting keys apply
+        old = [k for k in LEGACY_PICK_KEYS + ("open_broll",) if k in (project.own_plan.get(fmt) or {})]
+        if old:
+            print(f"[reel] {fmt}: picks mode does this itself, not needed: {', '.join(old)}")
     if cfg.get("pick_hold") and picks:                       # long picks: their best part; many: condensed
         b = music.get("beat") or float(np.median(np.diff(music["beats"])))
         condensed = pick_pieces(project, moments, fmt, b, cfg["pick_hold"], music["length"] / b, cfg.get("pick_share"),
@@ -3335,7 +3835,7 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     kp = project.config.get("keep")
     kp = "plan_{fmt}_rendered.json" if kp is True else kp    # true: the last cut rendered (render.run saves it)
     kp = kp and kp.format(fmt=project.cut_name(fmt))
-    if kp and os.path.exists(project.path(kp)):
+    if kp and os.path.exists(project.path(kp)) and not mode:
         keep_previous(moments, project.load(kp)["shots"], picks)
     close_only(project, moments, project.config.get("close_only"))
     reserve_ending(moments, cfg)
@@ -3349,21 +3849,28 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
         cfg["acts"] = music["acts"]
     cfg["sets"] = song_sets(project, music)
     video_beats = total_beats - (round(STINGER_OVERLAP / beat) if stinger_len else 0)   # the stinger covers the end
-    seq, acts = story(fmt, cfg, music, moments, video_beats, total_beats, direction, spot_rater(project, fmt))
-    if fmt == "portrait" and assess_shots:
+    if mode:
+        seq, acts, condensed = pick_story(project, fmt, cfg, music, moments, video_beats, total_beats)
+    else:
+        seq, acts = story(fmt, cfg, music, moments, video_beats, total_beats, direction, spot_rater(project, fmt))
+    if fmt == "portrait" and assess_shots and not mode:
         recast(project, fmt, seq, moments, beat)
     act_logos(seq, project.config.get("act_logos"))
     plan = place(project, fmt, seq, music, cfg, direction, stinger_len, acts)
-    if fmt == "portrait" and assess_shots:
+    if fmt == "portrait" and assess_shots and not mode:
         recast_placed(project, fmt, plan["shots"], moments, cfg)
     fm = [r for r in moments if fmt == "portrait" or r["orient"] == "landscape"]
     pace_shots(plan["shots"], cfg)                            # first: a paced shot plays more source, judged so
-    ensure_units(project, fmt, plan["shots"], fm, cfg)
-    snap_windows(project, fmt, plan["shots"], fm, cfg)        # last: whichever pass placed it, on passing windows
-    ensure_units(project, fmt, plan["shots"], fm, cfg)        # (a unit whose only shot that recast moves away)
-    if pace_shots(plan["shots"], cfg):                        # a slot that changed footage takes its own pace:
-        snap_windows(project, fmt, plan["shots"], fm, cfg)    # on passing windows at that length too
-    end_clean(project, fmt, plan["shots"], fm, cfg)
+    if mode:                                                 # the picks play as chosen and nothing is brought in
+        fm = [r for r in fm if not any(m.get("add") or m.get("open") for m in r["moments"])]   # to cover a
+        snap_windows(project, fmt, plan["shots"], fm, cfg, split=False)   # clip; only a filler shot moves, onto
+    else:                                                    # passing footage the editor left alone
+        ensure_units(project, fmt, plan["shots"], fm, cfg)
+        snap_windows(project, fmt, plan["shots"], fm, cfg)        # last: whichever pass placed it, on passing windows
+        ensure_units(project, fmt, plan["shots"], fm, cfg)        # (a unit whose only shot that recast moves away)
+        if pace_shots(plan["shots"], cfg):                        # a slot that changed footage takes its own pace:
+            snap_windows(project, fmt, plan["shots"], fm, cfg)    # on passing windows at that length too
+        end_clean(project, fmt, plan["shots"], fm, cfg)
     mo = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
     plan["units_total"] = len({r["id"] for r in mo})
     plan["music_length"] = music["length"]
@@ -4069,10 +4576,11 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
     def frame(s):
         """The shot's crop (following its subject over the stretch it plays) and shake, from its in-point."""
         u, L = s["unit"], s["length"]
-        s["crop"] = reframe(project, u, s["src_in"], L, fmt)
-        if s.get("ending") and s["crop"]:                    # the whole scene, centred: no following one person
+        at = (list(cfg["ending"]) + [0.5])[3] if s.get("ending") else None
+        s["crop"] = reframe(project, u, s["src_in"], L, fmt, pick=True if at == "follow" else None)
+        if s.get("ending") and s["crop"] and at != "follow":   # the whole scene, centred: no following one person
             s["crop"] = dict(w=s["crop"]["w"] * s["crop"]["z"], h=s["crop"]["h"] * s["crop"]["z"], z=1.0,
-                             path=[[0, (list(cfg["ending"]) + [0.5])[3], 0.5]])
+                             path=[[0, at, 0.5]])            # ("follow": one performer -- framed as a pick is)
         j = shake.jitter(project, u, s["src_in"], s["src_in"] + L)
         j = j / max((s["crop"] or {}).get("w", 1.0), 0.2) if j is not None else None
         s["jitter"] = round(j, 5) if j is not None else None
@@ -4208,7 +4716,8 @@ def run(project, fmt, stinger_len=0.0) -> dict:
         for line in bad:
             print(f"[reel]     {line}")
     print("[reel]   effects:", {f: fxs.count(f) for f in sorted(set(fxs))})
-    coverage_report(project, fmt, plan)
+    if not picks_mode(config(project, fmt)):                 # (cut from the picks: nothing else is meant to be in)
+        coverage_report(project, fmt, plan)
     window_report(project, fmt, plan)
     for line in V.speed_tails(plan):                         # every shot ends at real speed
         print(f"[reel]   WARNING speed: {line}")

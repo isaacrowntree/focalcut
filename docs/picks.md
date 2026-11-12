@@ -61,6 +61,64 @@ reel.json `"picks"` takes the same shape and merges over `picks.json`.
 - **The pick check.** After every plan, `pick_report` lists any pick that is missing, short, sped up, doubled, or has
   another shot over its footage. A clean plan prints nothing.
 
+### A reel cut from the picks: `"mode": "picks"`
+
+When the editor has picked the reel (a 90-second cut made almost entirely of their selections, say), set
+`"mode": "picks"` at the top of reel.json, or inside one of its `cuts`. The planner then cuts the reel from the
+picks and nothing else needs setting:
+
+- **Every pick plays once, whole** (to the nearest beat), and nothing is replayed, cut into pieces or made into
+  quick cuts. A pick on a clip the moments step found nothing in still plays.
+- **In the story's order.** The acts run in turn (day, the stage, the night, the headliner), and within an act the
+  clips are woven through each other in shooting order, so no clip plays as a block; no clip cuts to itself, B-roll
+  never sits beside B-roll, and runs of one-beat or equal-length shots are broken up.
+- **More picks than reel:** the picks give up beats, each the same share of its length, the least starred first,
+  and none goes under two beats (or its own length, if shorter). Stars keep a pick whole: an unstarred pick is
+  trimmed before a starred one. A trimmed pick plays its clearest part. Only when every pick is down to two beats do
+  picks go, the least starred, then the least clearly seen, and the plan log names each one. The log also says how
+  many beats the picks ask for against how many the reel has, and roughly how many fewer picks would play whole.
+- **More reel than picks:** B-roll from clips the editor left alone fills the rest, a few beats a shot. Never a clip
+  they picked from or banned, and no people footage they didn't pick unless the B-roll runs out (the log says so).
+- **The opening and ending are theirs.** It opens on the pick marked Opening (or reel.json `"open"`) under the logo,
+  else on B-roll; `plan.<fmt>.open_with` names the picks that follow the logo and `end_with` those that lead into
+  the ending; the last shot is `plan.<fmt>.ending` (or the pick marked Ending), or the pick named by `close`.
+  `"ending": [file, from, to, "follow"]` frames a single performer the way a pick is framed, where a number (or
+  nothing) holds the whole scene centred.
+- **Every format plays the same picks,** in the same order at the same lengths: nothing in the cut looks at
+  framing.
+- **No coverage passes.** Nothing is brought in to cover a clip, a person or the band, and nothing is recast.
+
+```json
+"cuts": {"short": {"mode": "picks", "length": 97.2, "formats": ["landscape", "portrait"],
+  "open": {"C2087_crowd-night": "0:24.00-0:28.00"},
+  "plan": {"landscape": {"open_with": [["C2122", "0:30.62"]], "end_with": [["C2122", "2:37.23"]],
+                         "ending": ["C2119_dj-topic-headline", 91.0, 93.9, "follow"]}}}}
+```
+
+The keys below (`pick_hold`, `pick_share`, `pick_clip_share`, and `pick_grow`, `pick_by`, `pick_whole`,
+`pick_like`, `reuse`, `open_broll`) are for a reel the planner cuts with the picks mixed in. Picks mode accepts
+them and does not need them.
+
+A cut that says how it ends (`ending` or `end_with` in its own `plan.<fmt>`) no longer takes the project's `close`
+as well.
+
+### Portrait: a pick is framed on the faces
+
+The editor picks a stretch for the faces in it. In a portrait strip cut from a landscape frame, the body tracker
+can cut a face at the strip's edge, or sit on a back, a shoulder or the person beside them, so a pick's strip goes
+to the faces first (`plan.face_first`, on the persons step's face scan):
+
+- **The planner's subject keeps the shot while the strip shows a face.** The strip only re-centres, on the faces
+  by it: their own face cut by its edge, a kiss at its side, the person right in front of them.
+- **Only when it shows no face for a second on end** (the whole shot, if shorter) may it go to someone else, and
+  only to a face shot close (13% of the frame's height, and a head's size for the person followed). A far-off face
+  never pulls the strip off a dancer whose own is hidden behind hair or a mask.
+- It stays with a person through a turn of the head, pans once between two friends who face the camera in turn,
+  shares the strip with someone beside them who fits, and centres a face bigger than the strip.
+
+The editor's focal points and Follow clicks still override it, shots the planner chose itself are framed as
+before, and `plan.portrait.portrait_rules: {"pick_faces": false}` turns it off.
+
 ### When there are more picks than reel
 
 An editor can pick more footage than the song holds. The planner then condenses the picks:
