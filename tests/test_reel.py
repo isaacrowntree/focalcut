@@ -591,7 +591,7 @@ def test_source_browser_page_and_server_save_picks(tmp_path):
     clip = dict(id="C1", cat="night", tag="", clock="21:00", sort="1", dur=10.0, video="v.mp4", strip="sources/C1.jpg",
                 step=1.0, n=10, moments=[[2.0, "spin"]], L=[[1.0, 2.0, 5]], P=[])
     html_ = browse.page([clip], {"C1": {"add": ["0:01-0:02"]}})
-    assert '"id": "C1"' in html_ and "Play all" in html_ and 'D.root+"api/picks"' in html_ and "api/crop" in html_
+    assert '"id": "C1"' in html_ and "Play all" in html_ and "api/picks" in html_ and "api/crop" in html_
     assert '"/api/' not in html_ and "`/api/" not in html_                   # relative: works under any prefix
     pr, _, _ = fake_reel(tmp_path)
     os.makedirs(pr.path("review"), exist_ok=True)
@@ -753,7 +753,7 @@ def test_review_page_lists_every_shot_with_a_picks_line():
              dict(unit=dict(id="C301"), src_in=3.0, length=2.4, act="shows", kind="spin", fx=["hero"])]
     html_ = review.page(dict(shots=shots), "portrait", ["portrait/001.jpg", None])
     assert html_.count("<figure data-i=") == 2 and 'src="portrait/001.jpg"' in html_
-    assert "Mark extra shot (M)" in html_ and '"id": "C300_band", "a": 63.5' in html_   # the scrubber's data
+    assert "Mark extra shot <kbd>M</kbd>" in html_ and '"id": "C300_band", "a": 63.5' in html_   # the scrubber's data
     assert review.pick_line(shots[0]) == '"C300_band": {"ban": ["1:03.5-1:04.7"]}'   # export time = source - 12 s
     assert "&quot;C301&quot;: {&quot;ban&quot;: [&quot;0:03.0-0:05.4&quot;]}" in html_
     assert "prefers-color-scheme" in html_

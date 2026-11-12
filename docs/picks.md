@@ -10,15 +10,26 @@ picks always win.** No rule the planner follows (fair share, framing, rhythm, co
 focalcut reel serve "/footage/Show 2026"        # http://localhost:8765/
 ```
 
-- **Sources** (`review/sources.html`) lists every export clip in a big player over a wide, zoomable timeline. The
-  timeline shows a filmstrip, the moments the planner found and where each reel uses the clip. Mark as many in-out
-  selections per clip as you like. In portrait it also shows the planner's crop and takes focal points you set. The
-  Picks view plays the whole cut, landscape or portrait, with your picks in place.
-- **Review** (`review/<fmt>.html`) shows one frame per shot of the rendered reel. Each frame has a copyable picks line
-  and a **Scrub source** button that opens the clip it came from.
+- **Sources** (`review/sources.html`) has three views, each a list on the left and the picture with its tools on
+  the right (`Tab` moves between them, `?` lists every key, and the **Reel** switch in the header chooses the reel
+  you are working on):
+  - **Clips** lists every export clip in a big player over a wide, zoomable timeline. The timeline shows a
+    filmstrip, the moments the planner found and where the reel uses the clip. Mark as many in-out selections per
+    clip as you like, star them, tick the reels they are for, ban stretches.
+  - **Cut & picks** is the cut shot by shot, landscape or portrait, with your picks in place: trim, slip, star,
+    make one the opening or the ending, drop shots one at a time or many at once.
+  - **Frame portrait** is the reel's portrait cut shot by shot with the 9:16 crop over the picture and the cropped
+    result beside it. **Drag** the frame to pan the crop; **click a dancer** to have the crop follow them through
+    the shot; `Backspace` gives the shot back to the planner. The shot's state (the planner's framing, your pan,
+    following) shows in the header and in the list. `sources.html#frame=<reel>` opens it on a reel.
+- **Review** (`review/<cut>.html`) shows one frame per shot of the rendered reel, with **Ban**, **More** and a
+  **Scrub** button that opens the clip it came from (portrait pages also link each shot to its framing).
 
-Served, the pages save `focalcut/reel/picks.json` on every change and keep the previous file as `picks.json.bak`.
-Opened as plain files, they keep changes in the browser and offer Copy and Download.
+Served, the pages save `focalcut/reel/picks.json` on every change. The previous file is kept as `picks.json.bak`
+and a copy every ten minutes of editing in `picks_history/`. Several pages can be open on one project: a page
+saves only onto the file it last saw, and merges with what another page changed meanwhile. `Ctrl+Z` undoes one
+change at a time (`Ctrl+Shift+Z` redoes). Opened as plain files, the pages keep changes in the browser and offer
+Copy and Download (in **More**).
 
 ## picks.json
 

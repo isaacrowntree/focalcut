@@ -1,0 +1,1055 @@
+/* The source browser: three views (Clips, Cut & picks, Frame portrait), each a list on the left and a player with
+   its tools on the right; only the list scrolls, so the picture never leaves the screen. */
+html,
+body {
+  height: 100%;
+}
+body {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  overflow: hidden;
+}
+#counts b {
+  color: var(--fg);
+}
+#counts .y b {
+  color: var(--sel);
+}
+#counts .f b {
+  color: var(--io);
+}
+#counts .x b {
+  color: var(--ban);
+}
+.view {
+  display: none;
+  grid-template-columns: var(--side, 290px) minmax(0, 1fr);
+  min-height: 0;
+}
+.view.on {
+  display: grid;
+}
+.side {
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.scroll {
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+}
+.sidehead {
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+}
+.main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px;
+  gap: 8px;
+}
+.main h2 {
+  font-size: 16px;
+  margin: 0;
+}
+.row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.row .gap {
+  width: 8px;
+}
+button.wide {
+  min-width: 84px;
+}
+.hint {
+  color: var(--mut);
+  font-size: 12px;
+  margin: 2px 0 0;
+  line-height: 1.8;
+}
+.hint a,
+#fhelp a {
+  color: var(--port);
+}
+.emptystate {
+  margin: auto;
+  color: var(--mut);
+  text-align: center;
+  max-width: 46ch;
+  padding: 40px 0;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+/* --- the picture --- */
+.stage {
+  background: #000;
+  border-radius: 8px;
+  position: relative;
+  height: min(50vh, 560px);
+  flex: none;
+  overflow: hidden;
+}
+.stage video,
+.still {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.still {
+  background-repeat: no-repeat;
+  display: none;
+}
+.still.on {
+  display: block;
+}
+.tc {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  background: #000a;
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font: 600 13px ui-monospace, monospace;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* --- Clips: the list --- */
+#filters {
+  padding: 8px;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--line);
+}
+#filters button {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.ci {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  align-items: center;
+}
+.ci:hover {
+  background: var(--card);
+}
+.ci.cur {
+  background: var(--card);
+  box-shadow: inset 3px 0 var(--io);
+}
+.ci.out > * {
+  opacity: 0.45;
+}
+.ci .th {
+  width: 96px;
+  height: 54px;
+  border-radius: 4px;
+  background-color: #000;
+  position: relative;
+}
+.ci .th b {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  background: var(--sel);
+  color: var(--on-sel);
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+.ci .nm {
+  font-weight: 600;
+  word-break: break-all;
+  font-size: 12px;
+}
+.ci .meta {
+  color: var(--mut);
+  font-size: 11px;
+}
+.ci.seen .th::after {
+  content: "✓";
+  position: absolute;
+  left: 3px;
+  top: 2px;
+  color: #fff;
+  font-size: 11px;
+  text-shadow: 0 0 3px #000;
+}
+#cliphead,
+#selhead,
+#fhead {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+#io {
+  font: 12px ui-monospace, monospace;
+  color: var(--io);
+}
+
+/* --- timelines --- */
+.tl {
+  position: relative;
+  user-select: none;
+  touch-action: none;
+  border-radius: 6px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  flex: none;
+}
+.tl i {
+  position: absolute;
+  display: block;
+  font-style: normal;
+}
+#ov {
+  height: 30px;
+  cursor: pointer;
+  overflow: hidden;
+}
+#ov canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.55;
+}
+#tl {
+  cursor: crosshair;
+}
+#ruler {
+  height: 20px;
+  position: relative;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+#strip {
+  height: 80px;
+  position: relative;
+  cursor: pointer;
+}
+#strip canvas,
+#pstrip canvas,
+#fstrip canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.lane {
+  position: relative;
+  border-top: 1px solid var(--line);
+}
+.lane .lab {
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10px;
+  color: var(--mut);
+  pointer-events: none;
+  z-index: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+#lsel {
+  height: 34px;
+  cursor: copy;
+}
+#lland,
+#lport {
+  height: 20px;
+  cursor: cell;
+}
+.tk {
+  top: 12px;
+  bottom: 0;
+  width: 1px;
+  background: var(--line);
+}
+.tk.big {
+  top: 6px;
+  background: var(--mut);
+}
+.lb {
+  top: 1px;
+  font-size: 10px;
+  color: var(--mut);
+  transform: translateX(3px);
+  white-space: nowrap;
+}
+.mom {
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--mom);
+  opacity: 0.85;
+  pointer-events: none;
+}
+.blk {
+  top: 3px;
+  bottom: 3px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--sel) 45%, transparent);
+  border: 2px solid var(--sel);
+  cursor: grab;
+  font-size: 11px;
+  color: var(--fg);
+  padding-left: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.blk.act {
+  background: color-mix(in srgb, var(--sel) 80%, transparent);
+  color: var(--on-sel);
+}
+.blk.away {
+  opacity: 0.4;
+  border-style: dashed;
+  background: transparent;
+}
+.blk .h {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: ew-resize;
+  background: var(--sel);
+  opacity: 0;
+}
+.blk .h.l {
+  left: 0;
+}
+.blk .h.r {
+  right: 0;
+}
+#lsel .blk:hover .h {
+  opacity: 0.9;
+}
+.pend {
+  top: 3px;
+  bottom: 3px;
+  border: 2px dashed var(--io);
+  background: color-mix(in srgb, var(--io) 22%, transparent);
+  border-radius: 4px;
+  pointer-events: none;
+}
+.pt {
+  top: 2px;
+  bottom: 2px;
+  width: 3px;
+  background: var(--sel);
+  border-radius: 2px;
+}
+.ban {
+  top: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--ban) 45%, transparent) 0 6px, transparent 6px 12px);
+  pointer-events: none;
+}
+.use {
+  top: 2px;
+  bottom: 2px;
+  border-radius: 3px;
+  opacity: 0.9;
+  font-size: 10px;
+  color: #000;
+  overflow: hidden;
+  padding-left: 2px;
+  cursor: copy;
+}
+#lland .use {
+  background: var(--land);
+}
+#lport .use {
+  background: var(--port);
+}
+.use:hover {
+  outline: 2px solid var(--fg);
+}
+.use.out {
+  opacity: 0.25;
+  text-decoration: line-through;
+}
+.use.out .ux {
+  display: none !important;
+}
+.use .ux {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  line-height: 15px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  background: #0007;
+  color: #fff;
+  cursor: pointer;
+  display: none;
+}
+.use:hover .ux {
+  display: block;
+}
+.use .ux:hover {
+  background: var(--ban);
+}
+.rub {
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--ban) 30%, transparent);
+  border: 1px solid var(--ban);
+  pointer-events: none;
+  z-index: 2;
+}
+.empty {
+  left: 90px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--mut);
+  font-size: 11px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.ph {
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--ph);
+  pointer-events: none;
+  z-index: 3;
+  margin-left: -1px;
+}
+.inm,
+.outm {
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--io);
+  pointer-events: none;
+  z-index: 2;
+}
+.win {
+  top: 0;
+  bottom: 0;
+  border: 2px solid var(--io);
+  border-radius: 4px;
+  pointer-events: none;
+}
+.fk {
+  top: 1px;
+  bottom: 1px;
+  width: 6px;
+  margin-left: -3px;
+  background: var(--io);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 2;
+}
+.fk.fl {
+  background: var(--port);
+  outline: 1px solid #fff;
+}
+#hover {
+  position: fixed;
+  display: none;
+  pointer-events: none;
+  z-index: 9;
+  background: #000;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px;
+  color: #fff;
+  font: 11px ui-monospace, monospace;
+  text-align: center;
+}
+#hover div {
+  width: 192px;
+  height: 108px;
+  background-repeat: no-repeat;
+  border-radius: 3px;
+}
+
+/* --- a clip's selections --- */
+#mysel table {
+  border-collapse: collapse;
+  width: 100%;
+}
+#mysel td,
+#mysel th {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+#mysel th {
+  color: var(--mut);
+  font-weight: 500;
+  font-size: 11px;
+}
+#mysel tr.act td {
+  background: var(--card);
+}
+#mysel tr.away td:not(:last-child) {
+  opacity: 0.5;
+}
+#mysel td:last-child {
+  text-align: right;
+}
+.stars {
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+}
+.stars b {
+  cursor: pointer;
+  color: var(--io);
+  font-size: 16px;
+  padding: 0 1px;
+  line-height: 1;
+}
+.stars b:hover {
+  transform: scale(1.25);
+}
+.rk {
+  font-size: 12px;
+  color: var(--mut);
+  white-space: nowrap;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.rk input {
+  accent-color: var(--sel);
+  margin: 0;
+}
+.grp {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  color: var(--mut);
+  font-size: 11px;
+}
+.grp + .grp {
+  padding-left: 8px;
+  border-left: 1px solid var(--line);
+}
+.grp button {
+  padding: 3px 7px;
+  font-size: 12px;
+}
+.grp .lab {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+#preels button.on,
+#pfirst.on,
+#plast.on {
+  background: var(--sel);
+  color: var(--on-sel);
+  border-color: var(--sel);
+}
+.len {
+  font: 600 14px ui-monospace, monospace;
+  margin: 0 6px;
+}
+
+/* --- Cut & picks --- */
+#selview {
+  --side: clamp(330px, 31vw, 640px);
+}
+#seltot {
+  font-size: 12px;
+}
+#bulk {
+  display: none;
+  gap: 6px;
+  align-items: center;
+  padding: 5px 8px;
+  border: 1px solid var(--io);
+  border-radius: 8px;
+}
+#bulk.on {
+  display: flex;
+}
+#cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  padding: 8px;
+  align-content: start;
+  grid-auto-rows: max-content;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+}
+.card:hover {
+  border-color: var(--mut);
+}
+.card.act {
+  outline: 2px solid var(--io);
+  outline-offset: -1px;
+}
+.card.chk {
+  outline: 2px solid var(--io);
+}
+.card.chk .th {
+  opacity: 0.6;
+}
+.card .th {
+  aspect-ratio: 16/9;
+  background-color: #000;
+  background-repeat: no-repeat;
+  position: relative;
+}
+.card .th span {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  background: #000a;
+  color: #fff;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 11px;
+}
+.card .ck {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  cursor: pointer;
+  opacity: 0;
+  accent-color: var(--io);
+}
+.card:hover .ck,
+.card .ck:focus,
+.card .ck:checked,
+#cards.picking .ck {
+  opacity: 1;
+}
+.card .bd {
+  padding: 5px 7px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.card .bd small {
+  color: var(--mut);
+  display: block;
+}
+.card .nm {
+  word-break: break-all;
+}
+.card .tag {
+  font-size: 10px;
+  border-radius: 6px;
+  padding: 0 5px;
+  background: var(--sel);
+  color: var(--on-sel);
+  white-space: nowrap;
+}
+.card .tag.role {
+  background: var(--io);
+  color: #000;
+}
+.card .st {
+  color: var(--io);
+}
+.card [data-del] {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 0 6px;
+  opacity: 0;
+}
+.card:hover [data-del],
+.card [data-del]:focus {
+  opacity: 1;
+}
+.catgrp {
+  grid-column: 1/-1;
+  font-weight: 600;
+  color: var(--mut);
+  margin-top: 6px;
+  font-size: 12px;
+}
+#seq {
+  display: flex;
+  height: 22px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  flex: none;
+}
+#seq i {
+  display: block;
+  height: 100%;
+  border-right: 1px solid var(--bg);
+  background: var(--sel);
+  opacity: 0.75;
+  cursor: pointer;
+  min-width: 1px;
+}
+#seq i.new {
+  background: var(--mut);
+}
+#seq i.cut {
+  background: var(--land);
+  opacity: 0.45;
+}
+#seq i.cut.p {
+  background: var(--port);
+}
+#seq i:hover,
+#seq i.act,
+#seq i.chk {
+  opacity: 1;
+  background: var(--io);
+}
+#ped {
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+}
+#ped.on {
+  display: flex;
+}
+#pvwrap {
+  height: min(46vh, 520px);
+}
+#vwrap {
+  height: min(44vh, 540px);
+}
+#pruler {
+  height: 18px;
+  position: relative;
+  border-bottom: 1px solid var(--line);
+}
+#pruler .lb {
+  color: var(--fg);
+  font-weight: 600;
+}
+#pstrip {
+  height: 64px;
+  position: relative;
+  cursor: crosshair;
+}
+#pstrip .blk {
+  top: 2px;
+  bottom: 2px;
+  background: transparent;
+  border-width: 3px;
+  color: #fff;
+  text-shadow: 0 0 3px #000;
+}
+#pstrip .blk .h {
+  width: 12px;
+}
+#pstrip .blk .h:hover {
+  opacity: 0.6;
+}
+.dim {
+  top: 0;
+  bottom: 0;
+  background: #000b;
+  pointer-events: none;
+}
+.oth {
+  top: 40%;
+  bottom: 40%;
+  background: var(--sel);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* --- the portrait frame over a picture --- */
+.fr {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  touch-action: none;
+}
+.fr.on {
+  pointer-events: auto;
+  cursor: grab;
+}
+.fr.on.drag {
+  cursor: grabbing;
+}
+.fr.follow {
+  cursor: crosshair;
+}
+.fr i {
+  position: absolute;
+  pointer-events: none;
+}
+.fbox {
+  border: 2px solid var(--io);
+  border-radius: 3px;
+}
+.fbox.act {
+  box-shadow: 0 0 0 9999px #000a;
+}
+.fbox.act.pan {
+  border-color: var(--sel);
+}
+.fbox.act.follow {
+  border-color: var(--port);
+}
+.fbox.der {
+  border: 2px dashed #fff8;
+}
+.fdot {
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  border: 2px solid #000;
+  background: var(--io);
+}
+.fpin {
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  border-radius: 50%;
+  border: 3px solid var(--port);
+  box-shadow: 0 0 0 2px #000a, inset 0 0 0 2px #000a;
+}
+.frl {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  background: #000c;
+  color: #fff;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  pointer-events: none;
+  max-width: calc(100% - 16px);
+}
+.frl b {
+  color: var(--io);
+}
+button.frt.on {
+  background: var(--io);
+  color: #000;
+  border-color: var(--io);
+}
+button.fol.on {
+  background: var(--port);
+  color: #fff;
+  border-color: var(--port);
+}
+
+/* --- Frame portrait --- */
+#frameview {
+  --side: 300px;
+}
+#fshots {
+  padding: 6px;
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  grid-auto-rows: max-content;
+}
+.fs {
+  display: grid;
+  grid-template-columns: 45px 1fr;
+  gap: 8px;
+  padding: 4px;
+  border-radius: 8px;
+  cursor: pointer;
+  align-items: center;
+  border: 1px solid transparent;
+}
+.fs:hover {
+  background: var(--card);
+}
+.fs.cur {
+  background: var(--card);
+  border-color: var(--io);
+}
+.fs .th {
+  width: 45px;
+  height: 80px;
+  border-radius: 4px;
+  background-color: #000;
+  background-repeat: no-repeat;
+}
+.fs .nm {
+  font-weight: 600;
+  font-size: 12px;
+  word-break: break-all;
+}
+.fs small {
+  color: var(--mut);
+  display: block;
+  font-size: 11px;
+}
+.badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 8px;
+  padding: 0 7px;
+  background: var(--line);
+  color: var(--mut);
+}
+.badge.pan {
+  background: var(--sel);
+  color: var(--on-sel);
+}
+.badge.follow {
+  background: var(--port);
+  color: #fff;
+}
+.fstate {
+  font-weight: 600;
+  padding: 3px 12px;
+  border-radius: 14px;
+  background: var(--line);
+  color: var(--fg);
+  transition: background 0.2s;
+}
+.fstate.pan {
+  background: var(--sel);
+  color: var(--on-sel);
+}
+.fstate.follow {
+  background: var(--port);
+  color: #fff;
+}
+.fstate.warn {
+  background: var(--io);
+  color: #000;
+}
+.fstate.flash {
+  animation: flash 0.7s;
+}
+@keyframes flash {
+  0% {
+    transform: scale(1.12);
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--io) 50%, transparent);
+  }
+}
+#fbody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+#fstagewrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: stretch;
+}
+#fwrap {
+  height: min(56vh, 620px);
+}
+#fprev {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  height: min(56vh, 620px);
+}
+#fprev canvas {
+  height: calc(100% - 22px);
+  aspect-ratio: 9/16;
+  width: auto;
+  background: #000;
+  border-radius: 8px;
+  border: 2px solid var(--line);
+}
+#fprev.pan canvas {
+  border-color: var(--sel);
+}
+#fprev.follow canvas {
+  border-color: var(--port);
+}
+#fprev figcaption {
+  font-size: 11px;
+  color: var(--mut);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+#fstrip {
+  height: 56px;
+  position: relative;
+  cursor: pointer;
+}
+
+/* --- small screens: the views stack, the page scrolls --- */
+@media (max-width: 860px) {
+  html,
+  body {
+    height: auto;
+  }
+  body {
+    overflow: auto;
+    display: block;
+  }
+  .view.on {
+    display: block;
+  }
+  .side {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    max-height: 34vh;
+  }
+  .main {
+    overflow: visible;
+  }
+  .stage,
+  #fwrap,
+  #pvwrap {
+    height: 56vw;
+  }
+  #fstagewrap {
+    grid-template-columns: 1fr;
+  }
+  #fprev {
+    height: 60vw;
+  }
+  .bar1,
+  .bar2 {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  #counts {
+    display: none;
+  }
+}

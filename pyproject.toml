@@ -72,7 +72,7 @@ focalcut = "focalcut.cli:main"
 include = ["focalcut*"]
 
 [tool.setuptools.package-data]
-"focalcut.reel" = ["milkdrop/*.mjs"]
+"focalcut.reel" = ["milkdrop/*.mjs", "web/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

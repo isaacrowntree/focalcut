@@ -1,0 +1,59 @@
+<header id=bar>
+<div class=bar1>
+<h1>%PROJECT% <small>%REEL% · %FMT% · %N% shots</small></h1>
+<span id=count class=mut></span>
+<span class=sp></span>
+<span id=saved class=save></span>
+<span class=seg><button id=undo title="undo (Ctrl+Z)" aria-label=undo disabled>↶ Undo</button><button id=redo title="redo (Ctrl+Shift+Z)" aria-label=redo disabled>↷</button></span>
+<button id=helpb title="every key (?)">Keys <kbd>?</kbd></button>
+<details class=menu><summary title="picks.json and the theme">More</summary><div>
+<button id=copy title="copy picks.json to the clipboard">Copy picks.json</button>
+<button id=dl title="download picks.json">Download picks.json</button>
+<button id=reset hidden title="drop the changes kept in this browser">Reset to the page's picks</button>
+<small>Theme</small><span class=seg><button data-theme-set=auto>Auto</button><button data-theme-set=dark>Dark</button><button data-theme-set=light>Light</button></span>
+</div></details>
+</div>
+<div class=bar2>%NAV%<span class=sp></span><span>picks made here are for <b>%REEL%</b> only</span></div>
+</header>
+<p class=how>Every shot of the cut as it stands. <b>Ban</b> a shot and the next re-plan puts something else there; <b>Scrub</b> opens the clip it comes from, to mark extra shots
+(<kbd>M</kbd>), swap the shot for another moment (<kbd>S</kbd>) or prefer a range (<kbd>P</kbd>); <b>More</b> asks for more shots from that clip. Then re-run
+<code>--steps plan,render,xml,review</code>.</p>
+<main>%CARDS%</main>
+<dialog id=dlg><div class=row style="justify-content:space-between"><b id=title></b>
+<button id=close>Close <kbd>Esc</kbd></button></div>
+<video id=vid preload=auto playsinline muted></video>
+<div id=tl class=tl title="whole video: drag to scrub; the outlined box is the zoomed strip below"></div>
+<div id=zt class=tl title="zoomed around the playhead: drag to scrub precisely; scroll to zoom in / out"></div>
+<div class=row><span id=pos>0:00.00</span> <span id=speed class=mut></span>
+<button id=back>−1 s</button><button id=fb>◀ frame</button><button id=play class=wide>▶ Play</button><button id=ff>frame ▶</button>
+<button id=fwd>+1 s</button>
+<select id=rate title="playback speed"><option value=0.25>¼×</option><option value=0.5>½×</option>
+<option value=1 selected>1×</option><option value=2>2×</option></select>
+<span class=seg><button id=zout title="zoom out (−)">−</button><button id=zin title="zoom in (=)">+</button></span>
+<button id=goshot>Back to this shot</button></div>
+<div class=row><button id=add class=go>+ Mark extra shot <kbd>M</kbd></button>
+<button id=swap title="ban this shot and prefer the playhead (or the in–out) instead">Use the playhead / in–out instead <kbd>S</kbd></button>
+<button id=pref title="prefer the in–out range without banning this shot">Prefer in–out <kbd>P</kbd></button>
+<button id=bandlg class=danger>Ban this shot <kbd>B</kbd></button>
+<span class=seg><button id=lessdlg title="one fewer">−</button><button id=moredlg title="ask for more shots from this video">More from this video +</button></span></div>
+<div id=marks></div><div id=alts></div>
+</dialog>
+<div id=hover></div>
+<dialog id=help><div class=head><h2>Keys — in the scrubber</h2><button id=helpx>Close <kbd>Esc</kbd></button></div>
+<div class=cols>
+<div><h3>Playing</h3><dl>
+<dt><kbd>Space</kbd> <kbd>K</kbd></dt><dd>play / pause</dd>
+<dt><kbd>J</kbd> <kbd>L</kbd></dt><dd>shuttle back / on (again: faster)</dd>
+<dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>a frame (<kbd>Shift</kbd>: 1 s)</dd>
+<dt><kbd>0</kbd>–<kbd>9</kbd></dt><dd>jump to 0–90%</dd>
+<dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>previous / next marker or moment</dd>
+<dt><kbd>=</kbd> <kbd>−</kbd></dt><dd>zoom the strip (or scroll)</dd></dl></div>
+<div><h3>Picking</h3><dl>
+<dt><kbd>M</kbd></dt><dd>mark an extra shot at the playhead</dd>
+<dt><kbd>Backspace</kbd></dt><dd>remove the marker at the playhead</dd>
+<dt><kbd>I</kbd> <kbd>O</kbd> <kbd>X</kbd></dt><dd>in / out / clear them</dd>
+<dt><kbd>S</kbd></dt><dd>swap this shot for the playhead or the in–out</dd>
+<dt><kbd>P</kbd></dt><dd>prefer the in–out</dd>
+<dt><kbd>B</kbd></dt><dd>ban / unban this shot</dd>
+<dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>undo · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> redo</dd></dl></div>
+</div></dialog>

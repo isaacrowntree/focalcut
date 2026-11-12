@@ -1,0 +1,426 @@
+/* What every review page shares: the colours (dark and light), type, buttons, the header with its menu and save
+   state, the toast and the keys sheet. */
+:root {
+  --bg: #0d0e11;
+  --panel: #15171c;
+  --card: #1c1f26;
+  --raise: #252932;
+  --line: #2b2f39;
+  --fg: #e9e9ec;
+  --mut: #9197a3;
+  --sel: #3ddc84; /* the editor's picks */
+  --on-sel: #04220f;
+  --io: #ffd23f; /* in / out marks, the thing in hand */
+  --land: #4cc9f0; /* the landscape reel */
+  --port: #ff4d9d; /* the portrait reel */
+  --mom: #8b9bff; /* moments the planner found */
+  --ban: #ff6b6b;
+  --ph: #fff;
+  --shadow: 0 8px 30px #0009;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f2f3f5;
+    --panel: #fff;
+    --card: #f6f7f9;
+    --raise: #eceef2;
+    --line: #d5d8de;
+    --fg: #16181d;
+    --mut: #596070;
+    --sel: #0f8a49;
+    --on-sel: #fff;
+    --io: #a87400;
+    --land: #0878a0;
+    --port: #c2185b;
+    --mom: #4252cc;
+    --ban: #c62828;
+    --ph: #000;
+    --shadow: 0 8px 30px #0003;
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f2f3f5;
+  --panel: #fff;
+  --card: #f6f7f9;
+  --raise: #eceef2;
+  --line: #d5d8de;
+  --fg: #16181d;
+  --mut: #596070;
+  --sel: #0f8a49;
+  --on-sel: #fff;
+  --io: #a87400;
+  --land: #0878a0;
+  --port: #c2185b;
+  --mom: #4252cc;
+  --ban: #c62828;
+  --ph: #000;
+  --shadow: 0 8px 30px #0003;
+  color-scheme: light;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+[hidden] {
+  display: none !important;
+}
+button,
+select {
+  font: inherit;
+  color: inherit;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+button:hover:not(:disabled) {
+  border-color: var(--mut);
+  background: var(--raise);
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible,
+input:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--io);
+  outline-offset: 1px;
+}
+button.on {
+  background: var(--fg);
+  color: var(--bg);
+  border-color: var(--fg);
+}
+button.go {
+  background: var(--sel);
+  color: var(--on-sel);
+  border-color: var(--sel);
+  font-weight: 600;
+}
+button.go:hover:not(:disabled) {
+  background: var(--sel);
+  filter: brightness(1.08);
+}
+button.danger:hover:not(:disabled) {
+  border-color: var(--ban);
+  color: var(--ban);
+}
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+}
+kbd {
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0 4px;
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--panel);
+  color: var(--mut);
+}
+button.go kbd,
+button.on kbd {
+  background: transparent;
+  color: inherit;
+  border-color: currentColor;
+  opacity: 0.7;
+}
+.sp {
+  flex: 1;
+}
+.mut {
+  color: var(--mut);
+}
+/* a group of buttons that reads as one control */
+.seg {
+  display: inline-flex;
+  align-items: center;
+}
+.seg > button {
+  border-radius: 0;
+  margin-left: -1px;
+  padding: 3px 10px;
+}
+.seg > button:first-of-type {
+  border-radius: 6px 0 0 6px;
+  margin-left: 0;
+}
+.seg > button:last-of-type {
+  border-radius: 0 6px 6px 0;
+}
+.seg > button:only-of-type {
+  border-radius: 6px;
+}
+.seg > button.on {
+  position: relative;
+}
+.seg > b {
+  font-size: 11px;
+  color: var(--mut);
+  font-weight: 500;
+  margin-right: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.chip {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  background: var(--line);
+  color: var(--fg);
+}
+
+/* --- the header: the project, the page's views, the reel, the save state; under it the project's pages --- */
+#bar {
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  z-index: 6;
+}
+.bar1,
+.bar2 {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 7px 14px;
+}
+.bar2 {
+  padding-top: 0;
+  padding-bottom: 6px;
+  font-size: 12px;
+  color: var(--mut);
+  gap: 6px 14px;
+}
+#bar h1 {
+  font-size: 15px;
+  margin: 0 6px 0 0;
+  white-space: nowrap;
+}
+#bar h1 small {
+  font-weight: 500;
+  color: var(--mut);
+  font-size: 13px;
+}
+.tabs {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 2px;
+}
+.tabs button {
+  border: 0;
+  background: transparent;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-weight: 500;
+}
+.tabs button.on {
+  background: var(--fg);
+  color: var(--bg);
+}
+.tabs button kbd {
+  margin-left: 4px;
+}
+nav.pages {
+  display: inline-flex;
+  gap: 4px 14px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+nav.pages a {
+  color: var(--mut);
+  text-decoration: none;
+  padding: 1px 0;
+  border-bottom: 2px solid transparent;
+}
+nav.pages a:hover {
+  color: var(--fg);
+}
+nav.pages a.cur {
+  color: var(--fg);
+  font-weight: 600;
+  border-bottom-color: var(--io);
+}
+nav.pages i {
+  font-style: normal;
+  opacity: 0.6;
+}
+.save {
+  font-size: 12px;
+  color: var(--mut);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.save::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--mut);
+}
+.save.ok::before {
+  background: var(--sel);
+}
+.save.busy::before {
+  background: var(--io);
+  animation: pulse 0.8s infinite alternate;
+}
+.save.err {
+  color: var(--ban);
+  font-weight: 600;
+}
+.save.err::before {
+  background: var(--ban);
+}
+.save.local {
+  color: var(--io);
+}
+.save.local::before {
+  background: var(--io);
+}
+@keyframes pulse {
+  to {
+    opacity: 0.3;
+  }
+}
+details.menu {
+  position: relative;
+}
+details.menu > summary {
+  list-style: none;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  background: var(--card);
+  user-select: none;
+}
+details.menu > summary::-webkit-details-marker {
+  display: none;
+}
+details.menu > div {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+  box-shadow: var(--shadow);
+  z-index: 20;
+}
+details.menu > div button {
+  text-align: left;
+}
+details.menu > div small {
+  color: var(--mut);
+}
+
+/* --- toast: what an action just did --- */
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  transform: translate(-50%, 20px);
+  max-width: min(760px, 92vw);
+  background: var(--fg);
+  color: var(--bg);
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-weight: 500;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s, transform 0.15s;
+  z-index: 50;
+  border-left: 5px solid var(--sel);
+}
+#toast.on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+#toast.warn {
+  border-left-color: var(--io);
+}
+#toast.err {
+  border-left-color: var(--ban);
+}
+
+/* --- the keys sheet --- */
+dialog {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+dialog::backdrop {
+  background: #000a;
+}
+#help {
+  width: min(980px, 94vw);
+  max-height: 90vh;
+}
+#help h2 {
+  margin: 0;
+  font-size: 16px;
+}
+#help h3 {
+  margin: 14px 0 6px;
+  font-size: 11px;
+  color: var(--mut);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+#help .cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 0 28px;
+}
+#help dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 10px;
+  margin: 0;
+  align-items: baseline;
+}
+#help dt {
+  white-space: nowrap;
+  text-align: right;
+}
+#help dd {
+  margin: 0;
+  color: var(--mut);
+}
+#help .head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

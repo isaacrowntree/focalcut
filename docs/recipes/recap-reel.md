@@ -142,7 +142,7 @@ Everything the recipe writes goes to `focalcut/reel/`: `reel.json` (settings), `
    `--steps plan,render,xml,review`.
 
    - **ban:** removes moments in that range. `"all"` removes the whole clip.
-   - **Scrub source** on any shot opens the export it came from. The timeline shows that shot, the reel's other
+   - **Scrub** on any shot opens the export it came from. The timeline shows that shot, the reel's other
      shots from the same video and every moment the planner found. From there you can:
      - mark extra shots anywhere (`A`)
      - swap the shot to the playhead (`S`)
