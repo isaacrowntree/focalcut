@@ -66,6 +66,7 @@ App.onBoot = () => {
 };
 addEventListener("resize", () => {
   if (curView == 1) paint();
+  else if (curView == 2) selview();
   else redrawFrames();
 });
 

@@ -31,11 +31,17 @@ def clip(cid, dur, main, short, cat="night"):
                 L=main[0], P=main[1], R={"main": dict(L=main[0], P=main[1]), "short": dict(L=short[0], P=short[1])})
 
 
-def project(tmp_path):
+def project(tmp_path, video=False):
     """A project as the server sees it, with a sources page and a portrait review page of its "short" cut made from
-    hand-written clips (no footage: the pages fall back to their filmstrips, which are missing too)."""
+    hand-written clips (no footage: the pages fall back to their filmstrips, which are missing too). video: C1 gets
+    a test pattern a headless Chromium can play (VP8, whatever the file is called), when ffmpeg can make one."""
     folder = tmp_path / "Night Out"
     os.makedirs(folder / "focalcut" / "reel" / "review")
+    if video and shutil.which("ffmpeg"):
+        os.makedirs(folder / "export")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=25:duration=60",
+                        "-c:v", "libvpx", "-b:v", "120k", "-g", "5", "-f", "webm", str(folder / "export" / "C1.mp4")],
+                       check=False)
     (folder / "focalcut" / "reel" / "reel.json").write_text(json.dumps({"cuts": {"short": {}}}))
     (folder / "focalcut" / "reel" / "picks.json").write_text(json.dumps(PICKS, indent=1))
     pr = Project(str(folder))
@@ -233,7 +239,7 @@ def test_the_pages_in_a_browser(tmp_path):
     if not NODE or not chrome() or int(subprocess.run([NODE, "-p", "process.versions.node.split('.')[0]"],
                                                       capture_output=True, text=True).stdout or 0) < 22:
         pytest.skip("needs node 22+ and a Chromium (FOCALCUT_CHROME)")
-    pr = project(tmp_path)
+    pr = project(tmp_path, video=True)
     srv, base = served(pr)
     try:
         r = subprocess.run([NODE, os.path.join(HERE, "ui", "pages.mjs"), base], capture_output=True, text=True,

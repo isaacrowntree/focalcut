@@ -1,7 +1,8 @@
 """The source browser: one page for the whole project, whatever the format -- every export clip in a list, one at a
 time in a big player over a wide, zoomable timeline (filmstrip, the moments the planner found, where the landscape and
-portrait reels use it), where the editor marks as many in-out selections per clip as they like, and a final view of
-every selection that plays them back to back.
+portrait reels use it), where the editor marks as many in-out selections per clip as they like (Clips); the cut shot
+by shot with those picks in it (Cut & picks); and a reel's portrait cut shot by shot with its crop over the picture,
+to pan or to set on a dancer (Frame portrait). The page's HTML, CSS and JavaScript are files in web/ (webui.py).
 
     review/sources.html  (+ review/sources/<unit>.jpg: a filmstrip per clip, one frame a second)
     focalcut/reel/previews/<unit>.mp4: what the page plays for exports bigger than 1080p (4K H.264 seeks too slowly

@@ -21,6 +21,15 @@ await p.goto(U + "sources.html#clips", 1500);
 ok((await text("saved")) == "Saved to picks.json", "served: the header says the picks are saved", await text("saved"));
 ok(JSON.stringify(await saved()) == JSON.stringify(orig), "opening the page leaves picks.json alone");
 ok(await p.eval(`document.querySelectorAll("#list .ci").length`) == 2, "both clips are listed");
+const playable = await p.eval(`vid.videoWidth > 0`);
+console.log(playable ? "     (C1 plays: the players are checked too)" : "     (no playable clip: the players stand on their filmstrips)");
+if (playable) {
+  await p.eval(`seek(11)`); await p.key(" "); await p.sleep(900);
+  ok(await p.eval(`!vid.paused && vid.currentTime > 11.3`) && /Pause/.test(await text("play")), "Space plays from the playhead");
+  await p.key(" ");
+  ok(await p.eval(`vid.paused`), "Space pauses");
+  await p.eval(`seek(0)`);
+}
 
 // --- Clips: the Short reel; make, move, star and remove a selection ---
 await p.clickOn(`#reelsw [data-reel=short]`);
@@ -97,6 +106,14 @@ s = await undoAll();
 await p.goto(U + "sources.html#frame=short", 300); await p.eval(`location.reload()`); await p.sleep(1500);
 ok(await p.eval(`curView`) == 3 && await p.eval(`reel`) == "short" && await p.eval(`forder.length`) == 2, "#frame=short opens the Short portrait cut, shot by shot");
 ok(/planner/.test(await text("fstate")), "a shot starts with the planner's framing", await text("fstate"));
+if (playable) {
+  ok(Math.abs(await p.eval(`fv.currentTime`) - 20) < 0.05, "the shot opens on its first frame", await p.eval(`fv.currentTime`));
+  await p.key(" "); await p.sleep(2700);
+  ok(await p.eval(`!fv.paused && fv.currentTime >= 19.95 && fv.currentTime <= 22.1`), "Space plays the shot and loops inside it", await p.eval(`fv.currentTime`));
+  await p.key(" ");
+  ok(await p.eval(`(()=>{const c=document.getElementById("fcanvas"),d=c.getContext("2d").getImageData(0,0,c.width,c.height).data;let n=0;for(let i=0;i<d.length;i+=400)if(d[i]+d[i+1]+d[i+2]>60)n++;return n})()`) > 100,
+    "the result beside the picture is drawn from the video");
+}
 let box = await p.eval(`(()=>{const r=document.querySelector("#ffr .fbox.act").getBoundingClientRect();return[r.left,r.top,r.width,r.height]})()`);
 await p.drag(box[0] + box[2] / 2, box[1] + box[3] / 2, box[0] + box[2] / 2 + 120, box[1] + box[3] / 2);
 s = await saved();

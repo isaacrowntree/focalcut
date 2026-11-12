@@ -33,9 +33,8 @@ function more(id, d) {
 function render() {
   document.querySelectorAll("figure").forEach((f) => {
     const i = +f.dataset.i, s = D.shots[i], ban = isBanned(i);
-    const bits = [], ad = vals(s.id, "add", R), pr = vals(s.id, "prefer", R), mo = moreIn(s.id, R);
+    const bits = [], pr = vals(s.id, "prefer", R), mo = moreIn(s.id, R);
     if (ban) bits.push("banned");
-    if (ad.length) bits.push(ad.length + " of your picks in this clip");
     if (mo) bits.push("more ×" + mo);
     if (pr.length) bits.push("prefer " + pr.join(", "));
     f.classList.toggle("banned", ban);

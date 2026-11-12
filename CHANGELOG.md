@@ -9,6 +9,20 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Frame portrait**, a third view of the source browser (`sources.html#frame=<reel>`): the reel's portrait cut
+  shot by shot, the 9:16 crop over the picture and the cropped result beside it. Drag the frame to pan the crop
+  (one pan for the whole shot, or pans at the playhead that it glides between), click a dancer to follow them,
+  Backspace for the planner's framing again. The shot's state (planner's, your pan, following, or "no face found
+  where you clicked") shows in the header, in the shot list and in a toast. The cut's own crops come with the
+  page, so the frame shows at once and on a page opened as a file. Review pages of a portrait cut link each shot
+  to it.
+- **Two pages on one project no longer overwrite each other.** `api/picks` answers with an ETag; a page saves
+  with `If-Match` and, when the file changed meanwhile, merges value by value and saves again. A page also takes
+  the file as it is when it gets the focus. The server keeps a copy of `picks.json` every ten minutes of editing
+  in `picks_history/`.
+- **Undo is per change, with redo** (`Ctrl+Z`, `Ctrl+Shift+Z`, and buttons), on the review pages too. An undo
+  after another page's edit was merged leaves that edit alone.
+
 - **Picks per reel.** One `picks.json` serves the project's reel and its `cuts` (a 90 s version, say): a clip's
   `only` gives a selection, ban, prefer, opening, ending or `more` to some reels only. The source page has a Reel
   switch (each reel's shots in the lanes, other reels' picks faded; picks, bans, opening and ending made or removed
@@ -27,6 +41,33 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clearly seen first, B-roll ranked among B-roll), `pick_whole` (clips whose picks play whole: the reel's focus),
   `pick_like` (a format plays the picks another kept, e.g. portrait the landscape cut's), `open_broll` (B-roll
   alone in the opening acts: people shots swap with later B-roll, and the window recast keeps to B-roll there).
+
+### Changed
+
+- **The review pages' front end is files** (`focalcut/reel/web/`: `ui.css`, `picks.js`, `app.js`, a page's own
+  HTML / CSS / JS), put together inline by `webui.document()`; no build step, and a page still works opened as a
+  file. The picks model (`picks.js`) is tested under Node and the pages in a headless Chromium when one is there
+  (`tests/test_web.py`, `tests/ui/pages.mjs`).
+- **The source browser is laid out as a list beside the picture** in every view, so the picture and its tools
+  stay on screen while the list scrolls; what an action did shows as a toast, the save state stays in the header,
+  and `?` lists every key. `focalcut reel serve` makes a sources page from another focalcut version again when it
+  starts.
+
+### Fixed
+
+- A selection moved or trimmed in Clips kept neither its stars nor its opening / ending role when it was dragged
+  past its own length (the role stayed behind on the old range, where no page showed it). It is the same pick
+  now: its reels, stars and role move with it. Removing a selection clears the role it held.
+- Removing a pick while working on one reel says which reels it stays in.
+- Making a pick the opening (or ending) of one reel when another reel opens on a different pick of the same clip
+  says that the other reel's is dropped (a clip holds one).
+- Ranges written by the review pages are to the hundredth of a second, as the source browser writes them (a ban
+  made on one page and on the other no longer end up as two entries).
+- A page whose video cannot play (opened as a file, a codec the browser lacks) keeps its playhead: shots open at
+  their in-point and marks land where the strip says.
+- The pick editor no longer scrolls off the top of the page when stepping through the cut with the arrow keys.
+- Thumbnails re-made by a re-plan show at once (files are revalidated instead of cached for an hour); a crop the
+  server cannot work out says why instead of "needs focalcut reel serve".
 
 ### Docs
 

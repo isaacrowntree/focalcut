@@ -117,6 +117,8 @@ function selview() {
     (order.length > placed ? ` · ${order.length - placed} not in the cut yet (placed by the next re-plan)` : "");
   $("seq").innerHTML = order.map((x, k) =>
     `<i data-j=${k} class="${k == j ? "act" : ""}${chosen.has(ckey(x)) ? " chk" : ""}${x.shot ? "" : " new"}${x.cut ? " cut" + (pfmt == "P" ? " p" : "") : ""}" style="flex:${(x.b - x.a).toFixed(2)}" title="${k + 1} · ${esc(x.c.id)} ${fmt(x.a)}–${fmt(x.b)}"></i>`).join("");
+  // (a card's picture is cut from the clip's filmstrip at the card's own width)
+  const cw = $("cards").clientWidth - 16, cols = Math.max(1, Math.floor((cw + 8) / 158)), CARD_W = (cw - (cols - 1) * 8) / cols - 2, CARD_H = (CARD_W * TH) / TW;
   let h = "", sep = false;
   order.forEach((x, k) => {
     if (!x.shot && !sep) {
@@ -144,7 +146,6 @@ function selview() {
   $("pdel").textContent = px && px.cut ? "✕ Ban shot" : "✕ Remove";
   if (px) pdraw();
 }
-const CARD_W = 150, CARD_H = (CARD_W * TH) / TW;
 $("cards").onclick = (ev) => {
   const c = ev.target.closest("[data-ck]");
   if (c) {

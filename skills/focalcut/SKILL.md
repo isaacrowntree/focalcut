@@ -21,9 +21,11 @@ cd <repo> && python -m venv .venv && .venv/bin/pip install -e ".[reel]"   # once
 - **FCP7 XML for Premiere:** the editor finishes there. Rendered shots go on V1, untouched sources on a disabled V2.
 - **Review page:** `review/<cut>.html` shows one frame per shot with a copyable picks line. Open it in a
   browser (on WSL, for example: `explorer.exe "$(wslpath -w review/<cut>.html)"`).
-- **Editor's picks:** the review page's **Scrub source** opens each shot's export video. The editor marks extra
+- **Editor's picks:** the review page's **Scrub** opens each shot's export video. The editor marks extra
   shots (`A`), swaps a shot to the playhead (`S`), bans it, or asks for more from that video. The source browser
-  (`review/sources.html`) shows every export and the whole cut, takes in-out picks and sets portrait focal points.
+  (`review/sources.html`) shows every export and the whole cut, takes in-out picks, and frames the portrait cut
+  shot by shot (its Frame portrait view, `sources.html#frame=<reel>`: drag to pan the crop, click a dancer to
+  follow them).
   `focalcut reel serve <folder> [<folder> ...]` serves them all from one port (each project at `/p/<slug>/`,
   an index at `/`) and the pages write `focalcut/reel/picks.json` directly; it takes `ban`, `prefer`, `add`,
   `more`, `portrait`, and `open` / `end` (the selection the reel opens on, under the logo, and ends on: the pick
