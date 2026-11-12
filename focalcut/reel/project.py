@@ -57,7 +57,13 @@ reel.json keys (all optional except song):
                                          made in, and any other key replaces the project's for this cut ("plan" is
                                          merged per format; a song of its own -- "song", "start_hint", ... --
                                          makes its own music_<cut>.json: run its music step). Out as
-                                         <name>_<cut>_<fmt>; the editor's picks of other footage are left out of it
+                                         <name>_<cut>_<fmt>; the editor's picks of other footage are left out of it.
+                                         A cut that says how it ends (plan.<fmt> "ending" or "end_with") doesn't
+                                         take the project's "close" as well
+    mode               "picks": the reel is cut from the editor's picks (plan.pick_story) -- every pick once, whole,
+                                         in the story's order, trimmed only when they overrun the reel (the least
+                                         starred first), B-roll the editor left alone filling what they leave,
+                                         the same picks in every format. A cut may set its own
     profiles           {"<name>": {...}}  named rule sets, any keys a cut takes (and "use" of other profiles), e.g.
                                          "no-night": {"footage": ["!night"]}, "short": {"length": 90}
     use                ["<profile>", ...]  profiles applied in order, then this level's own keys: at the top level
@@ -119,15 +125,20 @@ class Project:
         profiles = self.profiles
         self.config = with_profiles(config, profiles)
         self.cut, self.footage, self.formats, self.own_music, self.ban = cut, None, None, False, set()
+        self.own_plan = config.get("plan") or {}                 # the "plan" this reel itself wrote (no profile's,
         if cut:                                                  # another reel from the same footage (reel.json "cuts")
             c = (self.config.get("cuts") or {}).get(cut)
             if c is None:
                 raise KeyError(f"reel.json has no cut {cut!r} (cuts: {sorted(self.config.get('cuts') or {})})")
             c = with_profiles(c, profiles)
-            self.footage, self.formats = c.pop("footage", None), c.pop("formats", None)
+            self.own_plan = ((self.config.get("cuts") or {}).get(cut) or {}).get("plan") or {}   # nor, for a cut,
+            self.footage, self.formats = c.pop("footage", None), c.pop("formats", None)            # the project's)
             self.ban = set(c.pop("ban", ()))
             self.own_music = any(k in c for k in MUSIC_KEYS)
             self.config = merge({k: v for k, v in self.config.items() if k != "cuts"}, c)
+            for fmt, own in (c.get("plan") or {}).items():   # a cut that says how it ends ends that way: the
+                if any(k in own for k in ("ending", "end_with")) and "close" not in own:   # project's "close"
+                    self.config["plan"][fmt].pop("close", None)                             # isn't its own
 
     # paths -------------------------------------------------------------------------------------
     def path(self, *parts: str) -> str:
