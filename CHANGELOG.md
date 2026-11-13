@@ -9,6 +9,20 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The editor's rules are checked on every shot the planner chose, and a shot that breaks one is replaced**
+  (`reel/validate.py`, the last pass of `plan.build`, in story and picks mode). Each shot is measured over exactly
+  the stretch it plays, as the strip shows it: the subject in focus (an absolute floor -- a sharp foreground stand,
+  speaker or phone counts for nothing), no back (performers too; nor the nearer of a couple turned away with the
+  partner hidden behind them), the subject and a couple's partner in the strip and not cut by the frame, nobody
+  halved at the strip's edge, no head cut by the frame's top, a couple close enough to fill the strip, the shake
+  limit, the editor's bans, day footage by day, and a B-roll clip at most twice in a reel. A failing shot takes the
+  nearest passing stretch of its own clip, else the best passing moment of another unit of its kind (for couples
+  the featured ones first: picks `"more"`, then units the editor picked from; then the least used), else it stays
+  and the plan log says `rule fail: <rule> at <time>`. Every replacement is logged with the rule it broke. The
+  editor's own shots are never touched: what they break is listed, as their choice. `plan.<fmt>.validate`: `false`
+  turns it off, a dict overrides a threshold (`validate.RULES`). A clip shot sideways is judged too (its pose
+  turned with the picture).
+
 - **The picture follows the music.** The music step now says what the music is doing on each beat
   (`music.features`, read through `music.feel`): `beat_kick` (the low end against the song's loud level),
   `beat_drive`, `beat_section` (intro / groove / break / build / drop / outro), `beat_sustain` and `sustains`
@@ -154,6 +168,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The same inputs give the same plan.** `cover_people` chose among equally good spots in a set's order, which
+  changes with the interpreter's hash seed: two runs of one cut differed in most shots. Spots are now taken in
+  order (unit, then time).
 - **A look's phrase transition needs a hit.** The glitch looks put a transition on the cut nearest every 4-bar
   phrase whatever the music did there; on SSMC 2026's night cut 13 of those 21 sat on beats softer than the ones
   around them and eight were off the phrase's first beat (27 transitions in three minutes). It now goes on the cut

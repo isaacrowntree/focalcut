@@ -49,6 +49,7 @@ from . import frame as FR
 from . import grammar as G
 from . import lead as LD
 from . import music as MU
+from . import validate as VA
 from . import velocity as V
 
 FPS = 50
@@ -152,8 +153,13 @@ class Picker:
     def __init__(self, fmt, records):
         self.fmt, self.recs, self.used, self.count = fmt, records, {}, {}
         self.hold_adds = False                    # (picks cut to pieces: include_adds places them, the acts don't)
+        self.broll_max = None                     # shots of one B-roll clip the acts may take (story: validate's)
 
     def free(self, r, m):
+        if self.broll_max and r["role"] == "transition" and not people_broll(r["unit"]) \
+                and not (m.get("add") or m.get("pick") or m.get("span")) \
+                and self.count.get(r["unit"]["clip"], 0) >= self.broll_max:
+            return False                                     # a B-roll clip plays at most this often in a reel
         return not (self.hold_adds and m.get("add")) and \
             all(abs(m["t"] - t) >= APART for t in self.used.get(r["id"], []))
 
@@ -1286,8 +1292,10 @@ def cover_people(P, seq, recs, home, people, fmt, beat, climax_from=None, allowe
     spots = {sp for sp in spots if band_ok(sp)        # nor the editor's banned stretches -- the rest of a picked
              and not in_bans(sp[1] - beat, 2 * beat, by[sp[0]]["unit"])}     # clip is banned (apply_picks)
 
+    # (in order -- unit, then time: of spots that show as many of those missing, the first wins, the same on every
+    # run; a set's own order changes with the interpreter's hash seed, and the reel changed with it)
     probe = {sp: [k for k, it in enumerate(items) if shows(dict(unit=dict(id=sp[0]), t=sp[1], beats=2), it)]
-             for sp in spots}
+             for sp in sorted(spots)}
     tried = set()
     while True:
         gain = {sp: [k for k in ks if not count[k]] for sp, ks in probe.items()
@@ -2171,6 +2179,7 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
     direction = direction or still
     recs = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
     P = Picker(fmt, recs)
+    P.broll_max = (VA.rules(cfg) or {}).get("broll_max")     # (the editor's rule; validate.run holds every pass to it)
     P.hold_adds = bool(cfg.get("pick_hold"))
     tag = lambda r: r["unit"].get("tag", "")
     cat = lambda r: r.get("category", "")
@@ -4341,6 +4350,8 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     steady_shots(project, fmt, plan["shots"], fm, cfg)       # the planner's own shots: their clip's steadiest part
     if fmt == "portrait":
         portrait_parts(project, plan["shots"])               # a trimmed pick: the part of it that frames best
+    if project is not None and assess_shots:                 # the last word: every shot against the editor's rules,
+        plan["validation"] = VA.run(project, fmt, plan["shots"], fm, cfg)   # the planner's that break one replaced
     stabilise(plan["shots"], cfg)
     mo = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
     plan["units_total"] = len({r["id"] for r in mo})
@@ -5434,6 +5445,8 @@ def refill(project, fmt, base):
     slid, recast_n, stuck = snap_windows(project, fmt, plan["shots"], fm, cfg)
     print(f"[reel] {project.cut_name(fmt)}: refilled from the earlier plan: {banned} banned shots"
           f" ({slid} slid, {recast_n} recast, {len(stuck)} stuck {stuck})")
+    if hasattr(project, "path"):                             # (a refill moves nothing else: the rules are reported)
+        plan["validation"] = VA.run(project, fmt, plan["shots"], fm, cfg, fix=False)
     return plan
 
 
@@ -5483,6 +5496,7 @@ def run(project, fmt, stinger_len=0.0) -> dict:
     if not picks_mode(config(project, fmt)):                 # (cut from the picks: nothing else is meant to be in)
         coverage_report(project, fmt, plan)
     window_report(project, fmt, plan)
+    VA.report(plan.get("validation"), fmt)
     for line in V.speed_tails(plan):                         # every shot ends at real speed
         print(f"[reel]   WARNING speed: {line}")
     return plan
