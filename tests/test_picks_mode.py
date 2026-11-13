@@ -136,7 +136,7 @@ def test_no_clip_twice_in_a_row_and_broll_never_beside_broll(tmp_path):
     assert not any(a["unit"]["role"] == b["unit"]["role"] == "transition" for a, b in pairwise(body))
     # a clip's picks are spread out, not played as a block
     at = [k for k, s in enumerate(body) if s["unit"]["id"] == "U07"]
-    assert max(at) - min(at) >= 6
+    assert max(at) - min(at) >= 2 * (len(at) - 1) and len(at) >= 3   # (one of its five went for room: B-roll first)
 
 
 def test_card_shuffle_keeps_the_acts_in_order_and_mends_the_cut():

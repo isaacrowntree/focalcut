@@ -169,7 +169,9 @@ class Compositor:
         H, W = y.shape
         s, beat, fps = float(S[k]), show.beat, show.fps
         since, down, drop = float(G["since"][k]), bool(G["down"][k]), int(G["drop"][k])
-        kick = float(np.exp(-since / (0.22 * beat)))
+        drv = float(G["drive"][k]) if "drive" in G else 1.0
+        kick = float(np.exp(-since / (0.22 * beat))) * drv   # (overlay.frame: the music's drive)
+        down = down and drv > 0.5
         bass = min(float(F["bass"][k]), 1.3)
         effects, pal = preset
         show.palette(pal)

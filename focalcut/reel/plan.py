@@ -43,6 +43,7 @@ import numpy as np
 
 from . import frame as FR
 from . import grammar as G
+from . import music as MU
 from . import velocity as V
 
 FPS = 50
@@ -58,6 +59,7 @@ PHRASES = {
     "medium": [[3, 1, 2, 2], [2, 2, 4], [2, 1, 1, 4], [4, 2, 2], [2, 3, 3], [1, 1, 2, 4], [2, 2, 1, 3]],
     "hold": [[8], [4, 4], [6, 2]],
     "build": [[2, 2, 1, 1, 1, 1]],
+    "calm": [[4, 4], [8], [5, 3], [6, 2], [3, 5]],     # where the music has no rhythm section: long, flowing shots
 }
 LONG = ("pattern", "travel", "spin", "trick", "dip", "style")    # moves that need time to play out
 SIZE = {"landscape": (1920, 1080), "portrait": (1080, 1920)}
@@ -294,16 +296,24 @@ def flow_link(a, unit, t, kind, direction):
     return sc
 
 
-def rhythm(budget, pace, energy, build=False, hold_every=4):
+def rhythm(budget, pace, energy, build=False, hold_every=4, feel=None):
     """Shot lengths for an act: one pattern per 8-beat phrase -- busier phrases of the music (energy, per phrase,
     relative to the act) get the quicker patterns, every hold_every-th quieter phrase is held long, the phrase into
-    the next act can build -- never the same pattern twice running. A remainder shorter than a phrase closes it."""
+    the next act can build -- never the same pattern twice running. A remainder shorter than a phrase closes it.
+    feel (phrase_feel: "calm" / "drop" / None per phrase): the picture follows the music -- a phrase with no rhythm
+    section under it (an intro, a breakdown) is cut long whatever the pace, a drop quick (never a build into a
+    calm phrase, nor a long hold on a drop)."""
     n, rest = divmod(budget, 8)
     med = float(np.median(energy)) if len(energy) else 0
     out, last = [], None
     for k in range(n):
         e = energy[k] if k < len(energy) else med
-        if build and k == n - 1:
+        f = feel[k] if feel and k < len(feel) else None
+        if f == "calm":
+            pool = PHRASES["calm"]
+        elif f == "drop" and pace != "slow":
+            pool = PHRASES["fast"]
+        elif build and k == n - 1:
             pool = PHRASES["build"]
         elif hold_every and k % hold_every == hold_every - 1 and e <= med:
             pool = PHRASES["hold"]
@@ -321,6 +331,75 @@ def phrase_energy(music, a, n):
     bt = np.array(music["beats"]); i0 = int(np.argmin(np.abs(bt - music["start"])))
     acc = np.array(music.get("beat_accent") or np.ones(len(bt)))[i0:]
     return [float(acc[a + 8 * k: a + 8 * k + 8].mean()) if a + 8 * k < len(acc) else 1.0 for k in range(n)]
+
+
+def phrase_feel(music, a, n):
+    """What the music does over each 8-beat phrase from beat a (music.feel): "calm" when most of it has no rhythm
+    section under it, "drop" when most of it is a drop, else None (and None throughout for a music.json without the
+    description)."""
+    F = MU.feel(music)
+    out = []
+    for k in range(n):
+        calm, sec = F["calm"][a + 8 * k:a + 8 * k + 8], F["section"][a + 8 * k:a + 8 * k + 8]
+        out.append(None if not len(calm) else "calm" if calm.mean() > 0.5
+                   else "drop" if sec.count("drop") > len(sec) / 2 else None)
+    return out
+
+
+CALM_BEATS = 4           # pace_lengths: a shot that starts where the music is calm is given up to this many beats
+
+
+def _starts(lengths):
+    return [0, *itertools.accumulate(lengths)][:-1]
+
+
+def pace_lengths(lengths, lo, hi, calm, give=None, take=None, calm_beats=CALM_BEATS):
+    """Picture energy follows music energy, for shots whose order is settled (the editor's picks): a shot that
+    starts where the music is calm (calm: a flag per beat of the reel -- an intro, a breakdown) is given beats, up
+    to calm_beats and its own most (hi), by the shots that start where the music drives, down to their least (lo).
+    give(i) / take(i): which gives first / takes first (the highest; default the longest / the shortest). The total
+    stays. Returns the new lengths."""
+    L = list(lengths)
+    at = lambda p: bool(calm[p]) if p < len(calm) else False
+    skip = set()
+    for _ in range(sum(L)):
+        pos = _starts(L)
+        takers = [i for i in range(len(L)) if at(pos[i]) and L[i] < min(hi[i], calm_beats) and i not in skip]
+        givers = [i for i in range(len(L)) if not at(pos[i]) and L[i] > lo[i]]
+        if not takers or not givers:
+            break
+        t = max(takers, key=lambda i: ((take(i) if take else 0), -L[i], -i))
+        g = max(givers, key=lambda i: ((give(i) if give else 0), L[i], i))
+        L[t] += 1; L[g] -= 1
+        pos = _starts(L)                                     # (a move that pushes its own taker out of the calm, or
+        if not at(pos[t]) or at(pos[g]):                     #  its giver into it, would only be taken back)
+            L[t] -= 1; L[g] += 1
+            skip.add(t)
+    return L
+
+
+def hold_sustains(lengths, lo, hi, sustain, locked=()):
+    """No cut inside a sustain: where the music lands on a beat and holds (sustain: [(hit, end), ...] in beats of
+    the reel -- nothing new sounds on the beats between), a cut that falls on one of the held beats moves back onto
+    the hit (the shot before gives its last beats to the one after, which then starts on the hit and holds through
+    it) or on to the beat the music next sounds (the shot before holds through), whichever moves it less and both
+    shots allow (lo, hi: each shot's least and most beats; locked: indices of shots whose opening cut stays).
+    Returns (new lengths, the cuts left inside a sustain as shot indices)."""
+    L, stuck = list(lengths), []
+    for a, e in sustain:
+        for i in range(1, len(L)):
+            p = _starts(L)[i]
+            if not a < p < e:
+                continue
+            back, on = p - a, e - p
+            ways = [(d, w) for d, w, ok in ((back, -1, L[i - 1] - back >= lo[i - 1] and L[i] + back <= hi[i]),
+                                            (on, 1, L[i] - on >= lo[i] and L[i - 1] + on <= hi[i - 1])) if ok]
+            if i in locked or not ways:
+                stuck.append(i)
+                continue
+            d, w = min(ways)
+            L[i - 1] += w * d; L[i] -= w * d
+    return L, stuck
 
 
 def squeeze(lengths, n):
@@ -1759,8 +1838,7 @@ def band_in(P, seq, recs, music, cfg):
     players = [r for r in recs if member(r)]
     if not players:
         return
-    bt = np.array(music["beats"]); i0 = int(np.argmin(np.abs(bt - music["start"])))
-    acc = np.array(music.get("beat_accent") or np.ones(len(bt)))[i0:]
+    acc = MU.feel(music)["hit"]                             # (an accent on a beat the music drives: music.feel)
     pos, rec = [], 0
     for x in seq:
         pos.append(rec); rec += x["beats"]
@@ -2130,7 +2208,8 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
 
     # shows: the stage, its routines shuffled through each other, in phrases of varied length; the peaks of the best
     # routines slowed down in the held slots, stage spotlights, zoom kicks on the hips in the quick ones
-    lengths = rhythm(budget["shows"], cfg.get("shows_pace", "medium"), phrase_energy(music, acts["shows"][0], budget["shows"] // 8))
+    lengths = rhythm(budget["shows"], cfg.get("shows_pace", "medium"), phrase_energy(music, acts["shows"][0], budget["shows"] // 8),
+                     feel=phrase_feel(music, acts["shows"][0], budget["shows"] // 8))
     sh = weave(cover(P, stage, len(lengths), 2, "shows", cap=6), seq[-1], direction=direction)
     fit_slots(sh, lengths)
     # the stage's own language: a few of the best moves held in slow motion, and once, the stage's spotlight on its
@@ -2143,7 +2222,7 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
     # floor. The lengths come first, the dancing is chosen next, and the B-roll takes evenly spaced long slots: never
     # more B-roll than dancing to break it up
     lengths = rhythm(budget["night"], cfg["night_pace"], phrase_energy(music, acts["night"][0], budget["night"] // 8),
-                     build=True)
+                     build=True, feel=phrase_feel(music, acts["night"][0], budget["night"] // 8))
     N = len(lengths)
     if socials:
         ni = cover(P, anim, max(len(anim), round(0.3 * N)), 2, "night", cap=5, kinds_pref=("shake", "closeup"))
@@ -2509,6 +2588,8 @@ def open_broll(P, seq, recs, acts=("teaser", "arrival")):
 
 
 PICK_FLOOR = 2           # picks mode: a pick trimmed for room keeps this many beats (or its own length, when shorter)
+PICK_FLOOR_BROLL = {"portrait": 1}   # ... a B-roll pick this many in these formats, where it also goes before a pick
+                         # of people is trimmed (Isaac: "most b-roll in portrait mode is terrible so focus on picks")
 FILL_BEATS = 3           # picks mode: a filler B-roll shot is about this long (2 to 4 beats)
 LEGACY_PICK_KEYS = ("pick_hold", "pick_grow", "pick_share", "pick_clip_share", "pick_by", "pick_whole", "pick_like",
                     "reuse", "only_picks")   # what picks mode does by itself: accepted, not needed
@@ -2743,39 +2824,54 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
     first, lead_out = named(cfg.get("open_with"), "open_with"), named(cfg.get("end_with"), "end_with")
     pinned = {id(m) for _, m in first + lead_out}
 
-    # lengths: every pick whole; over the room, the longest give a beat each (the least starred first), then picks go
+    # lengths: every pick whole; over the room, the B-roll picks give a beat each first, then the people (the least
+    # starred first among each, the longest first), then picks go -- B-roll before people
     room = video_beats - sum(s["beats"] for s in head) - (last["beats"] if last else 0)
     every = first + picks + lead_out
     beats = {id(m): want(m) for _, m in every}
     stars = lambda m: 9 if id(m) in pinned else m.get("stars") or 3
+    broll = {id(m): r["role"] == "transition" and id(m) not in pinned for r, m in every}
+    floor = lambda m: min(want(m), PICK_FLOOR_BROLL.get(fmt, PICK_FLOOR) if broll[id(m)] else PICK_FLOOR)
     asked = sum(beats.values())
     over = asked - room
-    while over > 0:
-        c = [m for _, m in every if beats[id(m)] > min(want(m), PICK_FLOOR)]
-        if not c:
-            break
-        m = max(c, key=lambda m: (-stars(m), beats[id(m)] / want(m), beats[id(m)]))   # (each the same share
-        beats[id(m)] -= 1                                    # of its length: a long pick stays a long shot)
-        over -= 1
     dropped = []
-    if over > 0:                                             # still over at the floor: the least wanted picks go
+
+    def trim(kind):                                          # these give a beat each while the reel is over
+        nonlocal over
+        while over > 0:
+            c = [m for _, m in every if beats.get(id(m), 0) > floor(m) and kind(m)]
+            if not c:
+                break
+            m = max(c, key=lambda m: (-stars(m), beats[id(m)] / want(m), beats[id(m)]))   # (each the same share
+            beats[id(m)] -= 1                                # of its length: a long pick stays a long shot)
+            over -= 1
+
+    def drop(kind):                                          # ... and these go, the least wanted first
+        nonlocal over
         wins = load_windows(project, "landscape") or load_windows(project, fmt) or {}
         q = {}
         for grp in (True, False):                            # each pick's place among its own kind
             g = sorted((x for x in picks if (x[0]["role"] == "transition") == grp),
                        key=lambda x: (_part_score(wins.get(x[0]["unit"]["id"]), *x[1]["span"]), x[1]["span"][0]))
             q.update({id(x[1]): (k + 1) / len(g) for k, x in enumerate(g)})
-        for x in sorted(picks, key=lambda x: (stars(x[1]), q[id(x[1])])):
+        for x in sorted((x for x in picks if kind(x[1])), key=lambda x: (not broll[id(x[1])], stars(x[1]), q[id(x[1])])):
             if over <= 0:
                 break
             over -= beats.pop(id(x[1]))
             picks.remove(x)
             dropped.append(x)
-    while over < 0:                                          # (a dropped pick freed more than was over)
-        c = [m for _, m in first + picks + lead_out if beats[id(m)] < want(m)]
+    trim(lambda m: broll[id(m)])                             # B-roll gives up its beats before any shot of people
+    if fmt in PICK_FLOOR_BROLL:                              # (portrait: B-roll plays badly in a 9:16 strip, so its
+        drop(lambda m: broll[id(m)] and stars(m) <= 3)       #  picks go before a pick of people loses a beat)
+    trim(lambda m: True)
+    if over > 0:                                             # still over at the floor: the least wanted picks go
+        drop(lambda m: True)
+    every = first + picks + lead_out
+    while over < 0:                                          # (a dropped pick freed more than was over: people first)
+        c = [m for _, m in every if beats[id(m)] < want(m)]
         if not c:
             break
-        m = max(c, key=lambda m: (stars(m), want(m) - beats[id(m)]))
+        m = max(c, key=lambda m: (not broll[id(m)], stars(m), want(m) - beats[id(m)]))
         beats[id(m)] += 1
         over += 1
 
@@ -2804,7 +2900,27 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
                         flank(lead_out[0][0]["unit"] if lead_out else last["unit"] if last else None))
     wins = load_windows(project, fmt) or {}
     seq = list(head)
-    for r, m, n, s in [(r, m, None, None) for r, m in first] + body + [(r, m, None, None) for r, m in lead_out]:
+    run = [(r, m, None, None) for r, m in first] + body + [(r, m, None, None) for r, m in lead_out]
+    # the picture follows the music (music.feel): the order is settled, so each pick's place in the song is known --
+    # picks that play where the music is calm keep more of their length, given by those that play where it drives
+    # (B-roll before people, the least starred first); and no cut falls on a beat the music holds (a sustain)
+    F = MU.feel(music)
+    if F["known"] and run:
+        n0 = sum(s["beats"] for s in head)
+        L = [x[2] if x[3] is not None else beats[id(x[1])] for x in run]
+        lo = [min(n, 2) if s is not None else floor(m) for r, m, n, s in run]
+        hi = [max(n, FILL_BEATS + 1) if s is not None else want(m) for r, m, n, s in run]
+        is_b = [r["role"] == "transition" for r, m, n, s in run]
+        st = [3 if s is not None else stars(m) for r, m, n, s in run]
+        calm = F["calm"][n0:]
+        L = pace_lengths(L, lo, hi, calm, give=lambda i: (is_b[i], -st[i]), take=lambda i: (not is_b[i], st[i]))
+        L, stuck = hold_sustains(L, lo, hi, [(a - n0, e - n0) for a, e in F["sustain"]])
+        for x, k in zip(run, L):
+            if x[3] is not None:
+                x[3]["beats"] = k
+            else:
+                beats[id(x[1])] = k
+    for r, m, n, s in run:
         if s is None:                                        # a pick: whole, or its clearest part at its length
             n = beats[id(m)]
             if n < want(m):
@@ -2830,12 +2946,15 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
             s["act"] = next((a for a in ACT_NAMES if a in acts and acts[a][0] <= at < acts[a][1]), "finale")
         at += s["beats"]
     n_trim = sum(1 for _, m in first + picks + lead_out if beats[id(m)] < want(m))
+    t_b = sum(1 for _, m in every if beats[id(m)] < want(m) and broll[id(m)])
     x0 = lambda r: r["unit"].get("export_t0", 0.0)
     print(f"[reel] {fmt}: picks mode: {len(first) + len(picks) + len(lead_out)} picks placed once each; they ask "
           f"for {asked} beats and the reel has {room}"
-          + (f": {n_trim} trimmed to fit, the least starred first (star a pick to keep it whole; about "
-             f"{math.ceil((asked - room) / max(asked / max(len(every), 1), 1))} fewer picks would play them all whole)"
-             if n_trim else "")
+          + (f": {n_trim} trimmed to fit ({t_b} of {sum(broll[id(m)] for _, m in every)} B-roll picks, {n_trim - t_b} "
+             f"of {sum(not broll[id(m)] for _, m in every)} of people), B-roll before people, the least starred first "
+             f"(star a pick to keep it whole; about "
+             f"{math.ceil((asked - room) / max(asked / max(len(every) + len(dropped), 1), 1))} fewer picks would play "
+             f"them all whole)" if n_trim else "")
           + (f", {len(fill)} filler shots ({people} of people the editor didn't pick)" if fill else "")
           + (f"; {len(dropped)} left out for room: "
              + ", ".join(f"{r['unit']['id']} {m['span'][0] - x0(r):.2f}-{m['span'][1] - x0(r):.2f}" for r, m in dropped)
@@ -2845,9 +2964,15 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
 
 def transitions(seq, music, cfg, direction=None):
     """Mostly hard cuts on the beat. Each act has its own short list of transitions and a cap on each (grammar.py),
-    the change of act its signature one, and a transition goes in only where the cut has its reason."""
-    bt = np.array(music["beats"]); i0 = int(np.argmin(np.abs(bt - music["start"])))
-    acc = np.array(music.get("beat_accent") or np.ones(len(bt)))[i0:]
+    the change of act its signature one, and a transition goes in only where the cut has its reason.
+
+    The music has to be doing it too (music.feel): a flash needs a hit -- an accent on a beat the rhythm section
+    plays, never a sung syllable or a sweep over a breakdown; where the music is calm (an intro, a break) nothing
+    goes to white, rushes or whips -- the change of act there is a dissolve, and now and then (G.CALM_EVERY beats
+    apart) so is a cut between two shots of two beats or more."""
+    F = MU.feel(music)
+    acc, calm = F["hit"], F["calm"]
+    quiet = lambda p: bool(calm[p]) if p < len(calm) else False
     rec, pos = 0, []
     for s in seq:
         pos.append(rec); rec += s["beats"]
@@ -2856,6 +2981,8 @@ def transitions(seq, music, cfg, direction=None):
 
     def put(i, name, why):
         A, B = seq[i - 1], seq[i]
+        if quiet(pos[i]) and name in G.LOUD:                # no rhythm section under this cut: a dissolve
+            name, why = "fade", why + ", where the music is calm"
         velocity = name == "velocity"                       # a velocity edit: out fast, in fast, a swipe between
         ramp = velocity and not (any(f in SPEED for f in A["fx"] + B["fx"]) or A["beats"] < 2 or B["beats"] < 2
                                  or A.get("span") or B.get("span")          # (an editor's pick plays at real speed,
@@ -2867,7 +2994,8 @@ def transitions(seq, music, cfg, direction=None):
                 return False
             name, why = "flash", f"act change on a hit in the music ({hit:.1f}x)"
         plain_name = name
-        name = (look or {}).get("reasons", {}).get(name, name)   # the same reason, in the film's look
+        if not (quiet(pos[i]) and name == "fade"):          # the same reason, in the film's look (a calm passage's
+            name = (look or {}).get("reasons", {}).get(name, name)   # dissolve stays a plain one)
         h = G.HALF[name]
         if room[i - 1] < h + 0.5 or room[i] < h + 0.5:
             return False
@@ -2895,7 +3023,7 @@ def transitions(seq, music, cfg, direction=None):
         return any(k in u.get("tag", "") for k in cfg.get("day") or ()) or \
             any(k in u.get("category", "") for k in [*(cfg.get("day") or ()), *(cfg.get("day_shows") or ())])
 
-    used = {}
+    used, last_fade = {}, -G.CALM_EVERY
     for i in range(1, len(seq)):
         A, B = seq[i - 1], seq[i]
         act = B["act"]
@@ -2909,12 +3037,20 @@ def transitions(seq, music, cfg, direction=None):
         vocab = [n for n in cfg["grammar"].get(act, ()) if used.get((act, n), 0) < caps.get(n, 0)]
         accent = acc[pos[i]] if pos[i] < len(acc) else 1
         for name, why in G.reasons(A, B, vocab, accent, cfg["flash_at"].get(act, 9), travel, daytime):
+            if quiet(pos[i]) and name in G.LOUD:            # (a whip or a push with nothing in the music for it)
+                continue
             if put(i, name, why):
                 used[(act, name)] = used.get((act, name), 0) + 1
                 break
+        else:
+            if quiet(pos[i]) and F["known"] and pos[i] - last_fade >= G.CALM_EVERY and not B.get("ending") \
+                    and put(i, "fade", "the music is calm: a dissolve"):
+                last_fade = pos[i]
 
 
 PULSE_HIT = 1.2          # glitch_look: a look's phrase transition needs a cut whose beat hits this hard (accent)
+HIT_FX = 1.0             # glitch_look: a look's accent (a freeze, a punch) goes on a move the music hits at least as
+                         # hard as the beats around it -- and never where the music is calm (music.feel's hit is 0)
 
 
 DROP_FX = ("bullet", "hero", "aura", "montage")   # the big subject effects: slow motion round the subject
@@ -2949,9 +3085,10 @@ def glitch_look(seq, music, look):
     subject effects become the look's (look["fx"]); each act gets one more subject effect on a move it suits
     (look["extra"]); and the act's hardest hits get an accent (look["hits"]: a freeze, a punch, a JPEG crunch). Still
     mostly hard cuts: never on the teaser, the ending, B-roll, the band or a reaction (the editor's picks take
-    effects like any shot), never beside another effect or a transition, one effect a shot."""
-    bt = np.array(music["beats"]); i0 = int(np.argmin(np.abs(bt - music["start"])))
-    acc = np.array(music.get("beat_accent") or np.ones(len(bt)))[i0:]
+    effects like any shot), never beside another effect or a transition, one effect a shot. A phrase transition and
+    a hit's accent need the music to hit there (music.feel's hit: an accent on a beat the rhythm section plays):
+    none where the music is calm."""
+    acc = MU.feel(music)["hit"]
     pos, rec = [], 0
     for s in seq:
         pos.append(rec); rec += s["beats"]
@@ -3000,7 +3137,7 @@ def glitch_look(seq, music, look):
             seq[i]["fx"], seq[i]["effect"] = [name], name
     for act, name, n in look.get("hits", []):
         for _ in range(n):
-            cand = [i for i, s in enumerate(seq) if s["act"] == act and free(i)]
+            cand = [i for i, s in enumerate(seq) if s["act"] == act and free(i) and hit(i) >= HIT_FX]
             if not cand:
                 break
             i = max(cand, key=hit)
@@ -4853,6 +4990,29 @@ def lands(project, seq, beat, hold):
             seq[j]["beats"] -= 1; s["beats"] += 1
 
 
+STAY = ("ending", "logo", "logo_image", "open", "close", "reaction", "band", "title", "span", "velocity")
+
+
+def hold_through(seq, sustain, beat=None):
+    """Holds on sustains (hold_sustains), for a sequence about to be placed: a cut that falls inside a sustain moves
+    onto the hit before it or the beat the music next sounds. Only between two plain shots of one act: a shot with an
+    effect, an editor's pick (pick_story fits those itself, before it trims them), the logo, the ending, a band
+    insert or a reaction keeps its length, and so does a shot whose landing needs it. Returns the shots whose
+    opening cut is still inside a sustain."""
+    if not sustain:
+        return []
+    fixed = lambda s: bool(s["fx"]) or any(s.get(k) for k in STAY)
+    lo = [s["beats"] if fixed(s) else 2 if s.get("land") is not None else 1 for s in seq]
+    lo = [min(a, s["beats"]) for a, s in zip(lo, seq)]
+    room = lambda s: int((s["unit"]["t1"] - s["unit"]["t0"]) / beat) if beat else 10 ** 6   # (the clip's length)
+    hi = [s["beats"] if fixed(s) else max(s["beats"], min(s["beats"] + MU.SUSTAIN_MAX, room(s))) for s in seq]
+    locked = [i for i in range(1, len(seq)) if seq[i]["act"] != seq[i - 1]["act"]]
+    L, stuck = hold_sustains([s["beats"] for s in seq], lo, hi, sustain, locked)
+    for s, n in zip(seq, L):
+        s["beats"] = n
+    return stuck
+
+
 def real_speed_close(seq):
     """The reel's closing shot (the last, the configured ending, finale_reuse's close) plays at 1x: no speed effect."""
     for k, s in enumerate(seq):
@@ -4870,8 +5030,13 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
     music = dict(music, beat=music.get("beat") or float(np.median(np.diff(music["beats"]))))
     beat = music["beat"]
     T = clock(music)
-    bt = np.array(music["beats"]); i0 = int(np.argmin(np.abs(bt - music["start"])))
-    acc = list(np.array(music.get("beat_accent") or np.ones(len(bt)))[i0:])
+    F = MU.feel(music)
+    acc = np.array(F["hit"], float)                          # where a velocity edit lands: on a hit, and before
+    onsets = {a: e for a, e in F["sustain"]}                 # any hit on a beat the music then holds (a sustain):
+    for a in onsets:                                         # the slow hold plays through the held note
+        if a < len(acc):
+            acc[a] += V.SUSTAIN
+    acc = list(acc)
     from . import shake
     lo = cfg["shake"][0]
 
@@ -4890,6 +5055,7 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
     hold = max(cfg.get("land_hold", 1.0) * beat, 0.45)
     real_speed_close(seq)
     lands(project, seq, beat, hold)
+    hold_through(seq, F["sustain"], beat)
     rec = 0
     for s in seq:
         L = T(rec + s["beats"]) - T(rec)
@@ -4902,6 +5068,11 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
         src_in = in_point(s, s["beat"])
         if s.get("land") is not None:                        # the move's finish and the rest after it
             src_in, s["land_fits"] = V.hold_in(src_in, L, s["land"], hold)
+            k = next((a for a in sorted(onsets) if rec < a < rec + s["beats"]), None)
+            if k is not None and s["land_fits"]:             # the music lands and holds inside the shot: the dancer
+                x = V.on_sustain(L, s["land"], hold, T(k) - T(rec))   # lands on that beat, at rest through it
+                if x is not None:
+                    src_in, s["land_on"] = x, "sustain"
             src_in = clear_of_bans(min(max(src_in, u["t0"]), max(u["t1"] - L, u["t0"])), L, u)
         if s.get("span"):                                    # the editor's selection starts at their in-point
             src_in = in_point(s, s["beat"])

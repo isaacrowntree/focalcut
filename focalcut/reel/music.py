@@ -10,6 +10,20 @@ The window starts on a bar downbeat:
                              first reaches 70% of its typical (median) level -- i.e. the band coming in
 and ends on the last bar boundary that keeps the whole reel (music + stinger) within the target length, on an
 8-bar phrase where possible.
+
+What the music is doing, beat by beat (describe(); the planner and the light show read it through feel()):
+    beat_kick      the low end (below 150 Hz: the kick and the bass, sustained or struck) against the song's loud level
+    beat_drive     the rhythm section's drive, 0..1: mostly beat_kick, a little of the percussion, steadied over 5 beats
+    beat_section   intro / groove / break / build / drop / outro: runs of driving and calm beats, named by where they
+                   sit (a break is a calm run between driving ones; a drop the driving run a break or build leads to)
+    beat_sustain   1 where nothing new sounds on the beat: a note, chord or voice held over from the beat before, or
+                   its tail ringing out
+    sustains       [[beat index of the hit, beats held after it], ...]: the music lands and holds
+beat_accent says how hard a beat's onset is against its neighbours, whatever makes it (a kick, a horn stab, a sung
+syllable, a sweep); beat_energy is loudness, and stays high through a vocal breakdown. Neither says whether the
+rhythm section is playing, so a hit (feel()["hit"]) is an accent on a beat the music drives: a flash, a blink or a
+glitch belongs on those and nowhere else. A music.json written before these fields existed reads as driving
+throughout with no sustains: everything behaves as it did.
 """
 from __future__ import annotations
 
@@ -113,7 +127,180 @@ def accents(onset: np.ndarray, onset_t: np.ndarray, beats: np.ndarray) -> np.nda
     return (hit / (local + 1e-6)).round(3)
 
 
-def analyse(song: str, start="auto", start_hint=None, max_len: float = 180.0, phrase: bool = True) -> dict:
+KICK_HZ = 150.0           # the low end: kick and bass
+DRIVE = (0.35, 0.5)       # sections: a calm run starts when the drive falls under the first, a driving one over the second
+RUN = 4                   # ... and a run shorter than this many beats belongs to the one around it
+HELD = 0.5                # a beat whose percussive onsets are under this share of the song's typical beat is held
+SUSTAIN_MAX = 8           # a sustain counts this many held beats at most (past it the music has simply stopped)
+BUILD = 0.7               # a calm run's last beats with percussion this strong (of the song's loud level): a build
+HIT_DRIVE = 0.4           # feel: an accent counts as a hit where the drive is at least this
+BLINK = (0.3, 0.6)        # feel: the per-beat blink fades in between these drives
+CALM = ("intro", "break", "build")       # sections with no rhythm section under them
+
+
+def _runs(flags):
+    """[(first, end, value), ...] of a sequence's runs of equal values."""
+    out, a = [], 0
+    for i in range(1, len(flags) + 1):
+        if i == len(flags) or flags[i] != flags[a]:
+            out.append((a, i, flags[a]))
+            a = i
+    return out
+
+
+def sections(drive, perc=None) -> list:
+    """A label per beat from the drive (0..1 per beat): intro / groove / break / build / drop / outro.
+
+    Beats are driving or calm (DRIVE, with hysteresis; runs under RUN beats join their surroundings). A calm run is
+    the intro before the first driving one, the outro after the last, a break between two; its last beats are a
+    build when the percussion is strong there (perc, per beat: a snare roll with no kick under it). A driving run is
+    a drop when a break or build of two bars or more leads to it, or an intro does and it is as strong as the song
+    gets; otherwise a groove. Inside a drop, two bars or more well under its level are a groove again -- an outro
+    when they run to the end."""
+    d = np.asarray(drive, float)
+    n = len(d)
+    if not n:
+        return []
+    on, state = np.zeros(n, bool), d[0] >= DRIVE[1]
+    for i in range(n):
+        state = d[i] >= (DRIVE[0] if state else DRIVE[1])
+        on[i] = state
+    for _ in range(4):                                       # short runs join what is around them
+        runs = _runs(on)
+        short = [(a, b) for a, b, _ in runs if b - a < RUN and len(runs) > 1]
+        if not short:
+            break
+        a, b = min(short, key=lambda r: r[1] - r[0])
+        on[a:b] = not on[a]
+    runs = _runs(on)
+    level = [float(np.median(d[a:b])) if v else 0.0 for a, b, v in runs]
+    top = max(level) if level else 0.0
+    out = [""] * n
+    for k, (a, b, v) in enumerate(runs):
+        if not v:
+            name = "intro" if k == 0 else "outro" if k == len(runs) - 1 else "break"
+            out[a:b] = [name] * (b - a)
+            if perc is not None and k < len(runs) - 1:       # a build: strong percussion right up to the entry
+                j = b
+                while j > a and b - j < 16 and perc[j - 1] >= BUILD:
+                    j -= 1
+                if b - j >= RUN:
+                    out[j:b] = ["build"] * (b - j)
+            continue
+        led = k > 0 and runs[k - 1][1] - runs[k - 1][0] >= 8
+        drop = led and (k > 1 or level[k] >= 0.9 * top) and level[k] >= 0.75 * top
+        out[a:b] = ["drop" if drop else "groove"] * (b - a)
+        if drop:                                             # the drop easing off: a groove again, or the outro
+            ref = float(np.percentile(d[a:b], 75))
+            for x, y, low in _runs(list(d[a:b] < 0.8 * ref)):
+                if low and y - x >= 8 and x > 0:
+                    out[a + x:a + y] = ["outro" if a + y == n else "groove"] * (y - x)
+            for x, y, name in _runs(out[a:b]):               # (a beat or two back at its level between them: not
+                if name == "drop" and y - x < 8 and x > 0:   #  a drop of its own)
+                    out[a + x:a + y] = [out[a + x - 1]] * (y - x)
+    return out
+
+
+def sustains(held) -> list:
+    """[[hit, n], ...]: each run of held beats (beat_sustain) with the beat that sounded before it -- the music lands
+    on beat `hit` and holds for the n beats after (SUSTAIN_MAX at most)."""
+    return [[a - 1, min(b - a, SUSTAIN_MAX)] for a, b, v in _runs([bool(x) for x in held]) if v and a > 0]
+
+
+def features(y: np.ndarray, sr: int, bt: np.ndarray, lo: float, hi: float) -> dict:
+    """The per-beat description of audio y (beat times bt in y's own seconds; the reel plays lo..hi, and levels are
+    measured against that stretch): beat_kick, beat_drive, beat_section, beat_sustain, sustains (see the module's
+    notes). Beats outside y read as the nearest one inside it, nothing held."""
+    import librosa
+    bt = np.asarray(bt, float)
+    n = len(bt)
+    S = np.abs(librosa.stft(y, n_fft=2048, hop_length=512))
+    t = librosa.frames_to_time(np.arange(S.shape[1]), sr=sr, hop_length=512)
+    _, P = librosa.decompose.hpss(S, margin=2.0)
+    f = librosa.fft_frequencies(sr=sr, n_fft=2048)
+    low, low_p, perc = S[f < KICK_HZ].sum(0), P[f < KICK_HZ].sum(0), P.sum(0)
+    onset = librosa.onset.onset_strength(S=librosa.amplitude_to_db(P), sr=sr)
+    period = float(np.median(np.diff(bt))) if n > 1 else 0.5
+    ends = np.append(bt[1:], bt[-1] + period) if n else bt
+    ia, ib = np.searchsorted(t, bt - 0.02), np.searchsorted(t, ends - 0.07)   # frames of each beat, clear of the next
+    ja, jb = np.searchsorted(t, bt - 0.04), np.searchsorted(t, ends - 0.04)   # (its onset sits just ahead of it)
+    have = (bt >= 0) & (ends <= len(y) / sr) & (ib > ia)
+    win = have & (bt >= lo - 1e-3) & (bt < hi)
+    if not win.any():
+        win = have
+    if not win.any():
+        return dict(beat_kick=[1.0] * n, beat_drive=[1.0] * n, beat_section=["groove"] * n, beat_sustain=[0] * n,
+                    sustains=[])
+    per = lambda x, a, b: np.array([x[i:j].mean() if h and j > i else 0.0 for i, j, h in zip(a, b, have)])
+    norm = lambda v: v / (np.percentile(v[win], 90) + 1e-9)
+    kick = np.clip(np.maximum(norm(per(low, ia, ib)), norm(per(low_p, ia, ib))), 0, 1.5)
+    pc = np.clip(norm(per(perc, ia, ib)), 0, 1.5)
+    mix = np.clip(0.8 * kick + 0.2 * pc, 0, 1)
+    drive = np.array([np.median(mix[max(i - 2, 0):i + 3]) for i in range(n)])
+    act = per(onset, ja, jb)
+    held = have & (act < HELD * (np.median(act[win]) + 1e-9))
+    wi = np.where(win)[0]
+    a, b = wi[0], wi[-1] + 1
+    sec = ["groove"] * n
+    sec[a:b] = sections(drive[a:b], pc[a:b])
+    hv = np.where(have)[0]
+    for i in np.where(~have)[0]:                             # past the audio: as the nearest beat that was heard
+        j = hv[np.argmin(np.abs(hv - i))]
+        kick[i], drive[i], sec[i] = kick[j], drive[j], sec[j]
+    return dict(beat_kick=kick.round(3).tolist(), beat_drive=drive.round(3).tolist(), beat_section=sec,
+                beat_sustain=held.astype(int).tolist(), sustains=sustains(held))
+
+
+def describe(m: dict, pad: float = 8.0) -> dict:
+    """music.json m with what the music is doing on each beat (features), measured over the stretch the reel plays
+    (and pad seconds either side: an hour-long mix is not read whole)."""
+    import librosa
+    a = max(m["start"] - pad, 0.0)
+    y, sr = librosa.load(m["song"], sr=22050, mono=True, offset=a, duration=m["end"] + pad - a)
+    return dict(m, **features(y, sr, np.array(m["beats"]) - a, m["start"] - a, m["end"] - a))
+
+
+def feel(music: dict, whole: bool = False) -> dict:
+    """What the music is doing on each beat, as arrays from the reel's first beat (whole: from the grid's first):
+
+      accent   how hard the beat's onset is against its neighbours (beat_accent; 1 without)
+      drive    the rhythm section's drive, 0..1 (1 without: an old music.json drives throughout)
+      section  intro / groove / break / build / drop / outro
+      calm     no rhythm section under the beat (an intro, a break, a build, or the drive under HIT_DRIVE)
+      hit      the accent where the music really hits -- 0 on a calm beat: what a flash, a dip, a glitch or a band
+               insert goes by
+      blink    0..1: how much of the per-beat blink and punch the beat carries (none through a vocal break)
+      held     nothing new sounds on the beat (a sustain)
+      sustain  [(hit, end), ...] in beats: the music lands on beat `hit` and holds until beat `end` sounds
+      entries  beats where the rhythm section comes in after two bars or more without it (a drop, the first groove)
+      known    the analysis had these fields (False: the fallbacks above)
+
+    No audio library needed: the planner and the render read music.json with this."""
+    bt = np.array(music.get("beats") or [], float)
+    n = len(bt)
+    i0 = 0 if whole or not n else int(np.argmin(np.abs(bt - music["start"])))
+
+    def arr(key, fill, kind=float):
+        v = list(music.get(key) or [])
+        v = (v + [v[-1] if v else fill] * n)[:n] if v else [fill] * n
+        return np.array(v, kind)[i0:]
+    accent, drive, kick = arr("beat_accent", 1.0), arr("beat_drive", 1.0), arr("beat_kick", 1.0)
+    section = list(arr("beat_section", "groove", object))
+    held = arr("beat_sustain", 0).astype(bool)
+    calm = np.array([s in CALM for s in section], bool) | (drive < HIT_DRIVE)
+    x = np.clip((drive - BLINK[0]) / (BLINK[1] - BLINK[0]), 0, 1)
+    blink = np.where(calm, 0.0, x * x * (3 - 2 * x))
+    driving = [not c for c in calm]
+    entries = [a for k, (a, b, v) in enumerate(_runs(driving)) if v and k and a - _runs(driving)[k - 1][0] >= 8] \
+        if n > i0 else []
+    return dict(accent=accent, drive=drive, kick=kick, section=section, calm=calm, held=held,
+                hit=np.where(calm, 0.0, accent), blink=blink,
+                sustain=[(a, a + k + 1) for a, k in sustains(held)], entries=entries,
+                known=bool(music.get("beat_drive")))
+
+
+def analyse(song: str, start="auto", start_hint=None, max_len: float = 180.0, phrase: bool = True,
+            feel: bool = True) -> dict:
     import librosa
     y, sr = librosa.load(song, sr=22050, mono=True)
     onset = librosa.onset.onset_strength(y=y, sr=sr)
@@ -140,9 +327,14 @@ def analyse(song: str, start="auto", start_hint=None, max_len: float = 180.0, ph
     hint = start if isinstance(start, (int, float)) else start_hint
     s_idx = int(np.argmin(np.abs(bars - float(hint)))) if hint is not None else auto_start(bars, rms, rms_t)
     e_idx = window(bars, s_idx, max_len, phrase)
-    return dict(song=song, tempo=tempo, beat=float(period), beats=bt.tolist(), bars=bars.tolist(), beat_energy=beat_energy,
-                start=float(bars[s_idx]), end=float(bars[e_idx]), length=float(bars[e_idx] - bars[s_idx]),
-                bar_phase=phase, beat_accent=accent.tolist())
+    m = dict(song=song, tempo=tempo, beat=float(period), beats=bt.tolist(), bars=bars.tolist(), beat_energy=beat_energy,
+             start=float(bars[s_idx]), end=float(bars[e_idx]), length=float(bars[e_idx] - bars[s_idx]),
+             bar_phase=phase, beat_accent=accent.tolist())
+    if feel:                                               # what the music does on each beat, over the reel's stretch
+        a = max(m["start"] - 8.0, 0.0)
+        i, j = int(a * sr), int((m["end"] + 8.0) * sr)
+        m.update(features(y[i:j], sr, bt - a, m["start"] - a, m["end"] - a))
+    return m
 
 
 def to_end(m: dict, max_len: float) -> dict:
@@ -159,8 +351,9 @@ def to_end(m: dict, max_len: float) -> dict:
         bars += bt[k + 4::4]
     energy = list(m["beat_energy"]) + [m["beat_energy"][-1]] * (len(bt) - 1 - len(m["beat_energy"]))
     accent = list(m.get("beat_accent", [])) + [0.0] * (len(bt) - len(m.get("beat_accent", [])))
-    return dict(m, beats=bt, bars=bars, beat_energy=energy, beat_accent=accent, end=float(end),
-                length=float(end - m["start"]))
+    m = dict(m, beats=bt, bars=bars, beat_energy=energy, beat_accent=accent, end=float(end),
+             length=float(end - m["start"]))
+    return describe(m) if m.get("beat_drive") else m      # (the stretch the reel plays changed: measured over it)
 
 
 def drops(y: np.ndarray, sr: int, bars: np.ndarray) -> np.ndarray:
@@ -253,6 +446,7 @@ def join(songs: list[dict], max_len: float, preroll: float = 0.5, mix: dict | bo
             if not p["h_out"]:
                 p["out"] = "cut"
     beats, energy, accent, sections, acts, t = [], [], [], [], [], preroll
+    extra = {k: [] for k in ("beat_kick", "beat_drive", "beat_section", "beat_sustain")}
     for k, p in enumerate(parts):
         m, s, e = p["m"], p["s"], p["e"]
         bt, ph = np.array(m["beats"]), m["bar_phase"]
@@ -276,6 +470,8 @@ def join(songs: list[dict], max_len: float, preroll: float = 0.5, mix: dict | bo
         beats += list(wt[:-1])
         energy += list(np.array(m["beat_energy"] + [m["beat_energy"][-1]])[b0:b1])
         accent += list(np.array(m["beat_accent"])[b0:b1])
+        for key in extra:                                  # each song's own description, where it plays
+            extra[key] += list(m[key][b0:b1])
         if k == 0:                                         # cuts land ahead of the beat: the first song starts early
             bmap = np.vstack([[bt[lo] - preroll, out_t[0] - preroll], bmap])
         if p["out"] == "end":
@@ -300,7 +496,7 @@ def join(songs: list[dict], max_len: float, preroll: float = 0.5, mix: dict | bo
     return dict(song=None, tempo=float(60 / np.median(np.diff(beats))), beat=float(np.median(np.diff(beats))),
                 beats=beats.tolist(), bars=beats[::4].tolist(), beat_energy=energy, beat_accent=accent,
                 start=preroll, end=float(t), length=float(t - preroll), bar_phase=0, sections=sections,
-                acts=acts), parts
+                acts=acts, **extra, sustains=sustains(extra["beat_sustain"])), parts
 
 
 def stretch(y: np.ndarray, sr: int, rate: float) -> np.ndarray:

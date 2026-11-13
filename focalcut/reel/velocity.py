@@ -11,6 +11,14 @@ the hair and the face play out, then eases back up (focalcut.fx.speed draws the 
 Every other dance shot shows its landing too (landed(), plan.place): a shot that cuts away mid-trick, or the instant
 the dancer comes out of it, is all trick and no finish. When a move comes to rest inside or just after a shot, the shot
 keeps the end of the move (PRE) and about a beat of the dancer at rest (plan "land_hold") before it cuts.
+
+Holds on sustains: when the music lands on a beat and holds (a note, a chord or a voice held over the next beats,
+music.py "sustains"), the picture holds with it. A velocity edit lands on that beat when its shot has one (landing():
+the slow hold plays through the held note); a plain shot's landing is slid onto it (on_sustain()); and no cut falls
+on a held beat (plan.hold_sustains). Before this was written down it happened by chance of two rules: landing() took
+the shot's hardest accent, and an accent is a beat's onset against its neighbours' -- so the beat before a held note
+(loud, then nothing) scored highest; and rhythm() gave its long "hold" phrases to the phrases with the lowest mean
+accent, which are the ones where notes are held.
 """
 from __future__ import annotations
 
@@ -23,6 +31,7 @@ from . import frame as FR
 RAMP = ("hero", "bullet", "montage")                     # the speed curves that hold on a landing
 HOLDS = dict(hero=1.0, bullet=2.0, montage=0.75)         # their holds, in beats (fx.speed); close-ups hold 0.5 more
 PRE = 0.5                                                # seconds of the move kept before its landing
+SUSTAIN = 100.0                                          # what a sustain's first beat adds to its accent (landing)
 TAIL = 0.5                                               # every shot's last seconds play at 1x (fx.speed.TAIL)
 
 
@@ -81,9 +90,19 @@ def hold_in(s_in, length, land, hold):
     return land - 0.4 * length, False
 
 
+def on_sustain(length, land, hold, at):
+    """The in-point that puts the landing (source time land) `at` seconds into a shot of `length` seconds -- on the
+    beat where the music lands and holds -- or None when the shot would then lose the end of the move (PRE) or the
+    hold seconds of rest after it (hold_in's range)."""
+    x = land - at
+    return x if land + hold - length <= x <= land - PRE else None
+
+
 def landing(beats, ramp, closeup, accents, tail_beats=0.0):
     """Beats from the shot's start to the landing: the strongest accent (accents[k]: beat k of the shot) among the
-    beats that leave the hold, half a beat to ease out and tail_beats at 1x (the speed curve's TAIL) inside the shot."""
+    beats that leave the hold, half a beat to ease out and tail_beats at 1x (the speed curve's TAIL) inside the shot.
+    plan.place passes the music's hits (music.feel) with SUSTAIN added on a beat the music lands and holds on, so
+    the slow hold lines up with the held note when the shot has one."""
     hold = HOLDS[ramp] + (0.5 if closeup else 0) + 0.5 + tail_beats
     ks = [k for k in range(1, beats) if beats - k >= hold] or [max(1, beats // 2)]
     return max(ks, key=lambda k: accents[k] if k < len(accents) else 0)

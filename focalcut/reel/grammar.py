@@ -7,12 +7,15 @@ each may appear, and every transition needs its reason in the two shots it joins
   spin    a turn carried into the next turn (different clips)
   swipe   the same travel carried across the cut: both shots clearly moving the same way (flow direction)
   zoom    a push in to a face (the next shot a close-up, at least as tight)
-  flash   a hit in the music: the beat's accent at least FLASH_AT for the act
+  flash   a hit in the music: the beat's accent at least FLASH_AT for the act, on a beat the rhythm section plays
+          (music.feel's "hit": a sung syllable or a sweep over a breakdown is an accent but not a hit)
   glitch  in or out of the DJ: the digital edge belongs to the booth
   fade    a dissolve between daytime B-roll scenes (both shots daytime footage: never into or out of the night)
 
 The change of act gets its own signature transition (SIGNATURE). Never two transitions back to back, and none into
-a crowd reaction or a band-member insert: those cut straight in. Everything here can be overridden per project in
+a crowd reaction or a band-member insert: those cut straight in. The picture follows the music: where it is calm
+(no rhythm section: an intro, a breakdown) nothing flashes, whips or pushes (LOUD) -- an act changes on a dissolve
+there, and a dissolve joins two held shots every CALM_EVERY beats or so. Everything here can be overridden per project in
 reel.json's plan: {"grammar": ..., "caps": ..., "flash_at": ...}.
 """
 from __future__ import annotations
@@ -27,6 +30,10 @@ GRAMMAR = dict(arrival=["fade"], shows=["spin", "swipe", "zoom"], night=["swipe"
 CAPS = dict(arrival=dict(fade=3), shows=dict(spin=3, swipe=3, zoom=2), night=dict(swipe=3, spin=2, glitch=2, flash=2),
             climax=dict(flash=4, spin=2, swipe=3), finale=dict(zoom=1))
 FLASH_AT = dict(night=1.8, climax=1.6)                   # how hard a beat must hit (accent) to earn a flash
+# what the music must drive for: going to white, a rush, a whip, a push, a digital tear. Where it is calm (an intro,
+# a breakdown: no rhythm section, music.feel) a cut that asks for one of these is a dissolve or stays a hard cut
+LOUD = ("flash", "dipwhite", "lightleak", "velocity", "swipe", "spin", "zoom", "glitch")
+CALM_EVERY = 16                                          # beats between the dissolves of a calm passage
 TRAVEL = 0.12                                            # flow speed both sides of a cut need for a swipe
 MIN_BEATS = 2                                            # both shots of a transition (a flash aside) run this long
 # beats each side of the cut a transition takes (a shot keeps half a beat of its own); the looks' own too
