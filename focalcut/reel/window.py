@@ -4,8 +4,8 @@ For a night shot whose people sit dark (reel.json "exposure" "lift"), the shot's
 exactly as it plays -- is read at SAMPLE_FPS and YuNet finds the faces in it. Their level decides how far the shot
 is lifted (toward "target", never more than "stops" of exposure, nothing for a face that is already bright or one
 that is lost in black: a silhouette is meant to be one). Each face then has a soft window: an ellipse from the top
-of the head to the chest, feathered wide, following the face from sample to sample. Inside it a shadow lift raises
-the face and its colour together (Cb/Cr scale with the lift, so skin keeps its colour instead of going grey);
+of the head to the chest, feathered wide, and a gentler one over the body below it (shoulders to hips), following
+the face from sample to sample. Inside it a shadow lift raises the face and its colour together (Cb/Cr scale with the lift, so skin keeps its colour instead of going grey);
 outside it the room stays exactly as shot, so the night stays dark.
 
 The window is a small greyscale video (y4m, MASK_W wide) composited by the shot's own ffmpeg pass (render.shot_filter:
@@ -26,7 +26,7 @@ import numpy as np
 
 from . import hw
 
-VERSION = 3
+VERSION = 4
 SAMPLE_FPS = 10            # analysis frames per second of source
 GRID = 640                 # analysis size: the crop's long side, in pixels
 MASK_W = 160               # the window video's long side (soft: it is scaled up with the shot)
@@ -44,6 +44,8 @@ TOE = (0.02, 0.10)         # the lift fades in over these levels: black and the 
 # the window around a face of width w, height h centred (cx, cy): an ellipse centred DROP * h below the face, with
 # semi-axes RX * w and RY * h, full strength inside CORE of its radius and gone at its edge
 DROP, RX, RY, CORE = 0.6, 1.5, 1.9, 0.45
+# and below it the body, from the shoulders to the hips, lifted BODY as much as the face (a little: the face leads)
+BODY_DROP, BODY_RX, BODY_RY, BODY_CORE, BODY = 4.0, 2.1, 3.2, 0.35, 0.55
 
 
 def settings(v) -> dict | None:
@@ -161,13 +163,18 @@ def _faces(frames):
 
 
 def _window(faces, w, h):
-    """One sample's window, (h, w) float in 0..1: the union of every face's feathered ellipse."""
+    """One sample's window, (h, w) float in 0..1: the union of every face's feathered ellipse (head to chest, full
+    strength) and its body's below it (shoulders to hips, BODY strength)."""
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
     m = np.zeros((h, w), np.float32)
+
+    def oval(cx, cy, rx, ry, core):
+        d = np.sqrt(((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2)
+        e = np.clip((1.0 - d) / (1.0 - core), 0.0, 1.0)
+        return e * e * (3 - 2 * e)                            # smoothstep: no edge to see
     for cx, cy, fw, fh, *_ in faces:
-        d = np.sqrt(((xx - cx) / (RX * fw)) ** 2 + ((yy - (cy + DROP * fh)) / (RY * fh)) ** 2)
-        e = np.clip((1.0 - d) / (1.0 - CORE), 0.0, 1.0)
-        m = np.maximum(m, e * e * (3 - 2 * e))               # smoothstep: no edge to see
+        m = np.maximum(m, oval(cx, cy + DROP * fh, RX * fw, RY * fh, CORE))
+        m = np.maximum(m, BODY * oval(cx, cy + BODY_DROP * fh, BODY_RX * fw, BODY_RY * fh, BODY_CORE))
     return m
 
 

@@ -39,7 +39,9 @@ def test_ffmpeg_curve_is_the_same_curve():
 def test_window_is_soft_and_follows_the_face():
     m = W._window([(80, 40, 20, 24)], 160, 90)
     assert m[int(40 + W.DROP * 24), 80] == 1.0                  # full strength on the face's window
-    assert m[5, 5] == 0.0 and m[85, 155] == 0.0                 # nothing far from it
+    assert m[5, 5] == 0.0 and m[85, 155] == 0.0 and m[5, 80] == 0.0   # nothing far from it
+    hips = m[int(40 + W.BODY_DROP * 24) if 40 + W.BODY_DROP * 24 < 90 else 89, 80]
+    assert 0.3 < hips <= W.BODY + 1e-6                          # the body below, lifted less than the face
     row = m[int(40 + W.DROP * 24), 80:]
     assert np.all(np.diff(row) <= 1e-6) and (row > 0).sum() > 15   # a long feather, falling off smoothly
 

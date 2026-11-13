@@ -74,7 +74,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shot is read as it plays (rotated and cropped), about ten times a second; YuNet finds the faces, and their own
   level decides the lift: toward `target`, at most `stops` (default 0.6) brighter, nothing for faces already bright,
   lost in black or seen in under a third of the shot (silhouettes, B-roll, the logo opening). A feathered ellipse
-  from head to chest follows each face, and inside it a shadow lift raises the face (the deepest shadows and white
+  from head to chest follows each face, with a gentler one over the body below it (shoulders to hips, about half
+  the lift), and inside them a shadow lift raises the face (the deepest shadows and white
   stay put) with its colour (held back on skin already coloured by stage light); outside it the room is exactly as
   shot. Composited in the shot's own ffmpeg pass: a few seconds per lit shot. reel.json `exposure.lift`:
   `{"target": 0.4, "stops": 0.6}`; `"window": false` keeps the old curve over the whole frame, which lifted the
