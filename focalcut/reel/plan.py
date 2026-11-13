@@ -4079,9 +4079,7 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
             snap_windows(project, fmt, plan["shots"], fm, cfg)    # on passing windows at that length too
         end_clean(project, fmt, plan["shots"], fm, cfg)
     steady_shots(project, fmt, plan["shots"], fm, cfg)       # the planner's own shots: their clip's steadiest part
-    if not cfg.get("stabilise"):                             # (reel.json "stabilise": true warps what still shakes)
-        for s in plan["shots"]:
-            s["stab"] = False
+    stabilise(plan["shots"], cfg)
     mo = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
     plan["units_total"] = len({r["id"] for r in mo})
     plan["music_length"] = music["length"]
@@ -4439,6 +4437,19 @@ def editors(s):
     opening they set. (The planner's B-roll under the logo, its fillers and the people it brought in are its own.)"""
     return bool((s.get("span") and not s.get("reuse")) or (s.get("add") and not s.get("person")) or s.get("ending")
                 or s.get("open") or s.get("close"))
+
+
+def stabilise(shots, cfg):
+    """Which shots render stabilised (vidstab, light: smoothing 15), by reel.json "stabilise": off (default) none --
+    shaky footage is avoided instead (steady_shots); true: the shots the planner marked, past the "shake" low mark,
+    except sources stabilised beforehand ("_stabilized"); "all": those too where they still shake -- their shake is
+    measured on the camera file, and a light pre-stabilisation leaves most of it in a 9:16 strip."""
+    mode = cfg.get("stabilise")
+    for s in shots:
+        if not mode:
+            s["stab"] = False
+        elif mode == "all":
+            s["stab"] = bool(s.get("jitter") is not None and s["jitter"] > cfg["shake"][0])
 
 
 def steady_shots(project, fmt, shots, moments, cfg, W=None):

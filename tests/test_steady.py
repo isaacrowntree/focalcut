@@ -38,3 +38,14 @@ def test_steady_keeps_clear_of_bans_and_other_shots(monkeypatch):
     plan.steady_shots(None, "landscape", [mine, other], [], dict(shake=[0.0012, 0.006]), W={})
     a = mine["src_in"]
     assert 17.0 - 1e-6 <= a <= 18.0                          # not on the pick (+ its gap), not on the ban
+
+
+def test_stabilise_all_reaches_prestabilised_sources():
+    import copy
+    shots = [dict(jitter=0.004, stab=False, unit=dict(source="C2037_stabilized.mov")),
+             dict(jitter=0.0005, stab=False, unit=dict(source="C2021.MP4")),
+             dict(jitter=0.004, stab=True, unit=dict(source="C2021.MP4"))]
+    for mode, want in ((None, [False, False, False]), (True, [False, False, True]), ("all", [True, False, True])):
+        got = copy.deepcopy(shots)
+        plan.stabilise(got, dict(stabilise=mode, shake=[0.0012, 0.006]))
+        assert [s["stab"] for s in got] == want

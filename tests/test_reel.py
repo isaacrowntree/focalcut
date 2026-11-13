@@ -1892,7 +1892,8 @@ def test_a_looks_phrase_transition_needs_a_cut_the_music_hits():
 
 def test_drop_effect_goes_on_a_pick_when_picks_fill_the_climax():
     from focalcut.reel.plan import drop_effect
-    u = lambda c, role="dance": dict(id=c, clip=c, role=role)
+    def u(c, role="dance"):
+        return dict(id=c, clip=c, role=role)
     seq = [dict(act="night", beats=4, fx=[], kind="spin", rank=1.0, unit=u("A")),
            dict(act="climax", beats=2, fx=[], kind="spin", rank=0.9, unit=u("B"), span=[1, 2], add=True),
            dict(act="climax", beats=4, fx=[], kind="crowd", rank=0.9, unit=u("C", "transition"), span=[1, 3]),
