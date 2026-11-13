@@ -56,6 +56,12 @@ blocks feel like separate videos.
 - `cover_all` puts every missing unit in: it takes the place of the weakest plain shot of a unit with several, in
   its home act (the social floor may also go in the climax), or splits a long plain shot to make room. The band
   inserts and the editor's extra shots never take a unit's only shot.
+- With picks cut to pieces (`pick_hold`) and no `pick_share` named, the picks take half the reel, and more when
+  the clips the editor left alone are too few to fill the rest fairly (`rest_share`: two shots a clip, one for
+  B-roll, up to 90%); a clip left alone that still piles up gives its plain shots' beats back to the picks' own
+  in-outs (`thin_clips`); in a cut with no night act the day's picks may play in its climax.
+- Nothing is shown twice: a quick cut that would replay footage the reel shows elsewhere goes, its beats to the
+  picks beside it (`replays`, `no_reuse`; `plan.<fmt>.reuse: true` allows it, `false` takes every quick cut out).
 
 ## 4. Cut on the action: movement flow
 
@@ -90,6 +96,9 @@ Jordan).
 - `PHRASES`, `rhythm`, `phrase_energy`, `fit_slots` (moves that need time get the long slots), `in_point`,
   `ANTICIPATE`.
 - Cut frames are counted from the reel's start (per-shot rounding drifts most of a second over 3 minutes).
+- Cuts sit on the music's own beat grid (`plan.clock`), never on a count of nominal periods: a tracked grid
+  (a live band, a DJ mix, an intro the tracker lost) is cut on its real beat times. `music.fit_beats` gives a
+  steady song one exact grid from its first moment (`steady_grid`), and smooths a drifting one.
 - Salsa tracks at half-time, so one detected bar is an 8-count.
 
 ## 7. Subject: who the shot is about
@@ -179,7 +188,16 @@ Reasons:
 - **zoom:** push in to a close-up that is at least as tight.
 - **flash:** a big musical hit.
 - **glitch:** in or out of the DJ.
-- **fade:** between daytime scenes.
+- **fade:** between daytime scenes: both shots daytime footage, never into or out of the night's.
+
+A look's phrase transition (`pulse`: one by each 4-bar phrase) goes on the cut near the phrase that the music
+hits hardest (accent 1.2 or more), and nowhere when none does: never on the calendar alone.
+
+A transition other than a flash needs two beats of each shot (`grammar.MIN_BEATS`): across a one-beat shot the
+dissolve or push is the whole shot. The change of act takes its signature only where the shots can carry it: the
+velocity whip into the climax needs a ramp (the planner's own shots) or the same movement across the cut; between
+an editor's picks, which play at real speed, the drop gets a flash when the music hits there and the plain cut
+when it does not.
 
 **Why:** music-video and aftermovie editors use hard cuts for rhythm and save transitions for moments that mean
 something. A transition cycled from a menu reads as a template, and that random look is the main complaint about

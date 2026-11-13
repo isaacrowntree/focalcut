@@ -97,6 +97,31 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A look's phrase transition needs a hit.** The glitch looks put a transition on the cut nearest every 4-bar
+  phrase whatever the music did there; on SSMC 2026's night cut 13 of those 21 sat on beats softer than the ones
+  around them and eight were off the phrase's first beat (27 transitions in three minutes). It now goes on the cut
+  by the phrase that the music hits hardest (accent 1.2 or more, `plan.PULSE_HIT`, a look's `pulse_hit`), and
+  nowhere when none does.
+- **Transitions only where the cut can carry them.** A dissolve joins daytime scenes only (it went into the
+  night's crowd shots as "one daytime scene to the next"); no transition but a flash goes across a one-beat shot;
+  and the change of act into the climax is a velocity whip only with a ramp or travel to whip between: across an
+  editor's picks it is a flash when the music hits there, else the plain cut (it was a bare swipe).
+- **Nothing shown twice.** Quick cuts made from picks no longer replay footage the reel shows elsewhere
+  (`plan.replays`; Electric Nation's main reel had 4 in landscape, 8 in portrait); `reuse: true` allows them.
+- **The picks are no longer condensed out in favour of two unpicked clips.** With `pick_hold` and no `pick_share`,
+  the picks' share grows when little footage was left alone (`plan.rest_share`), a clip left alone gives up the
+  shots it has above its share to the picks' own in-outs (`plan.thin_clips`), and in a cut with no night act the
+  day's picks may play in the climax. SSMC 2026's day cut: 30 picks of 46 in landscape (it was 22), 37 in
+  portrait (27); its two unpicked show clips 10 shots of 46 (it was 18 of 47), 8 of 49 in portrait (22 of 53).
+- **Cuts land on the beat again.** The planner timed cuts as so many beats of the song's nominal period, and for
+  a song whose beat grid was kept as tracked (the tempo drifting, a DJ mix, an intro the tracker wandered through)
+  that period is the tracker's hop-quantised median: 1% out, a whole beat after a hundred. On Electric Nation and
+  SSMC 2026 half of every reel's cuts were more than a quarter beat off, and none of the SSMC day cut's were within
+  two frames, while the overlay's blinks (which read the grid itself) sat on the beat. `plan.clock` now follows
+  the grid's own beat times and `plan.beats_in` counts its beats; `music.fit_beats` finds the one steady grid of a
+  produced track whose intro the tracker lost (`steady_grid`, from the song's first moment) and smooths the
+  tracker's 23 ms steps out of a drifting one. Re-run `--steps plan,render,xml,review` (and `music` first for the
+  exact grid).
 - A selection moved or trimmed in Clips kept neither its stars nor its opening / ending role when it was dragged
   past its own length (the role stayed behind on the old range, where no page showed it). It is the same pick
   now: its reels, stars and role move with it. Removing a selection clears the role it held.

@@ -39,14 +39,69 @@ def auto_start(bars: np.ndarray, rms: np.ndarray, rms_t: np.ndarray) -> int:
     return 0
 
 
+STEADY = 0.7              # steady_grid: this share of the tracked beats on one grid makes the song's tempo steady
+
+
+def steady_grid(bt: np.ndarray, max_jitter: float = 0.03, share: float = STEADY):
+    """(grid, period) when the tracked beats sit on one steady grid but for stretches where the tracker lost it (an
+    intro with no drums, a breakdown: it wanders, adds or drops a beat, and a straight line through the beat numbers
+    no longer fits), else None. The period and phase are the ones most of the beats agree on, whatever their
+    numbers; the grid then runs through the whole song, the lost stretches included -- a produced track's tempo
+    does not change because the drums stopped."""
+    bt = np.asarray(bt, float)
+    if len(bt) < 16:
+        return None
+    p0 = float(np.median(np.diff(bt)))
+    span = float(bt[-1] - bt[0])
+
+    def best(ps):
+        z = np.exp(2j * np.pi * (bt[None, :] - bt[0]) / ps[:, None]).mean(1)
+        k = int(np.argmax(np.abs(z)))
+        return float(ps[k]), float(np.angle(z[k]) / (2 * np.pi) * ps[k])
+    step = p0 * p0 / (8 * span)                              # an eighth of a beat's slip over the song, per step
+    p, ph = best(np.arange(p0 * 0.96, p0 * 1.04, step))
+    p, ph = best(np.linspace(p - step, p + step, 41))
+    k = np.round((bt - bt[0] - ph) / p)
+    r = bt - bt[0] - ph - k * p
+    ok = np.abs(r) < max_jitter
+    if ok.mean() < share:
+        return None
+    p, c = np.polyfit(k[ok], bt[ok], 1)                      # exact, from the beats on the grid
+    k0, k1 = np.ceil(-c / p), np.floor((bt[-1] + p / 2 - c) / p)          # from the song's first moment on
+    return c + p * np.arange(k0, k1 + 1), float(p)
+
+
+def smooth_beats(bt: np.ndarray, half: int = 8, max_jitter: float = 0.03) -> np.ndarray:
+    """Tracked beats with the tracker's ~23 ms steps taken out: each beat moves onto the straight line through its
+    neighbours (half either side) where they are steady; through a tempo change or a slip they stay as tracked."""
+    bt = np.asarray(bt, float)
+    out = bt.copy()
+    for i in range(len(bt)):
+        a, b = max(0, i - half), min(len(bt), i + half + 1)
+        if b - a < 5:
+            continue
+        k = np.arange(a, b)
+        p, c = np.polyfit(k, bt[a:b], 1)
+        if np.std(bt[a:b] - (c + p * k)) < max_jitter / 2:
+            out[i] = c + p * i
+    return out
+
+
 def fit_beats(bt: np.ndarray, max_jitter: float = 0.03) -> tuple[np.ndarray, float]:
     """Steady tempo: a straight line through the beats gives the exact period and phase. The tracker's own intervals
-    are quantised to its ~23 ms hop -- enough to drift about a second off the beat over three minutes. If the tempo
-    really drifts (residuals above max_jitter), the tracked beats are kept as they are."""
+    are quantised to its ~23 ms hop -- enough to drift about a second off the beat over three minutes. Where the
+    line does not fit because the tracker lost the beat for a stretch, the grid most of the beats agree on is used
+    (steady_grid: it may hold a beat more or fewer than were tracked). If the tempo really drifts (a live band, a
+    DJ mix), the tracked beats are kept, smoothed, with their median interval -- a nominal period only: the planner
+    cuts on the beats themselves (plan.clock)."""
     k = np.arange(len(bt))
     period, phase0 = np.polyfit(k, bt, 1)
     if np.std(bt - (phase0 + period * k)) < max_jitter:
         return phase0 + period * k, float(period)
+    grid = steady_grid(bt, max_jitter)
+    if grid is not None:
+        return grid
+    bt = smooth_beats(bt, max_jitter=max_jitter)
     return bt, float(np.median(np.diff(bt)))
 
 
@@ -70,8 +125,13 @@ def analyse(song: str, start="auto", start_hint=None, max_len: float = 180.0, ph
     low = librosa.onset.onset_strength(S=librosa.power_to_db(mel), sr=sr)
     strength = low[np.clip(beats, 0, len(low) - 1)]
     phase = int(np.argmax([strength[p::4].mean() for p in range(4)]))
+    tracked = bt
     bt, period = fit_beats(bt)
     tempo = 60 / period
+    if len(bt) != len(tracked) or np.max(np.abs(bt - tracked)) > 0.035:   # a grid of its own (steady_grid): its phase
+        beats = np.clip(librosa.time_to_frames(np.clip(bt, 0, None), sr=sr), 0, len(low) - 1)
+        strength = np.array([low[max(f - 1, 0):f + 2].max() for f in beats])
+        phase = int(np.argmax([strength[p::4].mean() for p in range(4)]))
     bars = bt[phase::4]
     rms = librosa.feature.rms(y=y)[0]
     rms_t = librosa.frames_to_time(np.arange(len(rms)), sr=sr)

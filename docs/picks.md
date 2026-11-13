@@ -136,8 +136,14 @@ An editor can pick more footage than the song holds. The planner then condenses 
 
 - **`plan.<fmt>.pick_hold`** (beats): a pick longer than this is cut down to its best `pick_hold` beats, scored on
   the scrub's windows. The editor chose the stretch; the planner chooses the best part of it.
-- **`plan.<fmt>.pick_share`** (default 0.5): the share of the reel's beats the picks may take. The rest is the
-  planner's own footage, for coverage and pacing.
+- **`plan.<fmt>.pick_share`**: the share of the reel's beats the picks may take. The rest is the planner's own
+  footage, for coverage and pacing. Unset, it is 0.5, and more (up to 0.9) when the clips left alone are too few to
+  fill the rest fairly: a picked clip gives only its picks, so two unpicked clips and half a reel to fill meant
+  those two played ten times each. With the share left to the planner, a clip left alone also never takes more
+  than its share of the shots while picks have more of their own in-out to play.
+- **`plan.<fmt>.reuse`**: quick cuts made from the picks fill spare beats. Unset, one that would replay footage
+  the reel shows elsewhere is taken out (its beats go to the picks beside it); `true` allows replays, `false`
+  takes every quick cut out.
 - **`plan.<fmt>.pick_clip_share`** (default 1.5): how far above an even share one clip's picks may go. Raise it when
   the editor's picks bunch in a few clips; otherwise those clips lose picks to the cap.
 

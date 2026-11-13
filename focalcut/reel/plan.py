@@ -690,6 +690,63 @@ def unclump_clips(seq):
             seq.insert(min(gaps, key=lambda g: abs(g - i)) if gaps else i, s)
 
 
+CLIP_SHOTS = 1.5         # thin_clips: a clip the editor left alone gets at most this many times an even share of
+CLIP_FLOOR = 4           # ... the reel's shots, and no fewer than this
+
+
+def thin_clips(seq, beat):
+    """No clip the editor left alone piles up (picks cut to pieces): with most clips picked, the planner's own shots
+    come from the few that are not, and two of them took 18 of a day cut's 47 shots, back and forth to the end. A
+    clip with more than its share of the reel's shots (CLIP_SHOTS times an even one, CLIP_FLOOR at least) gives up
+    its plain shots, the weakest first, as long as picks in the same act have more of the editor's own in-out to
+    play (a pick cut to its best part grows back towards the whole selection, nearest first). Effect shots, the
+    ending, the opening and the picks stay; a shot nobody has footage for stays. Changes seq in place; returns how
+    many went."""
+    count = Counter(x["unit"]["clip"] for x in seq)
+    cap = max(CLIP_FLOOR, math.ceil(CLIP_SHOTS * len(seq) / max(len(count), 1)))
+    def bounds(x):                                           # the pick's own in-out, short of its other pieces
+        lo, hi = x["whole"]
+        for y in seq:
+            if y is not x and y.get("span") and y["unit"]["source"] == x["unit"]["source"]:
+                c, d = y["span"][0], y["span"][0] + y["beats"] * beat
+                if d <= x["span"][0] + 1e-6:
+                    lo = max(lo, d)
+                elif c >= x["span"][0]:
+                    hi = min(hi, c)
+        return lo, hi
+
+    def room(x):
+        lo, hi = bounds(x)
+        return max(0, int((hi - lo) / beat + 0.05) - x["beats"])
+    gone = 0
+    for clip in [c for c, n in count.most_common() if n > cap]:
+        mine = sorted((x for x in seq if x["unit"]["clip"] == clip and plain(x) and not x.get("span")
+                       and not x.get("open") and x is not seq[0] and x is not seq[-1]), key=lambda x: x["rank"])
+        for x in mine:
+            if count[clip] <= cap:
+                break
+            k = next(i for i, y in enumerate(seq) if y is x)
+            takers = sorted((j for j, y in enumerate(seq) if y["act"] == x["act"] and y.get("whole") and y.get("span")
+                             and not y.get("reuse") and not any(y.get(f) for f in ("ending", "logo", "open", "close"))
+                             and room(y) > 0), key=lambda j: abs(j - k))
+            if sum(room(seq[j]) for j in takers) < x["beats"]:
+                continue
+            n = x["beats"]
+            for j in takers:
+                y = seq[j]
+                g = min(n, room(y))
+                lo, hi = bounds(y)
+                y["beats"] += g; n -= g
+                a = max(lo, min(y["span"][0], hi - y["beats"] * beat))
+                y["span"] = [round(a, 3), round(min(hi, a + y["beats"] * beat), 3)]
+                y["t"] = round((y["span"][0] + y["span"][1]) / 2, 2)
+                if not n:
+                    break
+            seq.pop(k)
+            count[clip] -= 1; gone += 1
+    return gone
+
+
 FINALE_HOLD = 4          # a plain shot in the finale holds at most this long when there are picks to cut in
 CLOSE_BEATS = 4          # the closing shot holds at least this long (when its footage allows)
 
@@ -847,7 +904,8 @@ def spread_picks(seq, recs, home, beat, budget, full=0.9):
     """Where the editor's selections would overfill their act (more of their beats than the act has, so each would
     be cut to a beat) and a later act has room -- above all an act the planner left empty, its footage all picks --
     the act's last selections (by source time) move there: {(record id, moment time): act}. B-roll stays home,
-    and a day act's picks (DAY_ACTS) never move into the night.
+    and a day act's picks (DAY_ACTS) never move into the night (a reel with a night act; a day cut's climax is the
+    day's own).
     full: the share of an act's beats its picks may fill (less, for picks cut to pieces: room for other footage)."""
     if not beat or not budget:
         return {}
@@ -863,7 +921,8 @@ def spread_picks(seq, recs, home, beat, budget, full=0.9):
         if x.get("span"):
             load[x["act"]] += x["beats"]
     order = [a for a in ACT_NAMES if a not in ("teaser", "finale")]
-    out = {}
+    dark = budget.get("night", 0) > 0                        # (a reel with no night act -- a day cut: its climax
+    out = {}                                                 #  is the day's, and the day's picks may play there)
     for a in order:
         mine = sorted([(r, m) for r, m in todo if act_of(r) == a and r["role"] != "transition"],
                       key=lambda rm: -rm[1]["t"])
@@ -871,7 +930,7 @@ def spread_picks(seq, recs, home, beat, budget, full=0.9):
             if load[a] <= budget.get(a, 0) * full:
                 break
             later = [b for b in order[order.index(a) + 1:] if load[b] + want(m) <= budget.get(b, 0) * full
-                     and not (a in DAY_ACTS and b not in DAY_ACTS)]      # day footage never into the night
+                     and not (dark and a in DAY_ACTS and b not in DAY_ACTS)]   # day footage never into the night
             if not later:
                 break
             b = min(later, key=lambda b: load[b] / max(budget[b], 1))
@@ -950,7 +1009,7 @@ def balance_picks(seq, beat, budget):
             quick_cuts(seq, n, a, beat, size=2)
 
 
-def include_adds(P, seq, recs, home, beat=None, budget=None, insert=False):
+def include_adds(P, seq, recs, home, beat=None, budget=None, insert=False, full=None):
     """The editor's extra shots (picks "add") are in the reel: each one not already shown takes the place of the
     weakest plain shot in its act (home: record id -> act; spread_picks moves some where their act is full), never
     beside its own clip -- or, with no such shot, splits the longest plain one; in an act with no shots at all it
@@ -958,7 +1017,7 @@ def include_adds(P, seq, recs, home, beat=None, budget=None, insert=False):
     insert (picks cut to pieces, pick_pieces): a selection goes in between two shots of its act instead, as far from
     the act's other picks as it can (so picks and the rest of the footage take turns), and its beats come from the
     act's weakest plain shots."""
-    moved = spread_picks(seq, recs, home, beat, budget, PIECE_FULL if insert else 0.9)
+    moved = spread_picks(seq, recs, home, beat, budget, max(PIECE_FULL, full or 0) if insert else 0.9)
     has_day = any(r["unit"].get("day") for r in recs)
     for r in recs:
         for m in [m for m in r["moments"] if m.get("add")]:
@@ -1308,6 +1367,22 @@ def pick_like(project, cfg):
     if not f or not os.path.exists(f):
         return None
     return [[s["unit"]["id"], s["src_in"], s["src_in"] + s["length"]] for s in json.load(open(f))["shots"] if s.get("add")]
+
+
+PICK_SHARE = (0.5, 0.9)  # the picks' share of the reel's beats when reel.json names none: from, up to (rest_share)
+REST_PIECES = 2          # ... a clip the editor left alone fills this many shots of pick_hold beats (B-roll: one)
+
+
+def rest_share(recs, fmt, hold, budget):
+    """The share of the reel's beats the picks take when reel.json sets no "pick_share": half, and more when the
+    footage the editor left alone is too little to fill the other half fairly. A picked clip gives only its picks,
+    so the rest of the reel is cut from the unpicked clips; with two of those and half a reel to fill, the planner
+    played them ten times each and condensed half the picks out (SSMC 2026's day cut). Each unpicked dance clip is
+    counted for REST_PIECES shots of hold beats, each unpicked B-roll clip for one."""
+    free = [r for r in recs if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")
+            and not any(m.get("add") or m.get("open") for m in r["moments"])]
+    rest = sum(hold * (1 if r["role"] == "transition" else REST_PIECES) for r in free)
+    return round(float(min(max(1 - rest / max(budget, 1), PICK_SHARE[0]), PICK_SHARE[1])), 2)
 
 
 def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None, close=None, clip_share=None,
@@ -2231,7 +2306,7 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
             for m in r["moments"] if r["unit"]["id"].startswith(c[0]) else ():
                 if m.get("span") and m["span"][0] - 0.5 <= c[1] <= m["span"][1]:
                     m["close"] = True
-    include_adds(P, seq, recs, home, pbeat, budget, insert=bool(cfg.get("pick_hold")))
+    include_adds(P, seq, recs, home, pbeat, budget, insert=bool(cfg.get("pick_hold")), full=cfg.get("pick_full"))
     cov = cover_people(P, seq, recs, home, cfg.get("people"), fmt, music["beat"], cfg.get("climax_from"), allowed,
                        rate)
     if cov:
@@ -2314,9 +2389,18 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
     if cfg.get("pick_hold"):                                 # picks cut to pieces: no long filler between them, and
         split_long(P, seq, recs, home)                       # none too short to read (the grid stays as it is)
         merge_flashes(P, seq)
+        if cfg.get("pick_full") and thin_clips(seq, music["beat"]):   # nor (the share left to the planner) a clip
+                                                             # the editor left alone, shot after shot
+            print(f"[reel] {fmt}: clips left alone thinned to their share; their beats went back to the picks")
         unclump_clips(seq)
     if cfg.get("reuse") is False:
         no_reuse(seq, music["beat"])
+    elif cfg.get("reuse") is not True:                       # nothing shown twice: a repeat reads as a mistake
+        for _ in range(3):                                   # (a pick that grows over a taken-out cut's beats may
+            again = replays(seq, music["beat"])              #  reach another cut's footage)
+            if not again:
+                break
+            no_reuse(seq, music["beat"], only=again)
     if cfg.get("open_broll"):
         open_broll(P, seq, recs, cfg["open_broll"] if isinstance(cfg["open_broll"], list) else ("teaser", "arrival"))
     if cfg.get("open_with"):
@@ -2326,14 +2410,32 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
     return seq, acts
 
 
-def no_reuse(seq, beat):
-    """No pick seen twice (cfg "reuse": false): the quick cuts made from picks already in the reel (their trimmed
-    ends, their openings again) go, and their beats go to the picks beside them, as far as each pick's own in-out
-    has footage for, the nearest first (else to the B-roll beside them, else the shot before). The grid stays."""
+REPLAY = 0.15            # seconds of footage shown elsewhere in the reel that make a quick cut a replay
+
+
+def replays(seq, beat):
+    """The quick cuts (made from the editor's picks to fill beats) that show footage the reel plays elsewhere: a
+    pick's opening again acts later, a trimmed end the pick has since grown back over, or an earlier quick cut's."""
+    spans = [(k, x, x["span"][0], x["span"][0] + x["beats"] * beat) for k, x in enumerate(seq) if x.get("span")]
+    return [x for k, x, a, b in spans if x.get("reuse") and any(
+        j != k and y["unit"]["source"] == x["unit"]["source"] and min(b, d) - max(a, c) > REPLAY
+        and (not y.get("reuse") or j < k) for j, y, c, d in spans)]
+
+
+def no_reuse(seq, beat, only=None):
+    """No pick seen twice: the quick cuts made from picks already in the reel go, and their beats go to the picks
+    beside them, as far as each pick's own in-out has footage for, the nearest first (else to the B-roll beside
+    them, else the shot before). The grid stays. By default (cfg "reuse" unset) only the ones that replay footage
+    the reel shows elsewhere go (only: replays()), and only where the picks have footage of their own to play in
+    their place; cfg "reuse": false takes every quick cut out, the trimmed ends
+    not seen yet as well; "reuse": true keeps them all."""
     def room(x):                                             # beats of the pick's own footage it doesn't play yet
         w = x.get("whole") or x.get("span")
         return max(0, int((w[1] - w[0]) / beat + 0.25) - x["beats"]) if w else 0
-    for r in [x for x in seq if x.get("reuse")]:
+    takes = lambda x: x.get("span") and not any(x.get(f) for f in ("ending", "logo", "open"))
+    for r in [x for x in seq if x.get("reuse")] if only is None else only:
+        if only is not None and sum(room(x) for x in seq if x is not r and takes(x)) < r["beats"]:
+            continue                                         # (no pick has the footage: a repeat beats a long hold)
         k = next(i for i, x in enumerate(seq) if x is r)
         seq.pop(k)
         n = r["beats"]
@@ -2753,18 +2855,28 @@ def transitions(seq, music, cfg, direction=None):
     look = look_of(cfg)
 
     def put(i, name, why):
+        A, B = seq[i - 1], seq[i]
         velocity = name == "velocity"                       # a velocity edit: out fast, in fast, a swipe between
+        ramp = velocity and not (any(f in SPEED for f in A["fx"] + B["fx"]) or A["beats"] < 2 or B["beats"] < 2
+                                 or A.get("span") or B.get("span")          # (an editor's pick plays at real speed,
+                                 or i == len(seq) - 1 or B.get("ending"))   #  and so does the last shot)
         name = "swipe" if velocity else name
+        if velocity and not ramp and not travel(A, B):      # no ramp to whip between and no movement to carry: a
+            hit = acc[pos[i]] if pos[i] < len(acc) else 1   # whip here has no reason. The drop gets a flash when
+            if hit < cfg["flash_at"].get(B["act"], 9):      # the music hits there, else the cut itself
+                return False
+            name, why = "flash", f"act change on a hit in the music ({hit:.1f}x)"
+        plain_name = name
         name = (look or {}).get("reasons", {}).get(name, name)   # the same reason, in the film's look
         h = G.HALF[name]
         if room[i - 1] < h + 0.5 or room[i] < h + 0.5:
             return False
-        if why != "act change" and (seq[i - 1].get("transition") or (i + 1 < len(seq) and seq[i + 1].get("transition"))):
+        if plain_name != "flash" and min(A["beats"], B["beats"]) < G.MIN_BEATS:
+            return False                                    # a one-beat shot inside a dissolve or a push is a sliver
+        if not why.startswith("act change") and (seq[i - 1].get("transition")
+                                                 or (i + 1 < len(seq) and seq[i + 1].get("transition"))):
             return False                                    # never back to back
-        A, B = seq[i - 1], seq[i]
-        if velocity and not (any(f in SPEED for f in A["fx"] + B["fx"]) or A["beats"] < 2 or B["beats"] < 2
-                             or A.get("span") or B.get("span")          # (an editor's pick plays at real speed,
-                             or i == len(seq) - 1 or B.get("ending")):  #  and so does the last shot)
+        if ramp:
             A["fx"].append("flashout"); B["fx"].insert(0, "flashin"); A["velocity"] = B["velocity"] = True
         seq[i]["transition"] = name; seq[i]["why"] = why
         room[i - 1] -= h; room[i] -= h
@@ -2776,6 +2888,12 @@ def transitions(seq, music, cfg, direction=None):
             return False
         a_out, b_in = direction(A["unit"], A["t"])[1], direction(B["unit"], B["t"])[0]
         return a_out * b_in > 0 and min(abs(a_out), abs(b_in)) > G.TRAVEL
+
+    def daytime(u):                                         # story() marks it; a hand-built or picks-mode cut: by
+        if u.get("day") is not None:                        # its tag and category, as story() does
+            return bool(u["day"])
+        return any(k in u.get("tag", "") for k in cfg.get("day") or ()) or \
+            any(k in u.get("category", "") for k in [*(cfg.get("day") or ()), *(cfg.get("day_shows") or ())])
 
     used = {}
     for i in range(1, len(seq)):
@@ -2790,10 +2908,13 @@ def transitions(seq, music, cfg, direction=None):
         caps = cfg["caps"].get(act, {})
         vocab = [n for n in cfg["grammar"].get(act, ()) if used.get((act, n), 0) < caps.get(n, 0)]
         accent = acc[pos[i]] if pos[i] < len(acc) else 1
-        for name, why in G.reasons(A, B, vocab, accent, cfg["flash_at"].get(act, 9), travel):
+        for name, why in G.reasons(A, B, vocab, accent, cfg["flash_at"].get(act, 9), travel, daytime):
             if put(i, name, why):
                 used[(act, name)] = used.get((act, name), 0) + 1
                 break
+
+
+PULSE_HIT = 1.2          # glitch_look: a look's phrase transition needs a cut whose beat hits this hard (accent)
 
 
 def glitch_look(seq, music, look):
@@ -2807,8 +2928,8 @@ def glitch_look(seq, music, look):
     pos, rec = [], 0
     for s in seq:
         pos.append(rec); rec += s["beats"]
-    every = look.get("pulse")                     # a glitch cut on the cut nearest each phrase (look["pulse"] beats),
-    if every:                                     # where none is near: the look's transitions in turn
+    every = look.get("pulse")                     # a glitch cut by each phrase (look["pulse"] beats), on the cut near
+    if every:                                     # it that the music hits hardest: the look's transitions in turn
         cuts = {pos[i]: i for i in range(1, len(seq))}
         names = look["transitions"]
         k = 0
@@ -2822,10 +2943,13 @@ def glitch_look(seq, music, look):
             near = [p for p in cuts if abs(p - b) <= every // 4]
             if any(seq[cuts[p]].get("transition") for p in near):
                 continue
-            ok = sorted((p for p in near if cuttable(cuts[p])), key=lambda p: abs(p - b))
-            if ok:
-                i = cuts[ok[0]]
-                seq[i]["transition"], seq[i]["why"] = names[k % len(names)], "phrase"
+            hit = lambda p: float(acc[p]) if p < len(acc) else 1.0
+            ok = sorted((p for p in near if cuttable(cuts[p]) and hit(p) >= look.get("pulse_hit", PULSE_HIT)),
+                        key=lambda p: (-hit(p), abs(p - b)))
+            if ok:                                # (a phrase with no cut the music marks keeps its hard cuts: on
+                i = cuts[ok[0]]                   #  SSMC's night 13 of 21 phrase glitches sat on beats softer than
+                seq[i]["transition"] = names[k % len(names)]   # the ones around them, 8 off the phrase's first)
+                seq[i]["why"] = f"the phrase's hit ({hit(ok[0]):.1f}x)"
                 k += 1
     swap = look.get("fx", {})
     for s in seq:
@@ -3789,15 +3913,36 @@ def assess(project, recs, fmt, cfg):
 
 
 def clock(music):
-    """Seconds from the reel's first beat to its beat k. One song: k beats of its fitted period. Several songs (music.join):
-    the joined grid's real beat times, since the tempo may change where one song hands over to the next."""
+    """Seconds from the reel's first beat to its beat k, on the music's own beat grid (music["beats"]): the cuts land
+    where the beats are. A grid the analysis fitted to a steady tempo is k beats of its period; one it kept as
+    tracked (a live band drifting, a DJ mix changing tempo, an intro the tracker wandered through) or joined from
+    several songs has the real beat times -- counting k periods over those drifts off the beat within a few bars
+    (a 1% error in the period is a whole beat after 100). Past the grid's end the song's period carries on."""
     beat = music["beat"]
-    if not music.get("sections"):
+    bt = np.array(music.get("beats") or [], float)
+    if len(bt) < 2:
         return lambda k: k * beat
-    bt = np.array(music["beats"]); i0 = int(np.argmin(np.abs(bt - music["start"])))
+    i0 = int(np.argmin(np.abs(bt - music["start"])))
     g = bt[i0:] - bt[i0]
-    per = float(g[-1] - g[-2])
+    if len(g) < 2:
+        return lambda k: k * beat
+    per = float(g[-1] - g[-2]) if music.get("sections") else beat
     return lambda k: float(g[k]) if k < len(g) else float(g[-1] + (k - len(g) + 1) * per)
+
+
+def beats_in(music):
+    """Beats the reel's music holds: the grid's own count from its start to its end (not its length over a nominal
+    period, which miscounts when the tempo is not that period throughout)."""
+    beat = music.get("beat") or float(np.median(np.diff(music["beats"])))
+    if music.get("sections"):
+        return len(music["beats"])
+    bt = np.array(music.get("beats") or [], float)
+    end = music["start"] + music["length"]
+    if len(bt) < 2:
+        return round(music["length"] / beat)
+    i0 = int(np.argmin(np.abs(bt - music["start"])))
+    j = max(int(np.searchsorted(bt, end + 1e-6)) - 1, i0)           # the last beat at or before the end
+    return (j - i0) + round((end - bt[j]) / beat)
 
 
 def in_point(s, beat):
@@ -3857,6 +4002,11 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
             print(f"[reel] {fmt}: picks mode does this itself, not needed: {', '.join(old)}")
     if cfg.get("pick_hold") and picks:                       # long picks: their best part; many: condensed
         b = music.get("beat") or float(np.median(np.diff(music["beats"])))
+        if cfg.get("pick_share") is None:                    # none named: half, more when little else can fill it
+            cfg["pick_share"] = cfg["pick_full"] = rest_share(moments, fmt, cfg["pick_hold"], music["length"] / b)
+            if cfg["pick_share"] > PICK_SHARE[0]:
+                print(f"[reel] {fmt}: the picks take {cfg['pick_share']:.0%} of the reel (little footage left alone "
+                      f"to fill the rest)")
         condensed = pick_pieces(project, moments, fmt, b, cfg["pick_hold"], music["length"] / b, cfg.get("pick_share"),
                                  cfg.get("ending"), cfg.get("close"), cfg.get("pick_clip_share"), cfg.get("pick_grow"),
                                  cfg.get("pick_whole") or (), cfg.get("pick_by"), pick_like(project, cfg))
@@ -3872,7 +4022,7 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
                fmt, cfg)
     music = dict(music, beat=music.get("beat") or float(np.median(np.diff(music["beats"]))))   # fitted period
     beat = music["beat"]
-    total_beats = len(music["beats"]) if music.get("sections") else round(music["length"] / beat)
+    total_beats = beats_in(music)
     if cfg["acts"] is None and music.get("acts"):            # several songs: the acts sit on the songs
         cfg["acts"] = music["acts"]
     cfg["sets"] = song_sets(project, music)
