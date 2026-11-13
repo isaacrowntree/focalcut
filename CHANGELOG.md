@@ -97,6 +97,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Cuts land on the beat again.** The planner timed cuts as so many beats of the song's nominal period, and for
+  a song whose beat grid was kept as tracked (the tempo drifting, a DJ mix, an intro the tracker wandered through)
+  that period is the tracker's hop-quantised median: 1% out, a whole beat after a hundred. On Electric Nation and
+  SSMC 2026 half of every reel's cuts were more than a quarter beat off, and none of the SSMC day cut's were within
+  two frames, while the overlay's blinks (which read the grid itself) sat on the beat. `plan.clock` now follows
+  the grid's own beat times and `plan.beats_in` counts its beats; `music.fit_beats` finds the one steady grid of a
+  produced track whose intro the tracker lost (`steady_grid`, from the song's first moment) and smooths the
+  tracker's 23 ms steps out of a drifting one. Re-run `--steps plan,render,xml,review` (and `music` first for the
+  exact grid).
 - A selection moved or trimmed in Clips kept neither its stars nor its opening / ending role when it was dragged
   past its own length (the role stayed behind on the old range, where no page showed it). It is the same pick
   now: its reels, stars and role move with it. Removing a selection clears the role it held.

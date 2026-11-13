@@ -90,6 +90,9 @@ Jordan).
 - `PHRASES`, `rhythm`, `phrase_energy`, `fit_slots` (moves that need time get the long slots), `in_point`,
   `ANTICIPATE`.
 - Cut frames are counted from the reel's start (per-shot rounding drifts most of a second over 3 minutes).
+- Cuts sit on the music's own beat grid (`plan.clock`), never on a count of nominal periods: a tracked grid
+  (a live band, a DJ mix, an intro the tracker lost) is cut on its real beat times. `music.fit_beats` gives a
+  steady song one exact grid from its first moment (`steady_grid`), and smooths a drifting one.
 - Salsa tracks at half-time, so one detected bar is an 8-count.
 
 ## 7. Subject: who the shot is about

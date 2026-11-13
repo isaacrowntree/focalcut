@@ -3789,15 +3789,36 @@ def assess(project, recs, fmt, cfg):
 
 
 def clock(music):
-    """Seconds from the reel's first beat to its beat k. One song: k beats of its fitted period. Several songs (music.join):
-    the joined grid's real beat times, since the tempo may change where one song hands over to the next."""
+    """Seconds from the reel's first beat to its beat k, on the music's own beat grid (music["beats"]): the cuts land
+    where the beats are. A grid the analysis fitted to a steady tempo is k beats of its period; one it kept as
+    tracked (a live band drifting, a DJ mix changing tempo, an intro the tracker wandered through) or joined from
+    several songs has the real beat times -- counting k periods over those drifts off the beat within a few bars
+    (a 1% error in the period is a whole beat after 100). Past the grid's end the song's period carries on."""
     beat = music["beat"]
-    if not music.get("sections"):
+    bt = np.array(music.get("beats") or [], float)
+    if len(bt) < 2:
         return lambda k: k * beat
-    bt = np.array(music["beats"]); i0 = int(np.argmin(np.abs(bt - music["start"])))
+    i0 = int(np.argmin(np.abs(bt - music["start"])))
     g = bt[i0:] - bt[i0]
-    per = float(g[-1] - g[-2])
+    if len(g) < 2:
+        return lambda k: k * beat
+    per = float(g[-1] - g[-2]) if music.get("sections") else beat
     return lambda k: float(g[k]) if k < len(g) else float(g[-1] + (k - len(g) + 1) * per)
+
+
+def beats_in(music):
+    """Beats the reel's music holds: the grid's own count from its start to its end (not its length over a nominal
+    period, which miscounts when the tempo is not that period throughout)."""
+    beat = music.get("beat") or float(np.median(np.diff(music["beats"])))
+    if music.get("sections"):
+        return len(music["beats"])
+    bt = np.array(music.get("beats") or [], float)
+    end = music["start"] + music["length"]
+    if len(bt) < 2:
+        return round(music["length"] / beat)
+    i0 = int(np.argmin(np.abs(bt - music["start"])))
+    j = max(int(np.searchsorted(bt, end + 1e-6)) - 1, i0)           # the last beat at or before the end
+    return (j - i0) + round((end - bt[j]) / beat)
 
 
 def in_point(s, beat):
@@ -3872,7 +3893,7 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
                fmt, cfg)
     music = dict(music, beat=music.get("beat") or float(np.median(np.diff(music["beats"]))))   # fitted period
     beat = music["beat"]
-    total_beats = len(music["beats"]) if music.get("sections") else round(music["length"] / beat)
+    total_beats = beats_in(music)
     if cfg["acts"] is None and music.get("acts"):            # several songs: the acts sit on the songs
         cfg["acts"] = music["acts"]
     cfg["sets"] = song_sets(project, music)

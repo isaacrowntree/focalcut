@@ -1727,3 +1727,45 @@ def test_follow_puts_the_portrait_strip_on_the_person_the_editor_clicked():
     c = follow_override(crop, yf, [(1.0, 0.5, 0.7)], 0.0, 4.0)          # nobody's face there: hold on the click
     assert c["follow"] == "point" and all(abs(p[1] - 0.5) < 1e-6 for p in c["path"])
     assert follow_override(crop, yf, [(9.0, 0.65, 0.3)], 0.0, 4.0) is crop   # a click far from the shot
+
+
+def test_fit_beats_finds_the_steady_grid_through_an_intro_the_tracker_lost():
+    """A produced track whose intro has no drums: the tracker wanders there and slips a beat, so a line through the
+    beat numbers fails -- the grid most beats agree on is the song's, intro included."""
+    from focalcut.reel.music import fit_beats
+    hop = 512 / 22050
+    p = 60 / 122.0
+    true = 0.24 + p * np.arange(340)
+    lost = 0.70 + np.cumsum(np.r_[0, np.tile([0.44, 0.53, 0.42, 0.56], 8)])[:30]      # 30 wandering beats
+    k0 = int(np.ceil((lost[-1] + 0.3 - 0.24) / p))
+    tracked = np.round(np.r_[lost, true[k0:]] / hop) * hop
+    fitted, period = fit_beats(tracked)
+    assert abs(period - p) < 2e-5                            # (the tracked median interval is a whole hop off)
+    assert abs(np.median(np.diff(tracked)) - p) > 0.003
+    err = np.abs(fitted[:, None] - true[None, :]).min(1)     # every grid beat on a true beat, from the song's start
+    assert err.max() < 0.012 and fitted[0] < p and len(fitted) == len(true)
+
+
+def test_fit_beats_smooths_a_drifting_tempo_but_keeps_it():
+    from focalcut.reel.music import fit_beats
+    hop = 512 / 22050
+    true = np.cumsum(np.linspace(0.46, 0.50, 400))           # a DJ riding the pitch: 130 -> 120 BPM
+    fitted, _ = fit_beats(np.round(true / hop) * hop)
+    assert len(fitted) == len(true) and np.abs(fitted - true).max() < 0.012
+    assert np.abs(fitted - true).mean() < np.abs(np.round(true / hop) * hop - true).mean()
+
+
+def test_cuts_follow_the_tracked_beats_not_a_nominal_period():
+    """plan.clock: a grid the analysis kept as tracked (drifting tempo) is cut on its own beats. Counting periods
+    over it put most cuts off the beat (Electric Nation, SSMC: half of every reel's cuts a quarter beat out)."""
+    from focalcut.reel.plan import beats_in, clock
+    bt = 2.0 + np.cumsum(np.r_[0, np.linspace(0.47, 0.50, 199)])
+    m = dict(beats=bt.tolist(), beat=float(np.median(np.diff(bt))), start=float(bt[8]), length=float(bt[168] - bt[8]))
+    T = clock(m)
+    assert all(abs(T(k) - (bt[8 + k] - bt[8])) < 1e-9 for k in (0, 1, 50, 160))
+    assert abs(T(160) - 160 * m["beat"]) > 0.2               # where k periods would have put that cut
+    assert beats_in(m) == 160
+    assert T(195) > T(191) and abs((T(195) - T(191)) - 4 * m["beat"]) < 0.05   # past the grid: the period carries on
+    steady = dict(beats=(1.0 + 0.5 * np.arange(100)).tolist(), beat=0.5, start=3.0, length=40.0)
+    assert abs(clock(steady)(37) - 18.5) < 1e-9 and beats_in(steady) == 80
+    assert clock(dict(beat=0.5, beats=[], start=0.0, length=10.0))(4) == 2.0
