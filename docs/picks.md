@@ -83,11 +83,22 @@ picks and nothing else needs setting:
 - **In the story's order.** The acts run in turn (day, the stage, the night, the headliner), and within an act the
   clips are woven through each other in shooting order, so no clip plays as a block; no clip cuts to itself, B-roll
   never sits beside B-roll, and runs of one-beat or equal-length shots are broken up.
-- **More picks than reel:** the picks give up beats, each the same share of its length, the least starred first,
-  and none goes under two beats (or its own length, if shorter). Stars keep a pick whole: an unstarred pick is
-  trimmed before a starred one. A trimmed pick plays its clearest part. Only when every pick is down to two beats do
-  picks go, the least starred, then the least clearly seen, and the plan log names each one. The log also says how
-  many beats the picks ask for against how many the reel has, and roughly how many fewer picks would play whole.
+- **More picks than reel:** the picks give up beats, each the same share of its length, and none goes under two
+  beats (or its own length, if shorter). B-roll picks give theirs first, down to that floor, before any pick of
+  people loses a beat; among each kind the least starred go first, so stars keep a pick whole, and among equal stars
+  the least clearly seen third (on the scrub's windows), so a clear shot of people keeps its length. A trimmed pick plays
+  its clearest part. Only when every pick is down to two beats do picks go, B-roll before people, the least
+  starred, then the least clearly seen, and the plan log names each one. The log also says how many beats the picks
+  ask for against how many the reel has, how many B-roll and people picks were trimmed, and roughly how many fewer
+  picks would play whole.
+- **Portrait puts people first.** B-roll plays badly in a 9:16 strip, so in portrait a B-roll pick gives up beats
+  down to one, and then B-roll picks go (unstarred and 3-star ones, each named in the log) before a pick of people
+  is trimmed. This is the one place the formats differ; `open_with` / `end_with` picks, the opening and the ending
+  stay. Star a B-roll pick 4 or 5 to keep it in portrait.
+- **The lengths follow the music.** Once the order is settled, picks that play where the music is calm (an intro,
+  a breakdown) keep more of their length (up to 4 beats), given by the ones that play where it drives, B-roll
+  first, the least starred first. No cut falls on a beat the music holds (a sustain): it moves onto the hit before
+  or the next beat that sounds. See concepts §6b, §6c.
 - **More reel than picks:** B-roll from clips the editor left alone fills the rest, a few beats a shot. Never a clip
   they picked from or banned, and no people footage they didn't pick unless the B-roll runs out (the log says so).
 - **The opening and ending are theirs.** It opens on the pick marked Opening (or reel.json `"open"`) under the logo,

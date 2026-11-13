@@ -17,9 +17,11 @@ effects cross-fade over a beat as one preset hands over to the next.
              kicks), flame (fire rising from the bottom edge, fed by the spectrum, in the palette's colours)
   colour     palettes: neon, synthwave, vaporwave, acid, halloween, ice, fire, rainbow; duotone recolours the
              footage into the palette on drops
-  beat       kick (a brightness blink and zoom punch on every beat), split (RGB split on each bar), drops (a white
-             flash, then one blink per beat through the drop's first bar, with a confetti / sparks / kaleidoscope /
-             duotone burst; song joins count as drops)
+  beat       kick (a brightness blink and zoom punch on every beat the rhythm section plays -- scaled by the
+             music's drive, music.py: none through an intro or a vocal breakdown), split (RGB split on each bar,
+             likewise), drops (a white flash, then one blink per beat through the drop's first bar, with a confetti
+             / sparks / kaleidoscope / duotone burst; a drop is the rhythm section coming back in, and a song join
+             where the music drives)
 
 Each act has a strength (day sets lighter, night and climax full) and calmer presets in the daytime; shots under
 the logo ease it back so the logo reads. Every effect fades out towards the centre of the frame, where the subject
@@ -31,8 +33,9 @@ deeper and wider, so the edges read as a clean fade rather than a grey haze ("mi
 that deeper fade for a preset). Where it lights nothing, its ground covers only part of a corner ("edge_fill",
 0.35) and the darkened footage shows through ("bare": 0..1, how much deeper a bare edge fades, default 0.5), so a sparse preset never leaves the corners solid black. Light goes mostly into the dark parts of the frame, so faces stay clean.
 Flickers: whole-frame white flashes or dark drop-outs, each one sharp on a beat and gone within half a beat.
-By default they come up the last bar into every drop (white, white, white, then dark on the beat before it hits) and
-on the hardest single hits of the night (alternately white and dark, at most one every 4 bars); reel.json
+By default they come up the last bar into every drop that has a build (white, white, white, then dark on the beat
+before it hits -- only on beats that sound: a drop out of a vocal break gets none) and on the hardest single hits of
+the night (alternately white and dark, at most one every 4 bars, each on a beat the music really hits); reel.json
 "flicker": {"auto": true, "at": [["1:23.4", "white"], ["2:05", "dark", 4]]} adds them at reel times (snapped to the
 nearest beat; the number is how many beats in a row), and "flicker": false turns them off.
 Full-frame flashes never come faster than one per beat (photosensitivity: about 2 a second at 125 BPM).
@@ -180,8 +183,15 @@ def strength(plan: dict, n: int, opts: dict) -> np.ndarray:
 
 
 def grid(music: dict, plan: dict, n: int, fps: int) -> dict:
-    """Per frame: time since the last beat (s), whether it was a downbeat, the bar number, and the drop pulse (beats
-    since a drop started, or -1)."""
+    """Per frame: time since the last beat (s), whether it was a downbeat, the bar number, the drop pulse (beats
+    since a drop started, or -1) and how much of the beat layer the beat carries ("drive", 0..1: music.feel's blink
+    -- nothing through an intro or a vocal breakdown, where there is no kick to blink on).
+
+    With the music's own description (music.json beat_section) a drop is where the rhythm section comes in after two
+    bars or more without it; a song join counts as one only where the music drives. Without it (an older
+    music.json), the loudness jumping back after a quieter stretch, and every beat carries the beat layer."""
+    from . import music as MU
+    F = MU.feel(music, whole=True)
     off = plan["music_start"]
     beats = np.array(music["beats"]) - off
     bar_t = np.array(music["bars"]) - off
@@ -190,14 +200,20 @@ def grid(music: dict, plan: dict, n: int, fps: int) -> dict:
     acc = np.pad(acc, (0, max(len(beats) - len(acc), 0)), mode="edge")[:len(beats)]   # one song: one per interval
     drop_beats = set()
     for s in (music.get("sections") or [])[1:]:                  # each song join
-        drop_beats.add(int(np.argmin(np.abs(beats - (s["at"] - off)))))
+        i = int(np.argmin(np.abs(beats - (s["at"] - off))))
+        if not F["calm"][i]:
+            drop_beats.add(i)
     bar_i = [i for i, b in enumerate(beats) if round(b, 3) in bars]
     e = acc / (np.median(acc) + 1e-9)
-    for j in range(4, len(bar_i) - 4):                          # the low end jumping back in after a build
-        i = bar_i[j]
-        after, before = e[i:i + 16].mean(), e[max(i - 16, 0):i].mean()
-        if after > 1.7 * before and after > 0.9:
-            drop_beats.add(i)
+    if F["known"]:
+        drop_beats.update(i for i in F["entries"] if i >= 8 and beats[i - 8] >= 0)   # the rhythm section coming
+                                                                 # in (after two bars without it that the reel plays)
+    else:
+        for j in range(4, len(bar_i) - 4):                      # the low end jumping back in after a build
+            i = bar_i[j]
+            after, before = e[i:i + 16].mean(), e[max(i - 16, 0):i].mean()
+            if after > 1.7 * before and after > 0.9:
+                drop_beats.add(i)
     t = np.arange(n) / fps
     k = np.searchsorted(beats, t, side="right") - 1
     since = np.where(k >= 0, t - beats[np.clip(k, 0, None)], 9.0)
@@ -208,34 +224,45 @@ def grid(music: dict, plan: dict, n: int, fps: int) -> dict:
             m = k == d + b
             drop[m & (drop < 0)] = b
     bar = np.clip(np.searchsorted(bar_t, t + 1e-3, side="right") - 1, 0, None)
-    return dict(since=since, down=down, drop=drop, bar=bar, k=k, beats=beats, energy=e, drops=sorted(drop_beats))
+    drive = np.where(k >= 0, F["blink"][np.clip(k, 0, len(beats) - 1)], 0.0) if len(beats) else np.ones(n)
+    return dict(since=since, down=down, drop=drop, bar=bar, k=k, beats=beats, energy=e, drops=sorted(drop_beats),
+                drive=drive.astype(np.float32), hit=F["hit"], section=F["section"], held=F["held"], known=F["known"])
 
 
 WHITE, DARK = 1, 2
 FLICKER_HIT = 98           # a beat louder than this percentile of the song's beats is a hard hit
 FLICKER_GAP = 16           # beats between automatic hits
+FLICKER_ACCENT = 1.0       # ... and a hit's beat lands at least as hard as its neighbours, on a driving beat
 
 
 def flickers(G: dict, S: np.ndarray, opts: dict, fps: int) -> dict:
     """{beat index: WHITE or DARK}: the build into each drop, the hardest hits of the night acts and the editor's own
-    (opts["flicker"]["at"]: [reel time, "white" | "dark"(, beats in a row)]). One per beat at most."""
+    (opts["flicker"]["at"]: [reel time, "white" | "dark"(, beats in a row)]). One per beat at most.
+
+    An automatic flicker needs the music to hit on its beat: the ones up to a drop only on beats of a build (a snare
+    roll: music.json beat_section "build") that sound -- a drop out of a vocal break or a silence gets none, the
+    drop's own flash says it; a hard hit only where the beat's accent is on a driving beat (music.feel's hit at
+    least FLICKER_ACCENT). The editor's own go where they put them."""
     from .plan import _secs
     cfg = opts.get("flicker") or {}
     beats, e, out = G["beats"], G["energy"], {}
     if not len(beats) or cfg == {}:
         return out
     at_beat = lambda i: float(S[min(int(beats[i] * fps), len(S) - 1)])   # the act's strength there
+    known = G.get("known", False)                                # (a grid made without the music's description:
+    sounds = lambda j: not known or (G["section"][j] == "build" and not G["held"][j])   # as it always was)
+    real = lambda i: not known or G["hit"][i] >= FLICKER_ACCENT
     if cfg.get("auto", True):
         for n, d in enumerate(G["drops"]):
             if n and d - G["drops"][n - 1] < 8:                  # a second drop straight after one: no build
                 continue
             for j, kind in zip(range(d - 4, d), (WHITE, WHITE, WHITE, DARK)):
-                if j >= 0 and beats[j] >= 0:
+                if j >= 0 and beats[j] >= 0 and sounds(j):
                     out[j] = kind
         near = {j for d in G["drops"] for j in range(d - 8, d + 8)}
         hit = max(np.percentile(e, FLICKER_HIT), 1.5)
         cand = sorted((i for i in range(len(beats)) if e[i] >= hit and i not in near and beats[i] >= 0
-                       and at_beat(i) >= 0.8), key=lambda i: -e[i])
+                       and at_beat(i) >= 0.8 and real(i)), key=lambda i: -e[i])
         taken = []
         for i in cand:
             if all(abs(i - j) >= FLICKER_GAP for j in taken):
@@ -614,7 +641,9 @@ def frame(f, k, show, F, G, S, preset, opts, md=None):
     the centre; with MilkDrop the footage also fades to near black at the edges and MilkDrop fills them."""
     s, beat, fps = float(S[k]), show.beat, show.fps
     since, down, drop = float(G["since"][k]), bool(G["down"][k]), int(G["drop"][k])
-    kick = float(np.exp(-since / (0.22 * beat)))                 # 1 on the beat, gone within half a beat
+    drv = float(G["drive"][k]) if "drive" in G else 1.0
+    kick = float(np.exp(-since / (0.22 * beat))) * drv   # 1 on a beat the music drives, gone
+    down = down and drv > 0.5                   # within half a beat; nothing where it is calm
     bass = min(float(F["bass"][k]), 1.3)
     effects, pal = preset
     show.palette(pal)

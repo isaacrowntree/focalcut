@@ -136,7 +136,7 @@ def test_no_clip_twice_in_a_row_and_broll_never_beside_broll(tmp_path):
     assert not any(a["unit"]["role"] == b["unit"]["role"] == "transition" for a, b in pairwise(body))
     # a clip's picks are spread out, not played as a block
     at = [k for k, s in enumerate(body) if s["unit"]["id"] == "U07"]
-    assert max(at) - min(at) >= 6
+    assert max(at) - min(at) >= 2 * (len(at) - 1) and len(at) >= 3   # (one of its five went for room: B-roll first)
 
 
 def test_card_shuffle_keeps_the_acts_in_order_and_mends_the_cut():
@@ -248,3 +248,40 @@ def test_without_the_mode_the_plan_is_the_planners_as_before(tmp_path):
     assert not P.picks_mode(P.config(pr, "landscape"))
     plan = P.build(pr, "landscape", music, moments)
     assert {s["unit"]["clip"] for s in plan["shots"]} == {r["unit"]["clip"] for r in moments}   # use everything
+
+
+def broll_and_people(n_broll=4):
+    """Picks that overrun the reel: 12 of people (U00-U02) and n_broll of B-roll (U03, U07), all 4 beats long."""
+    picks = many_picks(n_clips=3, per=4)
+    picks["U07"] = {"add": [rng(10 + 9 * k, 12.4 + 9 * k) for k in range(n_broll // 2)]}
+    picks["U03"] = {"add": [rng(10 + 9 * k, 12.4 + 9 * k) for k in range(n_broll - n_broll // 2)]}
+    return picks
+
+
+def test_broll_picks_give_up_their_beats_before_any_pick_of_people(tmp_path):
+    # 16 picks x 4 beats = 64, and room for 56 of them: the 4 B-roll picks can give those 8 beats on their own
+    pr, music, moments = picks_reel(tmp_path, broll_and_people(), bars=16, open={"U11": rng(20, 22)})
+    plan = P.build(pr, "landscape", music, moments)
+    got = [s for s in plan["shots"] if s.get("add") and s.get("span")]
+    assert len(got) == 16                                        # nobody dropped
+    people = [s for s in got if s["unit"]["role"] != "transition"]
+    broll = [s for s in got if s["unit"]["role"] == "transition"]
+    assert all(s["beats"] == 4 and not s.get("whole") for s in people)   # every pick of people whole
+    assert all(s["beats"] == 2 for s in broll)                   # the B-roll at its floor
+
+
+def test_portrait_drops_broll_picks_before_it_trims_people_and_keeps_starred_ones(tmp_path):
+    picks = broll_and_people()
+    picks["U07"]["stars"] = {picks["U07"]["add"][0]: 5}          # a B-roll pick the editor starred: it stays
+    pr, music, moments = picks_reel(tmp_path, picks, bars=14, open={"U11": rng(20, 22)})   # room for 48 of 64 beats
+    land = P.build(pr, "landscape", music, moments)
+    port = P.build(pr, "portrait", music, moments)
+    def role(s):
+        return s["unit"]["role"] == "transition"
+    lp = [s for s in land["shots"] if s.get("add") and s.get("span")]
+    pp = [s for s in port["shots"] if s.get("add") and s.get("span")]
+    assert len(lp) == 16 and sum(s["beats"] for s in lp if not role(s)) <= 40   # landscape: all in, people trimmed too
+    assert sum(s["beats"] for s in pp if not role(s)) == 47      # portrait: the people all but whole (12 x 4)
+    kept = [s for s in pp if role(s)]
+    assert [(s["unit"]["id"], s["beats"], (s.get("whole") or s["span"])[0]) for s in kept] == [("U07", 1, 10.0)]
+    assert len(port["picks_condensed"]) == 3                     # and the three left out are named

@@ -101,6 +101,63 @@ Jordan).
   steady song one exact grid from its first moment (`steady_grid`), and smooths a drifting one.
 - Salsa tracks at half-time, so one detected bar is an 8-count.
 
+### 6b. The picture follows the music
+
+**Rule:** what is on screen matches what the music is doing at that moment, not only where its beats are.
+- Where the music has no rhythm section under it (an intro, a vocal or pad breakdown, a build) the cut is calm:
+  longer shots, fewer cuts, dissolves, nothing that flashes, blinks, whips or punches. Where it drives (a groove, a
+  drop) the quick cuts and the punchy moves.
+- A hit is an accent on a beat the rhythm section plays. A sung syllable, a sweep or a loud pad over a breakdown is
+  an accent and is loud, and is not a hit: nothing flashes on it.
+- Isaac, 2026-11-13: "the white or black flashes ... are hitting over the top of beats that don't exist heavily in
+  the music at the time ... subject movement should be slower and flowy if the music is".
+
+**Code:**
+- `music.features` (the music step) writes per beat `beat_kick` (the low end, kick and bass, against the song's
+  loud level), `beat_drive` (0..1), `beat_section` (intro / groove / break / build / drop / outro: `music.sections`),
+  `beat_sustain` and `sustains`. `music.feel(music)` is what everything reads: `hit` (the accent, 0 on a calm
+  beat), `calm`, `blink`, `sustain`, `entries`. A `music.json` from before has none of this and reads as driving
+  throughout: re-run `--steps music` (it needs librosa: focalcut's own venv).
+- Hits: `plan.transitions` (flash, and the flash an act change falls back to), `plan.glitch_look` (phrase glitches,
+  hit accents), `plan.band_in`, `velocity.landing`, `overlay.flickers`, the overlay's kick blink, zoom punch, RGB
+  split and drop flash (`overlay.grid` "drive") all go by `feel`.
+- Calm: `grammar.LOUD` names what a calm cut never takes (flash, dip to white, light leak, velocity whip, swipe,
+  spin, zoom, glitch); the act changes on a dissolve there, and a dissolve joins two shots of two beats or more
+  every `grammar.CALM_EVERY` (16) beats.
+- Pace: `plan.rhythm(..., feel=plan.phrase_feel(...))` cuts a calm phrase from `PHRASES["calm"]` ([4, 4], [8],
+  [5, 3], ...) and a drop's from the fast ones, and `fit_slots` gives those long slots to the moves that need time
+  (patterns, travel, styling). `plan.pace_through` then lets the shots that start in a calm stretch take beats from
+  those that start where the music drives, inside each act (B-roll gives first). In picks mode `pick_story` does the
+  same once the order is settled (`pace_lengths`): a pick in the breakdown keeps more of its length, up to
+  `CALM_BEATS` (4), and those on the drop give, never under their floor and never into a run of equal lengths.
+- `plan.drop_effect` puts the climax's big effect on a shot that starts where the music drives: a climax that opens
+  over the breakdown keeps it for the drop.
+
+**Knob:** `plan.<fmt>.follow_music: false` turns `pace_through` off.
+
+### 6c. Holds on sustains
+
+**Rule:** when the music lands on a beat and holds (a note, a chord or a voice held over the next beats, or its
+tail ringing out), the shot holds with it. No cut on a held beat; cuts resume on the next beat that sounds. A
+velocity edit's landing, and a plain shot's "show the landing" hold, sit on the beat the music lands on.
+(Isaac, 2026-11-13: "clips are hitting a hold when the music lands on a sustain and that's good but codify it".)
+**How it happened before:** by a side effect in the story's cut only. `rhythm` gave its long hold phrases to the
+phrases with the lowest mean accent, and a held beat has almost no accent, so phrases with a sustain were the ones
+held (Electric Nation: 6 of 15 sustains inside one shot, shots of 4.8 beats against the reel's 2.5). Nothing
+stopped a cut on a held beat, and picks mode took no notice.
+**Code:**
+- `music.sustains` / `feel()["sustain"]`: `(hit, end)` in beats; `beat_sustain` marks the held beats (percussive
+  onsets under `music.HELD` of the song's typical beat), at most `SUSTAIN_MAX` (8).
+- `plan.hold_sustains` moves a cut off a held beat, back onto the hit or on to the next beat that sounds, whichever
+  is nearer and the shots allow; when the shot that should give has nothing to spare, the one beyond it gives and
+  the shot between moves whole. `plan.hold_through` runs it in `place` (after `lands`); `pick_story` runs it on the
+  picks before it trims them. A shot with an effect, the logo, the ending or a band insert keeps its length, a pick
+  never goes under its floor or past its in-out, and a change of act stays where it is; a cut that cannot move is
+  left.
+- `place`: `velocity.landing` gets the hits with `velocity.SUSTAIN` added on a sustain's first beat, so a ramp's
+  slow hold plays through the held note; `velocity.on_sustain` slides a plain shot's landing onto that beat when the
+  end of the move and the rest after it still fit (the shot's `land_on` is then `"sustain"`).
+
 ## 7. Subject: who the shot is about
 
 **Rule:** the subject is centred and fully in frame, with no head cut off. Effects target the subject, not
@@ -186,12 +243,15 @@ Reasons:
 - **spin:** turn or pattern into turn or pattern, from different clips.
 - **swipe:** both shots travelling the same way, flow ≥ 0.12 each side.
 - **zoom:** push in to a close-up that is at least as tight.
-- **flash:** a big musical hit.
+- **flash:** a big musical hit: the accent on a beat the rhythm section plays (§6b), never over a breakdown.
 - **glitch:** in or out of the DJ.
 - **fade:** between daytime scenes: both shots daytime footage, never into or out of the night's.
 
 A look's phrase transition (`pulse`: one by each 4-bar phrase) goes on the cut near the phrase that the music
 hits hardest (accent 1.2 or more), and nowhere when none does: never on the calendar alone.
+
+Where the music is calm (§6b) the vocabulary is the dissolve: an act changes on one, not on a dip to white or a
+light leak, and no cut there whips, spins, pushes or flashes.
 
 A transition other than a flash needs two beats of each shot (`grammar.MIN_BEATS`): across a one-beat shot the
 dissolve or push is the whole shot. The change of act takes its signature only where the shots can carry it: the
@@ -202,7 +262,8 @@ when it does not.
 **Why:** music-video and aftermovie editors use hard cuts for rhythm and save transitions for moments that mean
 something. A transition cycled from a menu reads as a template, and that random look is the main complaint about
 CapCut-style edits.
-**Code:** `grammar.py` (`GRAMMAR`, `CAPS`, `FLASH_AT`, `SIGNATURE`, `reasons()`), `plan.transitions`.
+**Code:** `grammar.py` (`GRAMMAR`, `CAPS`, `FLASH_AT`, `SIGNATURE`, `LOUD`, `CALM_EVERY`, `reasons()`),
+`plan.transitions`.
 **Knobs:** `grammar`, `caps`, `flash_at`.
 
 ## 11. Cohesive effects, not gimmicks
