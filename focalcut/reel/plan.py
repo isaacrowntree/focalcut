@@ -2917,12 +2917,39 @@ def transitions(seq, music, cfg, direction=None):
 PULSE_HIT = 1.2          # glitch_look: a look's phrase transition needs a cut whose beat hits this hard (accent)
 
 
+DROP_FX = ("bullet", "hero", "aura", "montage")   # the big subject effects: slow motion round the subject
+DROP_REACH = 4           # drop_effect: the drop's effect goes on one of the climax's first this many shots
+
+
+def drop_effect(seq):
+    """The climax's one big subject effect on the drop, whoever's shot carries it: when the climax has none (the
+    editor's picks took the planner's slow-motion slots), the strongest dancing shot of the climax's first
+    DROP_REACH with room for slow motion (3 beats) takes "bullet" -- an editor's pick as readily as any (Isaac: effects
+    are allowed on picks). Never the ending, the close, B-roll, the band, a logo or beside another effect.
+    Returns the index given it, or None."""
+    cl = [i for i, s in enumerate(seq) if s["act"] == "climax"]
+    if not cl or any(f in DROP_FX for i in cl for f in seq[i]["fx"]):
+        return None
+
+    def ok(i):
+        s = seq[i]
+        return (s["beats"] >= 3 and not s["fx"] and s["unit"]["role"] != "transition"
+                and not any(s.get(k) for k in ("ending", "close", "band", "logo", "logo_image", "title", "reaction"))
+                and not any(seq[j]["fx"] for j in (i - 1, i + 1) if 0 <= j < len(seq)))
+    cand = [i for i in cl[:DROP_REACH] if ok(i)] or [i for i in cl if ok(i)]
+    if not cand:
+        return None
+    i = max(cand, key=lambda i: (seq[i]["kind"] in MOVES or seq[i]["kind"] == "closeup", seq[i].get("rank", 0)))
+    seq[i]["fx"], seq[i]["effect"] = ["bullet"], "bullet"
+    return i
+
+
 def glitch_look(seq, music, look):
     """The film's effects said in its glitch look (fx/glitch.py LOOKS; transitions() already speaks it): the stock
     subject effects become the look's (look["fx"]); each act gets one more subject effect on a move it suits
     (look["extra"]); and the act's hardest hits get an accent (look["hits"]: a freeze, a punch, a JPEG crunch). Still
-    mostly hard cuts: never on the teaser, the ending, B-roll, the band, a reaction or an editor's selection, never
-    beside another effect or a transition, one effect a shot."""
+    mostly hard cuts: never on the teaser, the ending, B-roll, the band or a reaction (the editor's picks take
+    effects like any shot), never beside another effect or a transition, one effect a shot."""
     bt = np.array(music["beats"]); i0 = int(np.argmin(np.abs(bt - music["start"])))
     acc = np.array(music.get("beat_accent") or np.ones(len(bt)))[i0:]
     pos, rec = [], 0
@@ -2960,7 +2987,7 @@ def glitch_look(seq, music, look):
         s = seq[i]
         return (0 < i < len(seq) - 1 and not s["fx"] and not s.get("transition") and not seq[i + 1].get("transition")
                 and s["unit"]["role"] != "transition" and s["act"] != "teaser"
-                and not any(s.get(k) for k in ("ending", "band", "reaction", "logo", "span"))
+                and not any(s.get(k) for k in ("ending", "band", "reaction", "logo", "close"))   # (picks too)
                 and not any(seq[j]["fx"] for j in (i - 1, i + 1)))
 
     def hit(i):                                   # the music's accent where the shot's move peaks
@@ -4033,6 +4060,8 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
         seq, acts = story(fmt, cfg, music, moments, video_beats, total_beats, direction, spot_rater(project, fmt))
     if fmt == "portrait" and assess_shots and not mode:
         recast(project, fmt, seq, moments, beat)
+    if cfg.get("drop_effect", True) and drop_effect(seq) is not None:   # (the picks took the slow-motion slots)
+        print(f"[reel] {fmt}: the drop's effect on {next(s['unit']['id'] for s in seq if 'bullet' in s['fx'])}")
     act_logos(seq, project.config.get("act_logos"))
     plan = place(project, fmt, seq, music, cfg, direction, stinger_len, acts)
     if fmt == "portrait" and assess_shots and not mode:

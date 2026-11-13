@@ -1888,3 +1888,16 @@ def test_a_looks_phrase_transition_needs_a_cut_the_music_hits():
     acc[18], acc[15], acc[48] = 1.5, 2.0, 0.4                # by the phrase at 16: beat 15 hits hardest; at 48: soft
     got = run(acc)
     assert list(got) == [15] and got[15] == (look["transitions"][0], "the phrase's hit (2.0x)")
+
+
+def test_drop_effect_goes_on_a_pick_when_picks_fill_the_climax():
+    from focalcut.reel.plan import drop_effect
+    u = lambda c, role="dance": dict(id=c, clip=c, role=role)
+    seq = [dict(act="night", beats=4, fx=[], kind="spin", rank=1.0, unit=u("A")),
+           dict(act="climax", beats=2, fx=[], kind="spin", rank=0.9, unit=u("B"), span=[1, 2], add=True),
+           dict(act="climax", beats=4, fx=[], kind="crowd", rank=0.9, unit=u("C", "transition"), span=[1, 3]),
+           dict(act="climax", beats=4, fx=[], kind="spin", rank=0.8, unit=u("D"), span=[5, 7], add=True),
+           dict(act="climax", beats=4, fx=[], kind="closeup", rank=0.5, unit=u("E"), span=[1, 3], add=True),
+           dict(act="finale", beats=6, fx=[], kind="spin", rank=1.0, unit=u("F"), ending=True)]
+    assert drop_effect(seq) == 3 and seq[3]["fx"] == ["bullet"]       # a pick, long enough, dancing, not B-roll
+    assert drop_effect(seq) is None                                   # one big effect a climax

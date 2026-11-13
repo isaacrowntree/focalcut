@@ -70,6 +70,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Effects go on the editor's picks too** (Isaac: "effects are allowed on picks"). The look's subject effects and
+  accents take picks like any shot, and when the picks have taken the climax's slow-motion slots, `drop_effect`
+  puts the one big subject effect ("bullet") on the strongest dancing shot of the climax's first four with room for
+  it -- a pick as readily as not. Picks are still never sped up. `plan.<fmt>.drop_effect: false` turns it off.
 - **The night lift is a tracked window on the faces** (`window.py`), as a colourist would grade it. Each lit night
   shot is read as it plays (rotated and cropped), about ten times a second; YuNet finds the faces, and their own
   level decides the lift: toward `target`, at most `stops` (default 0.6) brighter, nothing for faces already bright,
