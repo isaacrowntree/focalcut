@@ -66,3 +66,11 @@ def test_each_thread_has_its_own_detector(monkeypatch):
     [t.start() for t in ts]
     [t.join() for t in ts]
     assert len(made) == 3 and len({id(d) for d in got}) == 3
+
+
+def test_frame_rate_parses_ffprobe_quirks(monkeypatch):
+    import subprocess
+    import types
+    for out, want in (("50/1\n", (50, 1)), ("50/1,\n", (50, 1)), ("60000/1001,\n\n", (60000, 1001)), ("25\n", (25, 1))):
+        monkeypatch.setattr(subprocess, "run", lambda *a, out=out, **k: types.SimpleNamespace(stdout=out))
+        assert W._fps("x.mp4") == want

@@ -111,8 +111,8 @@ def _detector():
 def _fps(path):
     r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate",
                         "-of", "csv=p=0", path], capture_output=True, text=True, check=True).stdout.strip()
-    n, d = (r.split("/") + ["1"])[:2]
-    return int(n), int(d)
+    m = re.search(r"(\d+)(?:/(\d+))?", r)                  # ("50/1", and "50/1," for some files)
+    return (int(m.group(1)), int(m.group(2) or 1)) if m else (50, 1)
 
 
 def _vf(*parts):
