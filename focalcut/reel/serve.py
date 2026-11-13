@@ -11,7 +11,8 @@ against its own folder, and under that prefix:
                          now (two pages open on one project merge their edits instead of the last one winning).
                          The previous file is kept as picks.json.bak, and a copy every ten minutes of editing in
                          picks_history/ (the newest 200)
-    GET     api/crop     ?id=<export file>&a=<s>&b=<s>&fmt=portrait: the crop the planner derives for that stretch,
+    GET     api/crop     ?id=<export file>&a=<s>&b=<s>&fmt=portrait: the crop the planner derives for that stretch
+                         (with "on" / "why": what it is on and why, and "people": everyone tracked in it),
                          before any focal point the editor set (path times are seconds from a)
 Files are sent with a Last-Modified the browser checks each time (a re-made thumbnail shows at once); the exports
 themselves may be kept for an hour.
@@ -268,7 +269,7 @@ def handler(site):
                 return None
 
         def crop(self, project, q):
-            from .plan import reframe
+            from .plan import people, reframe
             key = os.path.realpath(project.folder)
             units = site.units.get(key)
             if units is None and os.path.exists(project.path("units.json")):
@@ -282,6 +283,8 @@ def handler(site):
                 return self.reply(400, b'{"error": "id, a < b and fmt"}')
             try:
                 c = reframe(project, u, u.get("export_t0", 0.0) + a, b - a, fmt, focus=False)
+                if c and fmt == "portrait" and c["w"] < 0.5:     # who is in the stretch, and who the strip is on
+                    c = dict(c, people=people(project, u, u.get("export_t0", 0.0) + a, b - a, c))
             except Exception as e:                       # (a missing score file, say: the page says why)
                 return self.reply(500, json.dumps({"error": f"{type(e).__name__}: {e}"}).encode())
             self.reply(200, json.dumps(c).encode())

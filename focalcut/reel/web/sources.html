@@ -118,11 +118,13 @@ Tick shots (<kbd>X</kbd>, shift-click for a range) and <kbd>Delete</kbd> drops t
 <span class=gap></span>
 <span id=fmode class=seg title="what a drag does: one pan for the whole shot, or a pan at the playhead (set more at other times and the crop glides between them)"><b>Drag pans</b><button data-fm=shot>the whole shot</button><button data-fm=key>at the playhead</button></span>
 <span class=sp></span>
+<button id=fkeep title="the person the crop is on at the playhead keeps it for the whole shot, wherever they go and whoever turns to the camera (H)">Keep this person <kbd>H</kbd></button>
 <button id=freset title="back to the planner's framing for this shot: your pan and the person you follow go (Backspace)">Reset to the planner's <kbd>⌫</kbd></button>
 <button id=fopen title="open this clip in Clips, at this shot">Open in Clips</button></div>
 <div id=ftl class=tl><div id=fstrip title="click or drag to scrub through the shot"><canvas></canvas></div></div>
-<p class=hint><b>Drag</b> the bright frame to pan the crop · <b>click a dancer</b> to follow them through the shot · <kbd>←</kbd> <kbd>→</kbd> shot to shot · <kbd>Space</kbd> play ·
-<kbd>,</kbd> <kbd>.</kbd> a frame back / on · <kbd>Backspace</kbd> the planner's framing again · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo. The new framing is in the reel after the next re-plan and render.</p>
+<p class=hint><b>Click a person</b> (the rings; the bright one is who the crop is on) to follow them through the shot, face showing or not · <kbd>H</kbd> keeps the one the crop is on ·
+<b><kbd>Shift</kbd>+click</b> a focus point at the playhead (hands, a prop): more at other times and the crop glides between them · <b>drag</b> the frame to pan ·
+<kbd>←</kbd> <kbd>→</kbd> shot to shot · <kbd>Space</kbd> play · <kbd>,</kbd> <kbd>.</kbd> a frame back / on · <kbd>Backspace</kbd> the planner's framing again · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo. The new framing is in the reel after the next re-plan and render.</p>
 </div></div></section>
 
 <div id=hover><div></div><span></span></div>
@@ -140,6 +142,9 @@ Tick shots (<kbd>X</kbd>, shift-click for a range) and <kbd>Delete</kbd> drops t
 <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>previous / next shot</dd>
 <dt><kbd>Space</kbd></dt><dd>play the shot, looping</dd>
 <dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>a frame back / on (<kbd>Shift</kbd>: ½ s)</dd>
+<dt>click</dt><dd>follow the person clicked, whole shot</dd>
+<dt><kbd>H</kbd></dt><dd>keep the person the crop is on, whole shot</dd>
+<dt><kbd>Shift</kbd>+click</dt><dd>a focus point at the playhead (several: the crop glides)</dd>
 <dt><kbd>Backspace</kbd></dt><dd>back to the planner's framing</dd></dl></div>
 <div><h3>Clips</h3><dl>
 <dt><kbd>Space</kbd> <kbd>K</kbd></dt><dd>play / pause</dd>

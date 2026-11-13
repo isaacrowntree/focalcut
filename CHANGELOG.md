@@ -34,6 +34,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clear shot of people keeps its length; the log counts the trims by kind. In portrait a B-roll pick goes down to
   one beat and then out (named in the log) before a pick of people is trimmed.
 
+- **Portrait strips stay on one person and keep them in frame while they move** (`reel/lead.py`). Every pick's
+  9:16 strip is aimed at one subject for the whole shot -- the person the shot opens on unless someone is clearly
+  more its subject (nearest, dancing, in focus; a still face beside a dancer no longer takes the strip, and it is
+  never handed to whoever turns to the camera later) -- and follows their head and body from the pose track, face
+  showing or not (masks, costumes, heads down), a point every 0.1 s. Two people together share the strip; a floor
+  move is framed on the torso; a DJ's hands with no head in frame are framed at the fingertips. In portrait a
+  trimmed pick plays the part of the pick that frames best (people together, nobody halved, no head cut off by the
+  camera). `bench/portrait_eval.py` scores the automatic strip against the editor's own focal points and follow
+  clicks with them hidden.
+- **Focus editor (Frame portrait)**: everyone tracked in the shot has a ring, the bright one being who the crop is
+  on, and the state line says what the planner's crop is on and why. Click a person to follow them through the shot
+  whether or not they show a face; `H` keeps the person the crop is on for the whole shot; `Shift`+click puts a
+  focus point at the playhead (hands, a prop) and more at other times make the crop glide; drag still pans.
 - **Frame portrait**, a third view of the source browser (`sources.html#frame=<reel>`): the reel's portrait cut
   shot by shot, the 9:16 crop over the picture and the cropped result beside it. Drag the frame to pan the crop
   (one pan for the whole shot, or pans at the playhead that it glides between), click a dancer to follow them,

@@ -166,8 +166,9 @@ def _crop(shot):
     if not c or not c.get("path"):
         return None
     out = dict(w=c["w"], h=c["h"], z=c.get("z", 1.0), path=[[t, round(x, 3), round(y, 3)] for t, x, y in c["path"]])
-    if c.get("follow"):
-        out["follow"] = c["follow"]
+    for k in ("follow", "on", "why"):                       # how it is framed, in the planner's words
+        if c.get(k):
+            out[k] = c[k]
     return out
 
 

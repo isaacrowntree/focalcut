@@ -305,6 +305,36 @@ the subject effects in `fx/subject.py` (`aura`, `neon`, `spotlight`, …).
   (the planner's subject, never a bigger face elsewhere). The face sits in the upper third; a second face that fits
   shares the strip; a face too big for it zooms out. It takes over only when it holds a face for clearly more of
   the shot (`FACE_GAIN` 0.25). On Electric Nation 2026's portrait reel it re-centred 45 of 142 shots.
+- **One person for the whole shot, kept in the strip while they move** (`reel/lead.py`; the editor's corrections on
+  Electric Nation 2026, 2026-11-13: "starts in focus then you move to another one", "guy doing the robot should be
+  the focus", "focus should be where the fingers are meeting", "you show shots of people but fail to keep them in
+  center while they're moving"). After the body and face trackers, every pick (and every shot outside social
+  dancing) is re-aimed:
+  - `lead.tracks`: the shot's people, linked through it from the pose pass (5 a second), each with a head (their
+    face where the scan found one, else nose/eyes/ears, else where it sits in their box), a torso, size, focus and
+    activity. A mask, a costume, a head down or a back is still a person.
+  - `lead.choose`: who the shot is about, once, for the whole shot -- no hand-over mid-shot. The person the body
+    tracker's strip opens on keeps it unless someone clearly beats them (`KEEP`): nearest the lens, the one
+    dancing (the biggest and busiest at once counts double), jumping, in focus, in shot throughout, in the middle,
+    the one the camera pans to. A clear face helps a little and is never required: a still face beside the dancer
+    does not take the shot.
+  - `lead.aim`: where the strip goes. One person: between their head and torso, the head never out of the strip's
+    middle 60%, slid off anyone whose head its edge would cut. Two together (heads within 0.85 of a strip): both
+    in, weighted to the nearer one, the subject still in the middle part. Someone along the floor (a worm, a floor
+    move): their torso, head still in the strip. Hands at work with no head in frame (a DJ's hands on the mixer):
+    the fingertips, carried on past the wrists along the forearms.
+  - `lead.glide`: the path, a point every 0.1 s, smoothed over 0.12 s only (it was 0.3 s on a face scanned twice
+    a second, which is what let a quick head leave the strip).
+  - The crop says what it is on and why (`on`: person / pair / floor / hands, `why`), which the focus editor shows.
+  - `plan.portrait_parts`: a pick that plays trimmed plays, in portrait, the part of the pick that frames best --
+    people together fitting the strip, nobody halved at its edge, no head cut off by the camera's own frame -- when
+    that is clearly better and about the same people (the editor's licence for group dancers; landscape keeps the
+    story's part). The editor's focal points and follow clicks are never moved.
+  - `bench/portrait_eval.py`: the editor's own focal points and follow clicks as labels -- the strip is derived
+    with them hidden and measured against them; `--track` measures how far the subject's head sits from the
+    strip's centre over every shot of a plan. Run it before and after touching any of this.
+- A follow click (`picks.json` "follow") takes whoever is at the click, face or not: their pose track is followed
+  head and body for the whole shot (`lead.follow`), alone; a click on nobody holds the point.
 - `plan.reframe` returns the crop plus `present` (≥60% of the subject inside), `inside` (≥92% inside and not cut
   by the camera's edge) and `face`, each as a fraction of the shot.
   - The crop centre is smoothed over about 0.3 s in a narrow strip and 0.6 s otherwise.

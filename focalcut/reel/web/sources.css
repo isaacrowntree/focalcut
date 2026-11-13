@@ -838,6 +838,15 @@ button.wide {
   border: 2px solid #000;
   background: var(--io);
 }
+.fwho {
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 2px dashed #fffa;
+  box-shadow: 0 0 0 1px #0008;
+}
+.fwho.sub {
+  border: 3px solid var(--io);
+}
 .fpin {
   width: 26px;
   height: 26px;
