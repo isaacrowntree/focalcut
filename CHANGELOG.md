@@ -70,6 +70,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The night lift is a tracked window on the faces** (`window.py`), as a colourist would grade it. Each lit night
+  shot is read as it plays (rotated and cropped), about ten times a second; YuNet finds the faces, and their own
+  level decides the lift: toward `target`, at most `stops` (default 0.6) brighter, nothing for faces already bright,
+  lost in black or seen in under a third of the shot (silhouettes, B-roll, the logo opening). A feathered ellipse
+  from head to chest follows each face, and inside it a shadow lift raises the face (the deepest shadows and white
+  stay put) with its colour (held back on skin already coloured by stage light); outside it the room is exactly as
+  shot. Composited in the shot's own ffmpeg pass: a few seconds per lit shot. reel.json `exposure.lift`:
+  `{"target": 0.4, "stops": 0.6}`; `"window": false` keeps the old curve over the whole frame, which lifted the
+  background as much as the people and the darkest faces least.
 - **No stabilisation by default; shaky footage is avoided instead.** The planner's own shots (fillers, B-roll under
   the logo, people it brought in) move along their clip to its steadiest stretch (`plan.steady_shots`: clear of
   bans and the clip's other shots, on passing windows, a move for a move, framing as well in portrait), and a pick

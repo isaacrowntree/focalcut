@@ -177,9 +177,28 @@ def read_length(s) -> float:
     return s["length"] * (s.get("speed") or 1.0) + 0.1
 
 
-def shot_filter(s, fmt, project=None, dur=None):
+def frame_part(s):
+    """The rotation and the crop that follows the subject: the picture as the shot plays it, before any grade."""
+    u, c = s["unit"], s.get("crop")
+    f = [u["rotate"]] if u.get("rotate") else []
+    if c:
+        f.append(f"crop=w=iw*{c['w']}:h=ih*{c['h']}:x=({crop_expr(c['path'], 1)})*iw-ow/2"
+                 f":y=({crop_expr(c['path'], 2)})*ih-oh/2")
+    return ",".join(f)
+
+
+def lift_window(project, s, fmt, dur):
+    """The night lift's tracked window for a shot (window.prepare), or None: (mask file, a, k, report)."""
+    if not isinstance(s.get("lift"), dict) or project is None or s.get("stab"):
+        return None
+    from . import window
+    return window.prepare(project, s, fmt, dur, frame_part(s))
+
+
+def shot_filter(s, fmt, project=None, dur=None, win=None, mask_in="1:v"):
     """The shot's filter chain: rotation, stabilisation (a shaky stretch: the plan's "stab"), the crop that follows
-    the subject, the project's size at FPS."""
+    the subject, the project's size at FPS. win (lift_window's): the night lift through a window read from the input
+    mask_in, which makes the chain a filter graph for -filter_complex."""
     W, H = size(project, fmt)
     u = s["unit"]
     f = [u["rotate"]] if u.get("rotate") else []
@@ -192,8 +211,11 @@ def shot_filter(s, fmt, project=None, dur=None):
     if c:
         f.append(f"crop=w=iw*{c['w']}:h=ih*{c['h']}:x=({crop_expr(c['path'], 1)})*iw-ow/2"
                  f":y=({crop_expr(c['path'], 2)})*ih-oh/2")
-    if s.get("pull") or s.get("lift"):                      # a blown-out subject: its highlights pulled back;
-        f.append(exposure.filt(s.get("pull"), s.get("lift")))   # a dark one at night: lifted
+    if s.get("pull") or (s.get("lift") and not isinstance(s["lift"], dict)):   # a blown-out subject: highlights
+        f.append(exposure.filt(s.get("pull"), s.get("lift")))   # pulled back; (the old curve) a dark one lifted
+    if win:                                                 # a dark subject at night: lifted through its window
+        from . import window
+        f.append(window.graph(win[1], win[2], mask_in).rstrip(","))
     p = s.get("speed") or 1.0                               # the shot's pace (plan "pace"): source read p times
     if p != 1.0 and not s.get("fx"):                        # as fast, the nearest frame each (a speed effect
         f.append(f"setpts=PTS/{p:.4f}")                     # applies it inside its curve instead)
@@ -228,16 +250,18 @@ def cut_shot(project, s, fmt, out, qsv=False):
         s = dict(s, crop=reframe(project, s["unit"], s["src_in"], s["length"] * p, fmt) or s["crop"])
     src, t = project.decode_from(s["unit"]["source"], s["src_in"])
     exe, dec, P, pre = hw.ffmpeg(src, qsv and not s.get("stab"))
-    chain = pre + shot_filter(s, fmt, project, read)
-    vf = ["-vf", chain]
+    win = lift_window(project, s, fmt, read)
+    chain = pre + shot_filter(s, fmt, project, read, win)
+    mask = ["-i", P(win[0])] if win else []                  # input 1: the night lift's window
+    vf = [*mask, "-filter_complex", "[0:v]" + chain] if win else ["-vf", chain]
     logo = project.logo(s.get("logo_image"))
     if s.get("logo") and logo:                              # the event's logo over the opening, or an act's title
         W, H = size(project, fmt)
         fade = ",fade=t=in:st=0.15:d=0.6:alpha=1" if s["logo"] == "in" else ""
-        vf = ["-i", P(logo), "-filter_complex",
+        vf = [*mask, "-i", P(logo), "-filter_complex",
               f"[0:v]{chain},vignette=angle=PI/5,eq=brightness=-0.05[v];"
-              f"[1:v]scale={int(W * (0.5 if W > H else 0.8))}:-1:flags=lanczos,format=rgba,loop=-1:1,fps={FPS}{fade}[l];"
-              f"[v][l]overlay=(W-w)/2:(H-h)/2:shortest=1,format=yuv420p"]
+              f"[{2 if win else 1}:v]scale={int(W * (0.5 if W > H else 0.8))}:-1:flags=lanczos,format=rgba,loop=-1:1,"
+              f"fps={FPS}{fade}[l];[v][l]overlay=(W-w)/2:(H-h)/2:shortest=1,format=yuv420p"]
     hw.run_enc([exe, "-v", "error", "-y", *dec, "-ss", f"{t:.3f}", "-t", f"{read:.3f}",
                 "-i", P(src), "-an", *vf, *hw.enc(), "-frames:v", str(s["frames"]), P(out)])
 
@@ -271,8 +295,11 @@ def fx_shot(project, s, fmt, beat, out):
         shot["crop"] = reframe(project, u, src_in, src_len, fmt) or s["crop"]
     src, t = project.decode_from(u["source"], src_in)
     exe, dec, P, pre = hw.ffmpeg(src, not shot.get("stab"))
+    win = lift_window(project, shot, fmt, src_len)
+    chain = pre + shot_filter(shot, fmt, project, src_len, win)
+    vf = ["-i", P(win[0]), "-filter_complex", "[0:v]" + chain] if win else ["-vf", chain]
     raw = subprocess.run([exe, "-v", "error", *dec, "-ss", f"{t:.3f}", "-t", f"{src_len:.3f}", "-i", P(src), "-an",
-                          "-vf", pre + shot_filter(shot, fmt, project, src_len), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                          *vf, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                          capture_output=True, check=True).stdout
     frames = list(np.frombuffer(raw, np.uint8).reshape(-1, H, W, 3))
     n_out = s["frames"]
@@ -531,7 +558,7 @@ def run(project, fmt, draft=False, cut=None) -> str:
     outdir, work = project.path("out"), project.path("work", cut)
     os.makedirs(outdir, exist_ok=True); os.makedirs(work, exist_ok=True)
     marked = exposure.mark(project, plan)                    # reel.json "exposure": blown-out / dark subjects
-    for what, k in (("highlights pulled", 0), ("night subjects lifted", 1)):
+    for what, k in (("highlights pulled", 0), ("night subjects to lift (stops at most; faces decide)", 1)):
         done = {i: v[k] for i, v in marked.items() if v[k]}
         if done:
             print(f"[reel] {cut}: {what} on {len(done)} shots: "

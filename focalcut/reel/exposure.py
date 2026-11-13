@@ -9,9 +9,11 @@ The fix is a smooth curve on luma only (lutyuv): untouched below KNEE; above it 
 legal white (white stays white) and the upper midtones -- sunlit skin -- come down by up to pull. Shadows, midtones and colour stay as shot; it is a repair on the worst shots, not a
 look. Night shots (a dark frame overall) are never pulled.
 
-At night the opposite: a subject that sits dark (its faces, or the people from the head down where no face is seen)
-is lifted a little -- a midtone lift on luma, black stays black and white stays white, so the room stays night and
-the noise floor stays down -- by more the darker it is, up to "lift_max".
+At night the opposite: faces that sit dark are lifted through a tracked window on them (window.py: the faces found
+in the shot as it plays, an ellipse from head to chest feathered wide, a shadow lift with colour inside it, the room
+outside as shot), toward "target" by at most "stops". This module only says which shots are night shots to try; the
+window decides from the faces it finds, and leaves a shot without any (a crowd in silhouette, B-roll) alone. The old
+midtone curve over the whole frame ("window": false) is kept for reels cut with it.
 
 reel.json "exposure" (off unless set):
     {"auto": true,                      measure every shot and pull the blown-out ones
@@ -19,8 +21,11 @@ reel.json "exposure" (off unless set):
      "pull": {"C2148": 0.15,            by hand, per unit or per stretch of it ("<unit>@<in>-<out>", source time);
               "C2150@0:10-0:20": 0.1},  0 keeps a shot untouched
      "skip": ["C2153_crowd-dusk"],      never pulled or lifted
-     "lift": true,                      night shots: lift dark subjects (or {"target": 0.4, "max": 0.08})
-     "lift_by": {"C2037": 0}}           by hand, like "pull" (0 keeps a shot as shot)
+     "lift": true,                      night shots: lift dark faces through a tracked window (window.py), or
+                                        {"target": 0.4, "stops": 0.6}; {"window": false, "target", "max"}: the
+                                        old midtone curve over the whole frame
+     "lift_by": {"C2037": 0}}           by hand, like "pull": 0 keeps a shot as shot; with the window, the most
+                                        it may brighten that shot's faces, in stops
 """
 from __future__ import annotations
 
@@ -212,6 +217,8 @@ def mark(project, plan, workers=6):
     if not cfg:
         return {}
     lc = lift_config(cfg)
+    from .window import settings
+    win = settings(cfg.get("lift"))                          # the lift through a window on the faces (window.py)
     cache_f = project.path("exposure.json")
     cache = json.load(open(cache_f)) if os.path.exists(cache_f) else {}
     skip = set(cfg.get("skip") or [])
@@ -242,10 +249,14 @@ def mark(project, plan, workers=6):
         if p:
             s["pull"] = min(round(p, 3), 0.18)
         lf = by_hand(cfg, u, s, "lift_by")
-        if lf is None and lc and not s.get("pull"):
-            lf = lift_amount(m, *lc)
-        if lf and not s.get("pull"):
-            s["lift"] = min(round(lf, 3), 0.15)
+        if win and not s.get("pull") and not s.get("logo") and lf != 0 and m and m["frame"] < DAY:
+            s["lift"] = dict(win, stops=float(lf)) if lf else dict(win)   # (window.prepare decides from the faces)
+        elif not win:
+            if lf is None and lc and not s.get("pull"):
+                lf = lift_amount(m, *lc)
+            if lf and not s.get("pull"):
+                s["lift"] = min(round(lf, 3), 0.15)
         if s.get("pull") or s.get("lift"):
-            out[i] = (s.get("pull", 0.0), s.get("lift", 0.0))
+            lv = s.get("lift", 0.0)
+            out[i] = (s.get("pull", 0.0), lv["stops"] if isinstance(lv, dict) else lv)
     return out
