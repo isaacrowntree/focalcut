@@ -100,6 +100,7 @@ Read `references/concepts.md` for the rule, the reason, the numbers and the code
 | Everyone in it | every person found by face (YuNet + SFace, grouped across clips) and every kiss (SigLIP 2) gets a shot; the moment showing the most missing people goes in first, splitting long shots when needed | `people.py`, `plan.cover_people` | — (the `people` step) |
 | Clean masks | BiRefNet matte inside the SAM 3 mask, never raw upscaled SAM | `fx/masks.py` | — |
 | Pick rules | never a back, a split-up group, the crowd, a blurry or bored face, or a weaker moment of the same person; effects take in everyone or no one (references/concepts.md §19) | `windows.py`, `plan.snap_windows`, `window_report` | — |
+| Rule check | after planning, every shot the planner chose is measured as it plays (subject in focus, no back, nobody halved or out of frame, no head cut, a couple close, B-roll clip at most twice) and a failing one is replaced: its own clip first, then another unit (featured couples first), else flagged `rule fail` in the plan log; the editor's picks are only reported | `validate.py` (`plan.<fmt>.validate`) | — |
 
 ## Before rendering, check the plan against the rules
 
