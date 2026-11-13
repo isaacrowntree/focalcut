@@ -48,3 +48,19 @@ def test_stage_coloured_skin_keeps_its_colour():
     assert W.amount(0.12, sat=0.05)[1] > 1.2
     assert W.amount(0.12, sat=0.25)[1] == 1.0
     assert W.amount(0.12, sat=0.25)[0] == W.amount(0.12, sat=0.05)[0]   # the face is lifted all the same
+
+
+def test_each_thread_has_its_own_detector(monkeypatch):
+    import sys
+    import threading
+    import types
+    made = []
+    cv2 = types.SimpleNamespace(FaceDetectorYN=types.SimpleNamespace(create=lambda *a: made.append(1) or object()))
+    monkeypatch.setitem(sys.modules, "cv2", cv2)
+    monkeypatch.setattr("focalcut.reel.people.models", lambda: {"det": "x"})
+    W._local.__dict__.clear()
+    got = []
+    ts = [threading.Thread(target=lambda: got.append(W._detector())) for _ in range(3)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert len(made) == 3 and len({id(d) for d in got}) == 3

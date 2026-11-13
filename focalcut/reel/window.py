@@ -14,13 +14,13 @@ alone. Analyses and windows are cached in <reel>/work/lift by what shapes them.
 """
 from __future__ import annotations
 
-import functools
 import hashlib
 import json
 import math
 import os
 import re
 import subprocess
+import threading
 
 import numpy as np
 
@@ -92,12 +92,18 @@ def curve(a, k):
     return y, c
 
 
-@functools.cache
-def _detector():
-    import cv2
+_local = threading.local()
 
-    from .people import models
-    return cv2.FaceDetectorYN.create(models()["det"], "", (GRID, GRID), FACE_SCORE, 0.3, 5000)
+
+def _detector():
+    """YuNet, one per thread: shots render side by side, and one detector shared between them breaks mid-frame."""
+    det = getattr(_local, "det", None)
+    if det is None:
+        import cv2
+
+        from .people import models
+        det = _local.det = cv2.FaceDetectorYN.create(models()["det"], "", (GRID, GRID), FACE_SCORE, 0.3, 5000)
+    return det
 
 
 def _fps(path):
