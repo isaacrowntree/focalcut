@@ -177,6 +177,24 @@ def read_length(s) -> float:
     return s["length"] * (s.get("speed") or 1.0) + 0.1
 
 
+LONG_ARGS = 24000         # a command longer than this (Windows' limit is 32,767) reads its filter graph from a file
+
+
+def from_file(args, P, base):
+    """args with any -vf / -filter_complex value moved into a file beside base (ffmpeg's -/option), when the command
+    would be too long: a long shot's crop path, steadied frame by frame, is thousands of characters."""
+    if sum(len(a) + 1 for a in args) <= LONG_ARGS:
+        return args
+    out = list(args)
+    for i, a in enumerate(out[:-1]):
+        if a in ("-vf", "-filter_complex"):
+            f = f"{base}.{a.strip('-')}.txt"
+            with open(f, "w") as fh:
+                fh.write(out[i + 1])
+            out[i], out[i + 1] = "-/" + a.strip("-"), P(f)
+    return out
+
+
 def frame_part(s):
     """The rotation and the crop that follows the subject: the picture as the shot plays it, before any grade."""
     u, c = s["unit"], s.get("crop")
@@ -187,27 +205,128 @@ def frame_part(s):
     return ",".join(f)
 
 
+STAB_CAP = 0.012         # steady_crop: the most the crop moves against the camera's jitter, of the frame's width
+STAB_SIGMA = 0.25        # steady_crop: the camera's path is smoothed over this many seconds (a pan or a follow stays)
+STAB_ZOOM = 0.03         # steady_crop: the crop is this much smaller, for the room to move in
+STAB_SIGN = 1.0
+STAB_GAIN = 0.85         # steady_crop: steadied only when that leaves this share of the shake or less
+
+
+STEADY = os.path.expanduser("~/.cache/focalcut/steady")    # shot_motion's measurements
+STEADY_SIDE = 960        # shot_motion's analysis width
+
+
+def shot_motion(project, source, a, dur, qsv=True, frames=False):
+    """The camera's frame-to-frame motion over exactly the stretch a shot decodes, at FPS: (source times, (dx, dy) in
+    frame widths). Measured on the decoded frames themselves (shake.motion: corners, RANSAC), so a correction lands on
+    the frame it belongs to -- the stored 25 fps series, timed from the export file, lands a frame or two off, and a
+    jitter corrected a frame late is a jitter doubled. Cached in ~/.cache/focalcut/steady."""
+    from .shake import frames_motion
+    path, t = project.decode_from(source, a)
+    exe, dec, P, pre = hw.ffmpeg(path, qsv)                 # (the decoder the shot renders with: Quick Sync and the
+    kind = "qsv" if dec else "cpu"                          #  CPU land a seek two frames apart, and a correction
+    os.makedirs(STEADY, exist_ok=True)                      #  two frames late doubles the jitter)
+    f = os.path.join(STEADY, hashlib.md5(f"{path}|{t:.3f}|{dur:.3f}|{FPS}|{kind}|{STEADY_SIDE}".encode()).hexdigest()[:12] + ".npy")
+    if os.path.exists(f) and not frames:
+        mv = np.load(f)
+        g = None
+    else:
+        sw, sh = frame_size(path)
+        w = STEADY_SIDE                                     # (sub-pixel jitter at shake.py's 320 px is noise: a
+        h = w * sh // sw // 2 * 2                           #  correction made of noise adds wobble)
+        raw = subprocess.run([exe, "-v", "error", *dec, "-ss", f"{max(t, 0.0):.3f}", "-t", f"{dur:.3f}", "-i", P(path),
+                              "-an", "-vf", f"{pre}fps={FPS},scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                             capture_output=True, check=True).stdout
+        g = np.frombuffer(raw, np.uint8)[: len(raw) // (w * h) * w * h].reshape(-1, h, w)
+        mv = np.load(f) if os.path.exists(f) else frames_motion(g)
+        np.save(f, mv)
+    return (a + np.arange(len(mv)) / FPS, mv, g) if frames else (a + np.arange(len(mv)) / FPS, mv)
+
+
+def steadies(project, source, a, dur, qsv, jit):
+    """Does the correction steady this shot? Tried on its own frames: each moved by its correction, the camera's
+    motion measured again (corners, RANSAC) on the middle of the frame, kept only when that leaves STAB_GAIN of the
+    shake or less -- where the jitter is finer than the measurement or the dancers fill the frame, a correction can
+    add as much as it takes away (SSMC's animation shots: one of three came out a quarter shakier). Cached."""
+    import cv2
+
+    from .shake import frames_motion, hf
+    key = hashlib.md5(f"{source}|{a:.3f}|{dur:.3f}|{qsv}|{STAB_SIGMA}|{STAB_CAP}|{STAB_SIGN}|{STEADY_SIDE}".encode())
+    f = os.path.join(STEADY, key.hexdigest()[:12] + ".json")
+    if os.path.exists(f):
+        with open(f) as fh:
+            return json.load(fh)["ok"]
+    _, mv, g = shot_motion(project, source, a, dur, qsv, frames=True)
+    n = min(len(g), len(jit))
+    if n < 8:
+        return False
+    hh, ww = g.shape[1:]
+    moved = np.stack([cv2.warpAffine(g[i], np.float32([[1, 0, -jit[i, 0] * ww], [0, 1, -jit[i, 1] * hh]]), (ww, hh),
+                                     borderMode=cv2.BORDER_REPLICATE) for i in range(n)])
+    m = (slice(None), slice(hh // 10, hh - hh // 10), slice(ww // 10, ww - ww // 10))
+    before, after = float(hf(frames_motion(g[:n][m])).mean()), float(hf(frames_motion(moved[m])).mean())
+    ok = bool(before and after <= STAB_GAIN * before)
+    with open(f, "w") as fh:
+        json.dump(dict(ok=ok, before=before, after=after), fh)
+    return ok
+
+
+def steady_crop(project, s, dur, qsv=True):
+    """A light steadying for a shaky shot (plan "stab"; reel.json "stabilise"), as the crop rather than a warp: the
+    camera's own frame-to-frame motion (shake.py: corners tracked, a RANSAC fit, the dancers its outliers) summed to
+    its path, the path smoothed over STAB_SIGMA, and the crop moved with what is left -- the jitter -- by at most
+    STAB_CAP, the crop STAB_ZOOM smaller for room. A pan, a tilt or a follow stays as shot; nothing is warped, no
+    frame is guessed, and a dancer filling the frame can't throw it (vidstab followed the dancers here: SSMC's
+    animation shots came out 7-9x shakier, a frame lurching a third of the strip). None when unmeasured or rotated."""
+    u = s["unit"]
+    if u.get("rotate"):
+        return None
+    a, b = s["src_in"], s["src_in"] + dur
+    t, mv = shot_motion(project, u["source"], a, dur, qsv)
+    if len(t) < 4:
+        return None
+    aspect = 16 / 9
+    pos = np.cumsum(mv * np.array([1.0, aspect]), 0)          # (x in frame widths, y in frame heights)
+    sig = STAB_SIGMA * FPS
+    r = int(round(3 * sig))
+    k = np.exp(-0.5 * (np.arange(-r, r + 1) / sig) ** 2); k /= k.sum()   # (odd: centred)
+    half = len(k) // 2
+    smooth = np.stack([np.convolve(np.pad(pos[:, j], half, mode="edge"), k, mode="valid") for j in range(2)], 1)
+    jit = np.clip(STAB_SIGN * (pos - smooth), -STAB_CAP * np.array([1.0, aspect]), STAB_CAP * np.array([1.0, aspect]))
+    # (the crop moves against the motion tracked: measured, this is the way that steadies -- the other doubles it)
+    keep = (t >= a) & (t <= b)
+    if not steadies(project, u["source"], a, dur, qsv, jit):
+        return None
+    c = s.get("crop") or dict(w=1.0, h=1.0, z=1.0, path=[[0.0, 0.5, 0.5]])
+    w, h = c["w"] * (1 - STAB_ZOOM), c["h"] * (1 - STAB_ZOOM)
+    pts = np.array(c["path"], float)
+    tt = t[keep] - a
+    bx = np.interp(tt, pts[:, 0], pts[:, 1])
+    by = np.interp(tt, pts[:, 0], pts[:, 2])
+    x = np.clip(bx + jit[keep, 0], w / 2, 1 - w / 2)
+    y = np.clip(by + jit[keep, 1], h / 2, 1 - h / 2)
+    return dict(c, w=round(w, 5), h=round(h, 5), steadied=True,
+                path=[[round(float(q), 3), round(float(px), 5), round(float(py), 5)] for q, px, py in zip(tt, x, y)])
+
+
 def lift_window(project, s, fmt, dur):
     """The night lift's tracked window for a shot (window.prepare), or None: (mask file, a, k, report)."""
-    if not isinstance(s.get("lift"), dict) or project is None or s.get("stab"):
+    if not isinstance(s.get("lift"), dict) or project is None:
         return None
     from . import window
     return window.prepare(project, s, fmt, dur, frame_part(s))
 
 
-def shot_filter(s, fmt, project=None, dur=None, win=None, mask_in="1:v"):
+def shot_filter(s, fmt, project=None, dur=None, win=None, mask_in="1:v", qsv=True):
     """The shot's filter chain: rotation, stabilisation (a shaky stretch: the plan's "stab"), the crop that follows
     the subject, the project's size at FPS. win (lift_window's): the night lift through a window read from the input
     mask_in, which makes the chain a filter graph for -filter_complex."""
     W, H = size(project, fmt)
     u = s["unit"]
     f = [u["rotate"]] if u.get("rotate") else []
-    if s.get("stab") and project is not None:               # smooth the camera, zoomed just enough to hide the
-        path, t = project.decode_from(u["source"], s["src_in"])   # moving edges (4K has the pixels to spare)
-        trf = stab(path, t, dur or s["length"] + 0.1, u.get("rotate"))
-        trf = trf.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")   # filtergraph escaping
-        f.append(f"vidstabtransform=input={trf}:smoothing=15:optzoom=1:zoomspeed=0.25:interpol=bicubic")
     c = s.get("crop")
+    if s.get("stab") and project is not None:               # a light steadying: the crop rides the camera's jitter
+        c = steady_crop(project, s, dur or s["length"] + 0.1, qsv) or c
     if c:
         f.append(f"crop=w=iw*{c['w']}:h=ih*{c['h']}:x=({crop_expr(c['path'], 1)})*iw-ow/2"
                  f":y=({crop_expr(c['path'], 2)})*ih-oh/2")
@@ -249,9 +368,9 @@ def cut_shot(project, s, fmt, out, qsv=False):
         from .plan import reframe
         s = dict(s, crop=reframe(project, s["unit"], s["src_in"], s["length"] * p, fmt) or s["crop"])
     src, t = project.decode_from(s["unit"]["source"], s["src_in"])
-    exe, dec, P, pre = hw.ffmpeg(src, qsv and not s.get("stab"))
+    exe, dec, P, pre = hw.ffmpeg(src, qsv)
     win = lift_window(project, s, fmt, read)
-    chain = pre + shot_filter(s, fmt, project, read, win)
+    chain = pre + shot_filter(s, fmt, project, read, win, qsv=bool(dec))
     mask = ["-i", P(win[0])] if win else []                  # input 1: the night lift's window
     vf = [*mask, "-filter_complex", "[0:v]" + chain] if win else ["-vf", chain]
     logo = project.logo(s.get("logo_image"))
@@ -262,8 +381,8 @@ def cut_shot(project, s, fmt, out, qsv=False):
               f"[0:v]{chain},vignette=angle=PI/5,eq=brightness=-0.05[v];"
               f"[{2 if win else 1}:v]scale={int(W * (0.5 if W > H else 0.8))}:-1:flags=lanczos,format=rgba,loop=-1:1,"
               f"fps={FPS}{fade}[l];[v][l]overlay=(W-w)/2:(H-h)/2:shortest=1,format=yuv420p"]
-    hw.run_enc([exe, "-v", "error", "-y", *dec, "-ss", f"{t:.3f}", "-t", f"{read:.3f}",
-                "-i", P(src), "-an", *vf, *hw.enc(), "-frames:v", str(s["frames"]), P(out)])
+    hw.run_enc(from_file([exe, "-v", "error", "-y", *dec, "-ss", f"{t:.3f}", "-t", f"{read:.3f}",
+                          "-i", P(src), "-an", *vf, *hw.enc(), "-frames:v", str(s["frames"]), P(out)], P, out))
 
 
 def fx_shot(project, s, fmt, beat, out):
@@ -294,12 +413,12 @@ def fx_shot(project, s, fmt, beat, out):
     if s.get("crop"):                              # the source read changed: follow the subject over it instead
         shot["crop"] = reframe(project, u, src_in, src_len, fmt) or s["crop"]
     src, t = project.decode_from(u["source"], src_in)
-    exe, dec, P, pre = hw.ffmpeg(src, not shot.get("stab"))
+    exe, dec, P, pre = hw.ffmpeg(src, True)
     win = lift_window(project, shot, fmt, src_len)
-    chain = pre + shot_filter(shot, fmt, project, src_len, win)
+    chain = pre + shot_filter(shot, fmt, project, src_len, win, qsv=bool(dec))
     vf = ["-i", P(win[0]), "-filter_complex", "[0:v]" + chain] if win else ["-vf", chain]
-    raw = subprocess.run([exe, "-v", "error", *dec, "-ss", f"{t:.3f}", "-t", f"{src_len:.3f}", "-i", P(src), "-an",
-                          *vf, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+    raw = subprocess.run(from_file([exe, "-v", "error", *dec, "-ss", f"{t:.3f}", "-t", f"{src_len:.3f}", "-i", P(src),
+                                    "-an", *vf, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], P, out),
                          capture_output=True, check=True).stdout
     frames = list(np.frombuffer(raw, np.uint8).reshape(-1, H, W, 3))
     n_out = s["frames"]
@@ -418,8 +537,6 @@ def render_shots(project, plan, fmt, work, draft=False, timer=None):
         if not os.path.exists(out):
             kind = slots.get()
             try:
-                if s.get("stab"):
-                    room()
                 cut_shot(project, s, fmt, out + ".part.mp4", qsv=kind == "qsv")
                 os.replace(out + ".part.mp4", out)
             finally:
@@ -434,27 +551,13 @@ def render_shots(project, plan, fmt, work, draft=False, timer=None):
         (fxs if fx else jobs).append((s, out))
     failed = []
 
-    def plains():                                           # the steady shots straight to a render slot; a shaky
-        try:                                                # one once its pass 1 is done (CPU alone, no encoder
-            global STAB_THREADS                             # session: those never wait for a slot)
+    def plains():                                           # every plain shot straight to a render slot (a shaky
+        try:                                                # one is steadied in its own crop: steady_crop)
             t0 = time.time()
-            todo = sum(1 for s, out in jobs if s.get("stab") and not os.path.exists(out))
-            njobs = stab_jobs(dim)
-            STAB_THREADS = max(1, min(6, (os.cpu_count() or 4) // max(min(todo, njobs), 1)))   # (few to do: more each)
-            with ThreadPoolExecutor(max(slots.qsize(), 1)) as ex, ThreadPoolExecutor(njobs) as ex2:
-                def shaky(s, out):
-                    if not os.path.exists(out):
-                        room()
-                        t1 = time.time()
-                        path, t = project.decode_from(s["unit"]["source"], s["src_in"])
-                        stab(path, t, read_length(s), s["unit"].get("rotate"))
-                        timer.add("measuring camera shake (summed over shots)", time.time() - t1)
-                    return ex.submit(plain, s, out)
-                futs = [(ex2.submit(shaky, s, out) if s.get("stab") else ex.submit(plain, s, out)) for s, out in jobs]
-                for (s, _), f in zip(jobs, futs, strict=True):
-                    r = f.result()
-                    if s.get("stab"):
-                        r.result()
+            with ThreadPoolExecutor(max(slots.qsize(), 1)) as ex:
+                futs = [ex.submit(plain, s, out) for s, out in jobs]
+                for f in futs:
+                    f.result()
             timer.add("shots", time.time() - t0)
         except BaseException as e:                          # (raised by the main thread, below)
             failed.append(e)

@@ -70,6 +70,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Steadying is a crop, not a warp** (`render.steady_crop`, reel.json `"stabilise"`). vidstab followed the dancers on
+  SSMC's animation shots and came out 4-5x shakier (single frames lurching a third of the strip). Now the camera's
+  motion is measured on the very frames the shot decodes (same decoder: Quick Sync and the CPU land a seek two
+  frames apart), at 960 px, smoothed over 0.25 s, and the crop moves with the jitter by at most 1.2% of the frame
+  (3% zoom for room) -- and only where moving the shot's own frames by that correction measurably steadies them
+  (15% or more; else the shot plays as shot). SSMC animation shot 38: shake 2.39 -> 1.76; shots where it wouldn't
+  help are left alone. `"stabilise": "all"` also steadies sources stabilised beforehand. No vidstab pass any more,
+  so shaky shots decode on Quick Sync like the rest. A filter graph too long for the Windows command line (a
+  long steadied crop path) goes through a file (`-/filter_complex`).
 - **Effects go on the editor's picks too** (Isaac: "effects are allowed on picks"). The look's subject effects and
   accents take picks like any shot, and when the picks have taken the climax's slow-motion slots, `drop_effect`
   puts the one big subject effect ("bullet") on the strongest dancing shot of the climax's first four with room for

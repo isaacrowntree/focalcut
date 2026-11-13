@@ -50,7 +50,9 @@ reel.json keys (all optional except song):
                                          frame; {"landscape": "4k", "portrait": "1080p"} sets it per format, and a
                                          cut can carry its own. Shots, effects, the overlay, the stinger and the
                                          XML's sequence all follow it (render.py)
-    stabilise          true: shaky stretches the planner keeps play stabilised (vidstab, light); "all": sources
+    stabilise          true: shaky stretches the planner keeps play lightly steadied (render.steady_crop: the
+                                         crop rides the camera's jitter, at most 1.2% of the frame, only
+                                         where that measurably steadies the shot); "all": sources
                                          already stabilised ("_stabilized") too, where they still shake. Off by default: the
                                          planner plays the steadiest stretch of a clip it chose instead
                                          (plan.steady_shots), and the editor's picks play as shot

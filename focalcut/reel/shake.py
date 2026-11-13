@@ -24,20 +24,27 @@ import numpy as np
 RATE, SIDE = 25, 320                              # analysis rate (fps) and width (px)
 
 
-def motion(path, ts, dur, gpu=False):
-    """Camera motion frame to frame (dx, dy in frame widths) over a stretch of a file, at RATE."""
-    import cv2
+def motion(path, ts, dur, gpu=False, rate=RATE):
+    """Camera motion frame to frame (dx, dy in frame widths) over a stretch of a file, at rate (fps)."""
     sw, sh = map(int, subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                                                "stream=width,height", "-of", "csv=p=0", path]).decode().split(",")[:2])
     w, h = SIDE, SIDE * sh // sw // 2 * 2
     r = subprocess.run(["ffmpeg", "-v", "error", *(["-hwaccel", "cuda"] if gpu else ["-threads", "4"]),
                         "-ss", f"{ts:.3f}", "-t", f"{dur:.3f}", "-i", path,
-                        "-an", "-vf", f"fps={RATE},scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                        "-an", "-vf", f"fps={rate},scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
                        capture_output=True)
     if r.returncode and gpu:                        # no CUDA decoder for this file: the CPU then
-        return motion(path, ts, dur)
+        return motion(path, ts, dur, rate=rate)
     raw = r.stdout
     g = np.frombuffer(raw, np.uint8)[: len(raw) // (w * h) * w * h].reshape(-1, h, w)
+    return frames_motion(g)
+
+
+def frames_motion(g):
+    """Camera motion frame to frame (dx, dy in frame widths) over grey frames g (n, h, w): corners tracked
+    (Lucas-Kanade), a RANSAC similarity fit -- the dancers are its outliers."""
+    import cv2
+    w = g.shape[2] if len(g) else 1
     mv = np.zeros((len(g), 2))
     for i in range(1, len(g)):
         p0 = cv2.goodFeaturesToTrack(g[i - 1], 200, 0.01, 8)
