@@ -162,3 +162,25 @@ def test_someone_further_back_and_softer_never_shares_or_takes_the_strip():
     assert lead.companion([tr(0.45), tr(0.30)], 0, f, 0.316) == -1          # behind him, out of his focus plane
     f["sharp"][1] = 0.33                                                     # as sharp: side by side, a pair
     assert lead.companion([tr(0.45), tr(0.30)], 0, f, 0.316) == 1
+
+
+def test_the_in_focus_person_beats_a_nearer_softer_one_unless_they_are_dancing():
+    import numpy as np
+
+    from focalcut.reel import lead
+    trs = [dict(t=np.arange(0, 2, 0.2)) for _ in range(2)]
+    base = dict(size=[1.0, 0.7], sharp=[0.3, 1.0], seen=[1.0, 1.0], act=[0.3, 0.3])
+
+    def feats(**kw):
+        f = {k: np.zeros(2) for k in (*lead.WEIGHTS, "mid")}
+        for k, v in {**base, **kw}.items():
+            f[k][:] = v
+        return f
+    orig = lead.features
+    try:
+        lead.features = lambda *a, **k: feats()
+        assert lead.choose(trs, 0, 2)[0] == 1                 # the band member behind, in focus
+        lead.features = lambda *a, **k: feats(act=[1.0, 0.3])
+        assert lead.choose(trs, 0, 2)[0] == 0                 # a dancer in fog, nearer and busier, stays the subject
+    finally:
+        lead.features = orig

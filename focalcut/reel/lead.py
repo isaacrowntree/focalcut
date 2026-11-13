@@ -39,6 +39,7 @@ WEIGHTS = dict(size=1.7, act=1.0, bounce=0.45, face=0.35, sharp=1.0, seen=1.8, o
                front=0.2, opener=0.85, held=0.0, alone=1.0, dom=1.0)
 BEHIND = 0.8             # choose(): the person a shot opens on keeps it only if they're at least this big against the
 SOFTER = 0.85            # best candidate (not further back) and at least this sharp (not out of the focus plane)
+FOCUS = 0.6              # choose(): someone this much softer than the sharpest person in shot is never the subject
 KEEP = 0.33              # choose(): the score someone needs over the person the shot opens on to take it from them
 TOGETHER = 0.85          # a companion's head is within this share of the strip's width of the subject's
 PEER = 0.6               # a companion is at least this share of the subject's size (head or body height)
@@ -309,6 +310,14 @@ def choose(trs, t0, length, cam=None, weights=None, strip=None):
     total = sum(abs(v) for v in w.values())
     margin = float(score[order[0]] - score[order[1]]) / total if len(order) > 1 else 1.0
     k = int(order[0])
+    sharp_ok = (f["seen"] >= 0.5) & (f["size"] >= 0.5)       # the camera's focus says who the shot is of: never a
+    if sharp_ok.any():                                        # nearer, softer person over the one it focused on
+        top = float(f["sharp"][sharp_ok].max())               # (Isaac: "a guy in foreground not in focus. not
+        if f["sharp"][k] < FOCUS * top:                       #  locked in on the guy who's in focus")
+            pool = np.where(sharp_ok & (f["sharp"] >= FOCUS * top) & (f["size"] * 1.15 <= f["size"][k])
+                            & (f["act"] + 0.2 >= f["act"][k]), score, -9.0)   # (a dancer in fog stays the subject)
+            if pool.max() > -9.0:                             # (only a nearer, softer one gives way: the foreground
+                k = int(np.argmax(pool))                      #  out of the focus plane, the one behind it in focus)
     if strip is not None and f["opener"].max() >= 0.5:        # the shot keeps the person it opens on, unless
         op = int(np.argmax(f["opener"] + 0.5 * f["held"] + 0.5 * f["mid"] + 1e-3 * score))   # someone is clearly
         # more its subject; of two in the strip as it opens, the one at its middle (SSMC's opening: the instructor,
