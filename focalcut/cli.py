@@ -277,7 +277,7 @@ def cmd_reel_run(a: argparse.Namespace) -> int:
         print(f"unknown step(s): {bad}; choose from {reel.STEPS}", file=sys.stderr)
         return 2
     reel.run(a.folder, steps=steps, formats=a.formats.split(",") if a.formats else None, workers=a.workers,
-             draft=a.draft, cut=a.cut)
+             draft=a.draft, cut=a.cut, clean=a.clean)
     return 0
 
 
@@ -309,6 +309,8 @@ def main(argv=None) -> int:
     rr.add_argument("--cut", help='one of reel.json\'s "cuts": another reel from the same footage, e.g. night')
     rr.add_argument("--workers", type=int, default=2, help="scoring processes (2 suits a 12 GB GPU)")
     rr.add_argument("--draft", action="store_true", help="render without effects or transitions (fast check)")
+    rr.add_argument("--clean", action="store_true", help="render the same cut clean, to <name>_clean.mp4: the footage on the same "
+                    "cut points with the music -- no effects, speed changes, transitions, lift, logos, overlay or stinger")
     rr.set_defaults(func=cmd_reel_run)
     rv = rsub.add_parser("serve", help="serve the review pages of one or more projects; they save picks.json as you "
                                        "make picks")

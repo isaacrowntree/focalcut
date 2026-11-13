@@ -70,3 +70,17 @@ def test_glide_is_a_steady_gentle_slow_motion():
     g = fx.EFFECTS["glide"]()
     ctx = fx.Context(fps=50, beat=0.5, peak=0.5, seed=0, params={})
     assert abs(g.source_length(2.0, ctx) - (1.6 + 2 / 50)) < 0.03
+
+
+def test_clean_plan_keeps_the_cut_and_drops_what_was_added():
+    from focalcut.reel import render
+    plan = dict(stinger=3.0, shots=[
+        dict(src_in=1.0, length=2.0, rec_in=0.0, crop=dict(w=0.3), fx=["glide"], effect="glide", logo="in",
+             transition="flash", lift=dict(window=4), speed=1.15, unit=dict(id="a")),
+        dict(src_in=5.0, length=1.0, rec_in=2.0, crop=None, fx=["bullet"], effect="bullet", title="x.png",
+             unit=dict(id="b"))])
+    c = render.clean_plan(plan)
+    assert [(s["src_in"], s["length"], s["rec_in"]) for s in c["shots"]] == [(1.0, 2.0, 0.0), (5.0, 1.0, 2.0)]
+    assert c["shots"][0]["crop"] == dict(w=0.3)
+    assert all(not s["fx"] and not any(s.get(k) for k in render.CLEAN_DROP) for s in c["shots"])
+    assert c["stinger"] == 0.0

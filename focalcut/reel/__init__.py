@@ -47,9 +47,11 @@ def stinger_length(project: Project, formats) -> float:
     return best
 
 
-def run(folder: str, steps=None, formats=None, workers: int = 2, draft: bool = False, cut: str | None = None) -> None:
+def run(folder: str, steps=None, formats=None, workers: int = 2, draft: bool = False, cut: str | None = None,
+        clean: bool = False) -> None:
     """cut: one of reel.json's "cuts" (another reel from the same footage) in place of the main reel; the analysis
-    steps are the project's own, so a cut runs from music on."""
+    steps are the project's own, so a cut runs from music on. clean: render the same cut without its effects (render.run
+    clean) to <name>_clean.mp4, for footage to reuse."""
     project = Project(folder, cut)
     from . import frame, moments
     frame.configure(project.config)                 # the focus rule's thresholds (reel.json "focus_*")
@@ -76,7 +78,7 @@ def run(folder: str, steps=None, formats=None, workers: int = 2, draft: bool = F
                         raise SystemExit(f"{project.cut_name(f)}: shots from footage outside the cut: {sorted(set(out))}")
         elif step == "render":
             for f in formats:
-                mod.run(project, f, draft=draft, cut=project.cut_name(f))
+                mod.run(project, f, draft=draft, cut=project.cut_name(f), clean=clean)
         elif step in ("xml", "review"):
             for f in formats:
                 mod.run(project, f, cut=project.cut_name(f))

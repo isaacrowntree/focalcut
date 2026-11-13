@@ -630,11 +630,19 @@ def apply_transitions(plan, files):
     return files
 
 
-def mix_audio(song, plan, stinger, out):
-    """The song from its start point, fading under the stinger, plus the stinger's own sound."""
+CLEAN_FADE = 1.5         # a clean render's music fades out over its last this many seconds (no stinger to cover it)
+
+
+def mix_audio(song, plan, stinger, out, clean=False):
+    """The song from its start point, fading under the stinger, plus the stinger's own sound (clean: no stinger, the
+    song fades out with the picture's last CLEAN_FADE seconds)."""
     ml, sa = plan["music_length"], plan["stinger_at"]
+    if clean:
+        ml, fade = sa, f"afade=t=out:st={max(sa - CLEAN_FADE, 0):.3f}:d={CLEAN_FADE}"
+    else:
+        fade = f"afade=t=out:st={sa:.3f}:d={max(ml - sa, 0.05):.3f}"
     graph = (f"[0:a]atrim=start={plan['music_start']}:duration={ml},asetpts=PTS-STARTPTS,"
-             f"afade=t=out:st={sa:.3f}:d={max(ml - sa, 0.05):.3f},aresample=48000[m]")
+             f"{fade},aresample=48000[m]")
     inputs = ["-i", song]
     if stinger:
         inputs += ["-i", stinger]
@@ -646,11 +654,30 @@ def mix_audio(song, plan, stinger, out):
                     "-c:a", "pcm_s24le", out], check=True)
 
 
-def run(project, fmt, draft=False, cut=None) -> str:
-    """Render plan_<cut>.json (cut: a reel's format, or any other cut's name -- plan.place) to out/."""
+CLEAN_DROP = ("logo", "logo_image", "title", "lift", "pull", "speed", "transition", "why")
+
+
+def clean_plan(plan):
+    """The same cut without what was added to the footage (Isaac, for a client: "a clean version ... keeping the same
+    edit but without any filters or logos. Just the shots, so I can re use them"; no slow-mo or speed ramps, which
+    tie footage to one track): every shot keeps its in-point, length and crop -- the same cut points, the same
+    framing -- and loses its effects, speed changes, transition, lift, logo and title. No stinger."""
+    for s in plan["shots"]:
+        s["fx"], s["effect"] = [], None
+        for k in CLEAN_DROP:
+            s.pop(k, None)
+    plan["stinger"] = 0.0
+    return plan
+
+
+def run(project, fmt, draft=False, cut=None, clean=False) -> str:
+    """Render plan_<cut>.json (cut: a reel's format, or any other cut's name -- plan.place) to out/ (clean: the
+    same cut clean_plan'd, to <name>_clean.mp4, with no overlay, exposure, stinger or logos)."""
     cut = cut or fmt
     plan = project.load(f"plan_{cut}.json")
     fmt = plan.get("format", fmt)
+    if clean:
+        plan = clean_plan(plan)
     music = project.load(project.music_file) if os.path.exists(project.path(project.music_file)) else {}
     W, H = size(project, fmt)
     timer = Timer()
@@ -661,7 +688,7 @@ def run(project, fmt, draft=False, cut=None) -> str:
             s["stab"] = False
     outdir, work = project.path("out"), project.path("work", cut)
     os.makedirs(outdir, exist_ok=True); os.makedirs(work, exist_ok=True)
-    marked = exposure.mark(project, plan)                    # reel.json "exposure": blown-out / dark subjects
+    marked = {} if clean else exposure.mark(project, plan)   # reel.json "exposure": blown-out / dark subjects
     for what, k in (("highlights pulled", 0), ("night subjects to lift (stops at most; faces decide)", 1)):
         done = {i: v[k] for i, v in marked.items() if v[k]}
         if done:
@@ -673,7 +700,7 @@ def run(project, fmt, draft=False, cut=None) -> str:
     from ..fx import looks
     from . import overlay
     song = plan.get("song") or music.get("song")
-    ov = overlay.options(looks.overlay(project.config, fmt))   # reel.json "overlay" over the look's own
+    ov = None if clean else overlay.options(looks.overlay(project.config, fmt))   # reel.json "overlay"
     ahead, ahead_err = None, []
     if ov and not draft:                           # the MilkDrop layer needs the music and the acts, not the
         def layer():                               # pictures: it renders while the shots do
@@ -704,7 +731,7 @@ def run(project, fmt, draft=False, cut=None) -> str:
             overlay.apply(lst, layered, plan, music, song, ov, hw.enc(final=True), FPS)   # (the shots, read as
                                                                                            # one: no joined copy)
         files = [layered]
-    stinger = project.stinger(fmt) if plan.get("stinger") else None
+    stinger = project.stinger(fmt) if plan.get("stinger") and not clean else None
     with timer("stinger, join, mix and mux"):
         if stinger:                                    # the stinger as the last "shot", conformed to size and rate
             sting = os.path.join(work, f"stinger_{hw.enc_tag()}_{W}x{H}_{hw.ENC_VERSION}.mp4")
@@ -718,12 +745,12 @@ def run(project, fmt, draft=False, cut=None) -> str:
         with open(lst, "w") as f:
             f.writelines("file '" + p.replace("'", "'\\''") + "'\n" for p in files)   # (concat's own quoting)
         mix = os.path.join(work, "mix.wav")
-        mix_audio(song, plan, stinger, mix)
+        mix_audio(song, plan, stinger, mix, clean)
         err = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", mix, "-af",
                               f"loudnorm=I={I}:TP={TP}:LRA=11:print_format=json", "-f", "null", "-"],
                              capture_output=True, text=True).stderr
         m = json.loads(err[err.rindex("{"):err.rindex("}") + 1])
-        final = os.path.join(outdir, f"{project.out_stem(cut, fmt)}{'_draft' if draft else ''}.mp4")
+        final = os.path.join(outdir, f"{project.out_stem(cut, fmt)}{'_draft' if draft else ''}{'_clean' if clean else ''}.mp4")
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-i", mix,
                         "-map", "0:v", "-map", "1:a",      # (the picture joined straight into the delivered file)
                         "-af", f"loudnorm=I={I}:TP={TP}:LRA=11:linear=true:measured_I={m['input_i']}:"
@@ -744,9 +771,9 @@ def run(project, fmt, draft=False, cut=None) -> str:
                     raise
                 time.sleep(5)
     if not draft:                                            # the cut as rendered: what "keep": true re-cuts from
-        project.dump(f"plan_{cut}_rendered.json", plan)
+        project.dump(f"plan_{cut}{'_clean' if clean else ''}_rendered.json", plan)
     rep = timer.report()
-    with open(os.path.join(outdir, f"{cut}_timings.json"), "w") as f:
+    with open(os.path.join(outdir, f"{cut}{'_clean' if clean else ''}_timings.json"), "w") as f:
         json.dump(dict(rep, size=[W, H], frames=sum(s["frames"] for s in plan["shots"])), f, indent=1)
     print(f"[reel] {cut}: {W}x{H} in {rep['total']:.0f} s -- "
           + ", ".join(f"{k} {v:.0f} s" for k, v in rep.items() if k != "total" and v >= 0.5))
