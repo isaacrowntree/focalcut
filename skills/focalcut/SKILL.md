@@ -33,8 +33,9 @@ cd <repo> && python -m venv .venv && .venv/bin/pip install -e ".[reel]"   # once
   shots, so a heavily picked reel is mostly picks; reel.json `"keep": true` keeps the last rendered cut's footage
   for clips the editor left alone. A reel the editor has picked outright (a short cut of their selections) takes
   reel.json `"mode": "picks"` (or the same inside a cut): every pick once, whole, in the story's order, trimmed only
-  when they overrun the reel (the least starred first), B-roll they left alone filling the rest, the same picks in
-  every format, no coverage passes (docs/picks.md). Otherwise, when the picks are too many or too long, reel.json
+  when they overrun the reel (B-roll picks before people, the least starred first; in portrait B-roll picks go
+  before a pick of people is trimmed), longer where the music is calm, B-roll they left alone filling the rest, the
+  same picks in every format but for that, no coverage passes (docs/picks.md). Otherwise, when the picks are too many or too long, reel.json
   `plan.<fmt>.pick_hold` (beats, e.g. 4 landscape, 3 portrait) plays each pick's best few beats instead, condenses
   a clip with many picks to its best ones, keeps the picks to about half the reel (`pick_share`) and puts them
   between shots from the rest of the footage, picked clips included. Re-run `--steps plan,render,xml,review` after

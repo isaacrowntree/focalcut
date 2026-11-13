@@ -9,6 +9,28 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The picture follows the music.** The music step now says what the music is doing on each beat
+  (`music.features`, read through `music.feel`): `beat_kick` (the low end against the song's loud level),
+  `beat_drive`, `beat_section` (intro / groove / break / build / drop / outro), `beat_sustain` and `sustains`
+  (the music lands on a beat and holds). `beat_accent` and `beat_energy` could not tell a vocal breakdown from a
+  drop: a sung syllable is an accent, and a pad is loud. A `music.json` without the new fields reads as before;
+  re-run `--steps music` to get them.
+  - **Hits are real.** A hit is an accent on a beat the rhythm section plays. The cut's flash (and the flash an act
+    change falls back to), a look's phrase glitch and hit accents, band inserts, a velocity edit's landing beat, the
+    overlay's flickers, kick blink, zoom punch, RGB split and drop flash all go by it. Where the music is calm
+    nothing flashes, blinks, whips or pushes: an act changes on a dissolve there, and the flickers up to a drop
+    play only on the beats of a build that sound (a drop out of a vocal break gets its own flash and no more).
+  - **Pace by section.** A calm phrase is cut long (`PHRASES["calm"]`) and a drop quick, whatever the act's pace;
+    shots that start in a calm stretch take beats from those that start where the music drives
+    (`plan.pace_through`; in picks mode `pick_story`, once the order is settled). `follow_music: false` turns the
+    story's pass off. The climax's big effect goes on a shot that starts on the drop, not over the break before it.
+  - **Holds on sustains.** No cut on a beat the music holds (`plan.hold_sustains`): it moves onto the hit or the
+    next beat that sounds. A velocity edit lands on the sustain's first beat, and a plain shot's landing is slid
+    onto it (`velocity.on_sustain`).
+- **Picks mode: B-roll gives before people.** When the picks overrun the reel, B-roll picks give up their beats
+  first, and go first when picks must go; the log counts the trims by kind. In portrait a B-roll pick goes down to
+  one beat and then out (named in the log) before a pick of people is trimmed.
+
 - **Frame portrait**, a third view of the source browser (`sources.html#frame=<reel>`): the reel's portrait cut
   shot by shot, the 9:16 crop over the picture and the cropped result beside it. Drag the frame to pan the crop
   (one pan for the whole shot, or pans at the playhead that it glides between), click a dancer to follow them,

@@ -21,6 +21,10 @@ How it is cut (the editing rules, and what music videos do -- see docs/recipes/r
   - shot lengths come in 8-beat phrases of varied patterns -- quick where the music is busy, long holds between, a
     build into the climax -- never one length over and over (rhythm); moves that need time get the long slots
   - each move's peak lands on a beat, and every cut comes ANTICIPATE seconds ahead of its beat
+  - the picture follows the music (music.py's per-beat description, read through music.feel): long shots and
+    dissolves where it is calm, quick cuts where it drives (rhythm, pace_through); a flash, a glitch or a band insert
+    only on a hit -- an accent on a beat the rhythm section plays (transitions, glitch_look, band_in); no cut on a
+    beat the music holds, and a landing on the beat it lands on (hold_sustains, place)
 Every shot is reframed around its subject (frame.py). Effects and transitions are chosen for a reason: speed ramps
 on a move's peak, spotlights on stage, a spin cut between two turns, a whip that carries on the camera's movement,
 a zoom into a tighter shot, a flash on a musical hit, a signature transition at each change of act. A cut that asks
@@ -2773,7 +2777,13 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
       - it opens on the editor's opening (picks "open", reel.json "open") under the logo, else on B-roll; the picks of
         "open_with" follow it; the picks of "end_with" lead into the ending ("ending", picks "end"), or into the pick
         named by "close", which then ends the reel;
-      - every format plays the same picks in the same order at the same lengths: nothing here depends on framing.
+      - B-roll gives before people: its picks lose their beats first and go first; in portrait (PICK_FLOOR_BROLL),
+        where B-roll plays badly, a B-roll pick goes down to one beat and then out before a pick of people is trimmed;
+      - the lengths follow the music (music.feel): once the order is settled, picks that play where it is calm keep
+        more of their length, given by those that play where it drives (pace_lengths), and no cut falls on a beat
+        the music holds (hold_sustains);
+      - but for portrait's B-roll, every format plays the same picks in the same order at the same lengths: nothing
+        here depends on framing.
 
     Returns (shots, acts, the picks left out as [unit id, from, to])."""
     from . import shake

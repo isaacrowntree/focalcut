@@ -15,10 +15,12 @@ keeps the end of the move (PRE) and about a beat of the dancer at rest (plan "la
 Holds on sustains: when the music lands on a beat and holds (a note, a chord or a voice held over the next beats,
 music.py "sustains"), the picture holds with it. A velocity edit lands on that beat when its shot has one (landing():
 the slow hold plays through the held note); a plain shot's landing is slid onto it (on_sustain()); and no cut falls
-on a held beat (plan.hold_sustains). Before this was written down it happened by chance of two rules: landing() took
-the shot's hardest accent, and an accent is a beat's onset against its neighbours' -- so the beat before a held note
-(loud, then nothing) scored highest; and rhythm() gave its long "hold" phrases to the phrases with the lowest mean
-accent, which are the ones where notes are held.
+on a held beat (plan.hold_sustains). Before this was written down it happened in the story's cut by a side effect:
+rhythm() gave its long "hold" phrases ([8], [4, 4], [6, 2]) to the phrases whose mean beat accent was at or under
+the act's median, and a held beat has almost no accent (about 0.2 against 1.0), so the phrases with a sustain in them
+were the ones held. (On the Electric Nation reel 6 of the song's 15 sustains played inside one shot, shots of 4.8
+beats against the reel's 2.5.) Nothing aimed at it: a cut could still fall on a held beat, and a reel cut from the
+editor's picks took its lengths from the picks alone.
 """
 from __future__ import annotations
 
