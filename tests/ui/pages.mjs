@@ -127,12 +127,31 @@ const [cx, cy] = await p.at("#fwrap", 0.3, 0.4);
 await p.click(cx, cy);
 s = await saved(); await p.sleep(600);
 ok(s.C1.follow && s.C1.follow.length == 1 && !s.C1.portrait, "a click follows the person there (the pan gives way)", s.C1);
-ok(/Following|No face/.test(await text("fstate")) && /following/.test(await p.eval(`document.querySelector("#fshots .fs.cur .badge").textContent`)), "… and the page says so", await text("fstate"));
+ok(/Following|Nobody tracked/.test(await text("fstate")) && /following/.test(await p.eval(`document.querySelector("#fshots .fs.cur .badge").textContent`)), "… and the page says so", await text("fstate"));
 await p.key("ArrowRight");
 ok(await p.eval(`FX().c.id`) == "C2" && await p.eval(`document.getElementById("fwrap").getBoundingClientRect().top`) > 0, "→ goes to the next shot, the picture stays on screen");
 await p.key("ArrowLeft"); await p.key("Backspace");
 s = await saved();
 ok(!s.C1.follow && !s.C1.portrait && /planner/.test(await text("fstate")), "Backspace gives the shot back to the planner", s.C1);
+// a focus point for hands or a prop: Shift+click at the playhead, again later, and the crop glides between them
+const [hx, hy] = await p.at("#fwrap", 0.45, 0.6);
+await p.click(hx, hy, 8);
+s = await saved();
+ok(s.C1.portrait && s.C1.portrait.length == 1 && s.C1.portrait[0][0] == "0:20.00" && Math.abs(s.C1.portrait[0][1] - 0.45) < 0.03 && !s.C1.follow,
+  "Shift+click puts a focus point at the playhead (no follow)", s.C1);
+await p.eval(`fnudge(1)`); await p.sleep(200);
+const [hx2] = await p.at("#fwrap", 0.6, 0.6);
+await p.click(hx2, hy, 8);
+s = await saved();
+ok(s.C1.portrait.length == 2 && s.C1.portrait[1][0] == "0:21.00" && /gliding through 2/.test(await text("fstate")), "… a second one later: the crop glides between them", [s.C1.portrait, await text("fstate")]);
+await p.key("Backspace"); await saved();
+// H: the person the crop is on keeps it for the whole shot
+await p.key("h");
+s = await saved();
+ok(s.C1.follow && s.C1.follow.length == 1 && !s.C1.portrait, "H keeps whoever the crop is on for the whole shot (a follow where it is)", s.C1);
+await p.key("Backspace");
+s = await saved();
+ok(!s.C1.follow && !s.C1.portrait, "… and Backspace gives it back", s.C1);
 s = await undoAll();
 ok(JSON.stringify(s) == JSON.stringify(orig), "framing undone: the file as it started");
 

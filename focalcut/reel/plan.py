@@ -47,6 +47,7 @@ import numpy as np
 
 from . import frame as FR
 from . import grammar as G
+from . import lead as LD
 from . import music as MU
 from . import velocity as V
 
@@ -3207,10 +3208,45 @@ def reframe(project, unit, t0, length, fmt, focus=True, pick=None):
     pick = in_pick(picks, unit, t0, length) if pick is None else pick
     c = _reframe(project, unit, t0, length, fmt, pick=fmt == "portrait" and pick)
     if fmt == "portrait" and (picks.get(unit["id"]) or {}).get("follow"):   # the editor's chosen person
-        dense = project.path("scores", f"faces_dense_{unit['id']}.npz")
-        yf = _cached(dense, lambda f: dict(np.load(f))) if os.path.exists(dense) else None
-        c = follow_override(c, yf, follow_keys(picks, unit), t0, length)
+        d, yf = _scores(project, unit)
+        c = follow_override(c, yf, follow_keys(picks, unit), t0, length, d)
     return focus_override(c, focus_keys(picks, unit, fmt), t0, length) if focus else c
+
+
+def people(project, unit, t0, length, crop=None):
+    """The people of a stretch as the focus editor draws them: [dict(t: seconds from t0 (5 a second), x, y: their
+    head (frame fractions), r: its size (of the frame's height), sub: the strip is on them)] -- everyone the pose
+    pass tracked for a good part of it (lead.tracks), so the editor sees who the planner's strip is on and can
+    click anyone, face showing or not. crop: the stretch's crop (who it holds most is its subject)."""
+    d, yf = _scores(project, unit)
+    if d is None:
+        return []
+    out, held = [], []
+    for tr in LD.tracks(d, yf, t0, t0 + length):
+        if len(tr["t"]) < max(2, 0.3 * length / 0.2):
+            continue
+        on = 0.0
+        if crop and crop.get("path"):
+            pth = np.array(crop["path"])
+            on = float((np.abs(tr["head"][:, 0] - np.interp(tr["t"] - t0, pth[:, 0], pth[:, 1])) <= 0.4 * crop["w"]).sum())
+        held.append(on / max(len(tr["t"]), length / 0.2))
+        out.append(dict(t=[round(float(v - t0), 2) for v in tr["t"]], x=[round(float(v), 3) for v in tr["head"][:, 0]],
+                        y=[round(float(v), 3) for v in tr["head"][:, 1]], r=round(float(np.median(tr["hs"])), 3),
+                        sub=False))
+    if held and max(held) >= 0.5:
+        out[int(np.argmax(held))]["sub"] = True
+    return out
+
+
+def _scores(project, unit):
+    """A unit's pose scores (frame.load, or None) and its face scan (the persons step's dense one, else the people
+    step's; None without either), each loaded once."""
+    stem = project.path("scores", unit["score"])
+    d = _cached(stem + ".npz", FR.load, (stem + "_focus.npz", stem + "_subject.npz"))
+    dense = project.path("scores", f"faces_dense_{unit['id']}.npz")
+    yf = _cached(dense if os.path.exists(dense) else project.path("scores", f"faces_{unit['id']}.npz"),
+                 lambda f: dict(np.load(f)))
+    return (dict(d) if d is not None and not unit.get("rotate") else None), yf
 
 
 def follow_keys(picks, unit):
@@ -3225,16 +3261,27 @@ FOLLOW_NEAR = 0.12         # a face this near the click (of the frame), within F
 FOLLOW_WHEN = 0.75
 
 
-def follow_override(crop, yf, keys, t0, length):
+def follow_override(crop, yf, keys, t0, length, d=None):
     """The portrait crop on the person the editor clicked (picks "follow", set in the source browser), for the
-    whole shot: their face's track (face_tracks, anyone's -- not only the people the planner took the shot to be
-    about) steers the strip, the face in the upper third, the strip widened for a close face. A click with no face
-    near it (a back, a face too small to find) holds the strip on the click. Unchanged when no click is near the shot."""
+    whole shot -- anyone, not only the people the planner took the shot to be about, and whether or not they show a
+    face: the person at the click is followed head and body through the shot (lead.follow: the pose pass's track
+    of them, their face where it shows), alone, whoever is beside them. With no tracked person at the click, a face
+    near it is followed (face_tracks); with neither (a prop, a face too small to find), the strip holds on the
+    click. The click nearest the shot's middle counts. Unchanged when no click is near the shot."""
     keys = [k for k in keys if t0 - FOCUS_REACH <= k[0] <= t0 + length + FOCUS_REACH]
     if not crop or not keys:
         return crop
     kt, kx, ky = min(keys, key=lambda k: abs(k[0] - (t0 + length / 2)))
     w, h, z = crop["w"], crop["h"], crop.get("z", 1.0)
+    grid = np.arange(0, length + 0.01, 0.1)
+    ld = LD.follow(d, yf, t0, length, w, h, kt, kx, ky) if d is not None and w < 0.5 else None
+    if ld is not None:
+        x, y = np.interp(grid, ld["t"], ld["x"]), np.interp(grid, ld["t"], ld["y"])
+        out = dict(crop, follow="person", on=ld["on"], why="the one you clicked",
+                   **{f: round(max(float(crop.get(f, 0.0)), ld["seen"]), 2) for f in ("present", "inside", "head")},
+                   face=round(max(float(crop.get("face", 0.0)), ld["face"]), 2))
+        out["path"] = [[round(float(a), 2), round(float(b), 4), round(float(c), 4)] for a, b, c in zip(grid, x, y)]
+        return out
     grid = np.arange(0, length + 0.01, 0.2)
     best, bd = None, FOLLOW_NEAR
     for tr in (face_tracks(yf, t0 - 1.0, t0 + length + 1.0) if yf is not None else []):
@@ -3245,7 +3292,7 @@ def follow_override(crop, yf, keys, t0, length):
     if best is None:
         x = np.full_like(grid, np.clip(kx, w / 2, 1 - w / 2))
         y = np.full_like(grid, np.clip(ky, h / 2, 1 - h / 2))
-        out = dict(crop, follow="point")
+        out = dict(crop, follow="point", why="held where you clicked")
     else:
         t, cx, cy, fh, _ = best
         tt = t - t0
@@ -3257,7 +3304,9 @@ def follow_override(crop, yf, keys, t0, length):
         x, y = np.clip(x, w / 2, 1 - w / 2), np.clip(y, h / 2, 1 - h / 2)
         seen = min(1.0, float(((tt >= 0) & (tt <= length)).sum()) / max(1.0, length / 0.5))
         out = dict(crop, w=round(w, 4), h=round(h, 4), z=round(z * zoom, 3), follow="face", facetrack=True,
+                   why="the face you clicked",
                    **{f: round(max(float(crop.get(f, 0.0)), seen), 2) for f in ("face", "present", "inside", "head")})
+    out.pop("on", None)
     out["path"] = [[round(float(a), 2), round(float(b), 4), round(float(c), 4)] for a, b, c in zip(grid, x, y)]
     return out
 
@@ -3389,6 +3438,19 @@ def _reframe(project, unit, t0, length, fmt, pick=False):
         if ft is not None:
             x, y, zz = ft["x"], ft["y"], zz * ft["zoom"]
             cw, ch = cw0 / zz, ch0 / zz
+    ld = None
+    if narrow and person and not pan and R["lead"] and (pick or unit["role"] != "dance"):
+        # one person for the whole shot, kept in the strip while they move (lead.py): the body tracker's strip says
+        # who the shot opens on; who is dancing, nearest and in focus says who it is about
+        ld = LD.strip(d, d.get("yf"), _cached(stem + "_shake.npz", lambda f: dict(np.load(f))), t0, length, cw, ch,
+                      body=(grid, x))
+        if ld is not None:
+            x, y = np.interp(grid, ld["t"], ld["x"]), np.interp(grid, ld["t"], ld["y"])
+            me = ld["lead"]                                   # the stats below are about them
+            union = LD._at(me, pt[sel], "box")
+            near = np.abs(me["t"][None, :] - pt[sel][:, None]).argmin(1)
+            face = me["face"][near] & (np.abs(me["t"][near] - pt[sel]) <= 0.3)
+            touch = None
     # how well the crop holds the subject over the shot itself: present (mostly in the crop), inside (wholly in it,
     # not cut by the crop or the camera's own edge) and face (a face to the camera, in the crop), as fractions
     inn = (pt[sel] >= t0) & (pt[sel] <= t0 + length)
@@ -3444,9 +3506,12 @@ def _reframe(project, unit, t0, length, fmt, pick=False):
         held = ft["held"]                                    # the body tracker made of the shot
         stats.update(face=max(stats["face"], held), present=max(stats["present"], held),
                      inside=max(stats["inside"], held), head=max(stats["head"], held))
+    step = 1 if ld is not None else 2                        # (a followed subject: a point every 0.1 s)
     return dict(w=round(cw, 4), h=round(ch, 4), z=round(zz, 3), **({"facetrack": True} if ft is not None else {}),
+                **({"on": ld["on"], "why": ld["why"], "cut": round(ld["cut"], 2), "halved": round(ld["halved"], 2)}
+                   if ld is not None else {}),
                 path=[[round(float(a), 2), round(float(b), 4), round(float(c), 4)]
-                      for a, b, c in zip(grid[::2], x[::2], y[::2])],
+                      for a, b, c in zip(grid[::step], x[::step], y[::step])],
                 **{k: round(v, 2) for k, v in stats.items()})
 
 
@@ -3722,6 +3787,7 @@ RULES = dict(            # portrait rules: reel.json plan.<fmt>.portrait_rules (
     torn=0.3,            # share of the shot the dance partner is half in the strip, or in and out of it
     sliver=0.4,          # someone the frame edge slices, this tall (of the subject) or more, half in the strip: split
     pick_faces=True,     # an editor's pick is framed on the faces first (face_first); false: as any other shot
+    lead=True,           # one person for the whole shot, followed head and body (lead.py); false: the body tracker's
     rank=0.15)           # how far an unusable moment ranks down (another part of the clip, or recast, wins)
 R = dict(RULES)          # the rules in force (build() sets them from the config)
 
@@ -4273,6 +4339,8 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
             snap_windows(project, fmt, plan["shots"], fm, cfg)    # on passing windows at that length too
         end_clean(project, fmt, plan["shots"], fm, cfg)
     steady_shots(project, fmt, plan["shots"], fm, cfg)       # the planner's own shots: their clip's steadiest part
+    if fmt == "portrait":
+        portrait_parts(project, plan["shots"])               # a trimmed pick: the part of it that frames best
     stabilise(plan["shots"], cfg)
     mo = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
     plan["units_total"] = len({r["id"] for r in mo})
@@ -4716,6 +4784,77 @@ def steady_shots(project, fmt, shots, moments, cfg, W=None):
         print(f"[reel] {fmt}: {moved} planner's shots moved to steadier stretches of their own clips "
               f"(shake {np.mean(before):.4f} -> {np.mean(after):.4f})")
     return moved
+
+
+PART_STEP = 0.1          # portrait_parts: in-points tried along the pick, this far apart (s)
+PART_GAIN = 0.25         # ... a part must frame this much better (part_cost) to be taken over the one chosen
+PART_SAME = 0.3          # ... and keep the strip within this (of its width) of where it was, where the two overlap
+PART_CUT, PART_HALVED, PART_PAIR = 2.0, 1.0, 0.3   # part_cost: a head cut by the camera, someone halved, both shown
+
+
+def part_cost(crop):
+    """How badly a portrait strip frames its stretch (lower is better), from what a crop can't fix and another part
+    of the clip can: the subject's head cut off by the camera's own frame (cut), someone their size sliced at the
+    strip's edge (halved) -- and how well it shows people together (a pair in the strip). None: nothing to judge by
+    (no one followed)."""
+    if not crop or "on" not in crop:
+        return None
+    return (PART_CUT * crop.get("cut", 0.0) + PART_HALVED * crop.get("halved", 0.0)
+            - PART_PAIR * (crop["on"] == "pair"))
+
+
+def portrait_parts(project, shots):
+    """In portrait, a pick that plays trimmed plays the part of it that frames best -- the editor's own licence
+    (2026-11-13: "take a bit more license for group dancers where you can find better shots of them dancing
+    closer"; "acceptable to show just one if the other isn't cut in half"): the same length, anywhere inside the pick
+    as they marked it ("whole"), clear of the pick's other pieces, where the people dancing together fit the strip
+    side by side, nobody is cut in half at its edge and no head is cut off by the camera's own frame (part_cost).
+    It moves only for a clear gain (PART_GAIN), to the best part, the nearest of equals, and only to a part that is
+    about the same people (PART_SAME: the strip where it was, in the time the two parts share). A pick played whole, one
+    the editor framed (a focal point or a follow click in it), a speed effect's and the ending stay. Landscape keeps
+    the part the story chose. Returns how many moved."""
+    picks = project.picks()
+    moved = []
+    for s in shots:
+        u, whole = s["unit"], s.get("whole")
+        if not whole or not s.get("add") or s.get("ending") or s.get("close") or any(f in SPEED for f in s["fx"]):
+            continue
+        a, L = played(s)
+        if whole[1] - whole[0] < L + PART_STEP:
+            continue
+        if any(a - FOCUS_REACH <= k[0] <= a + L + FOCUS_REACH
+               for k in focus_keys(picks, u, "portrait") + follow_keys(picks, u)):
+            continue                                         # framed by the editor: as they framed it
+        c0 = part_cost(s.get("crop"))
+        if c0 is None or c0 <= 0:
+            continue
+        best = None
+        for na in np.arange(whole[0], whole[1] - L + 1e-6, PART_STEP):
+            dt = float(na) - a
+            if abs(dt) < 0.05 or any(                        # (inside the editor's own pick: no ban applies)
+                    x is not s and x["unit"]["id"] == u["id"] and
+                    min(na + L, played(x)[0] + played(x)[1]) - max(na, played(x)[0]) > -SNAP_GAP for x in shots):
+                continue
+            c = reframe(project, u, float(na), L, "portrait")
+            cost = part_cost(c)
+            both = np.arange(max(a, na), min(a, na) + L + 1e-6, 0.1)   # the time the two parts share: the strip on
+            if len(both) and cost is not None:                          # the same people there, or it is another shot
+                was, now = np.array(s["crop"]["path"]), np.array(c["path"])
+                if np.abs(np.interp(both - a, was[:, 0], was[:, 1]) -
+                          np.interp(both - na, now[:, 0], now[:, 1])).mean() > PART_SAME * c["w"]:
+                    continue
+            if cost is not None and cost <= c0 - PART_GAIN and (best is None or (cost, abs(dt)) < best[:2]):
+                best = (cost, abs(dt), dt, c)
+        if best:
+            dt, c = best[2], best[3]
+            s.update(t=round(s["t"] + dt, 3), src_in=round(s["src_in"] + dt, 3), part=round(dt, 2), crop=c)
+            if s.get("span"):
+                s["span"] = [round(s["span"][0] + dt, 3), round(s["span"][1] + dt, 3)]
+            s.pop("land", None); s.pop("land_fits", None)
+            moved.append(f'{u["id"]} {dt:+.1f} s')
+    if moved:
+        print(f"[reel] portrait: {len(moved)} trimmed picks play a better-framed part of the pick: {', '.join(moved)}")
+    return len(moved)
 
 
 END_FILL = ("band", "singer", "stage", "dj", "crowd")   # what follows a last shot cut short, in that order

@@ -62,7 +62,7 @@ App.onBoot = () => {
   curView = 0;
   go(Math.max(0, D.clips.findIndex((c) => c.id == last)));
   if (!route()) view(ls.get("view") || 1, true);
-  if (curView == 3) toast(`Framing the ${rlab(reel == "all" ? "main" : reel)} portrait cut: drag to pan the crop, click a dancer to follow them, ← → from shot to shot`);
+  if (curView == 3) toast(`Framing the ${rlab(reel == "all" ? "main" : reel)} portrait cut: click a person to follow them, H keeps the one the crop is on, Shift+click sets a focus point, drag pans, ← → from shot to shot`);
 };
 addEventListener("resize", () => {
   if (curView == 1) paint();
@@ -128,6 +128,7 @@ const KEYS = {
     else if (k == "," || k == "<") fnudge(ev.shiftKey ? -0.5 : -FR);
     else if (k == "." || k == ">") fnudge(ev.shiftKey ? 0.5 : FR);
     else if (k == "Backspace" || k == "Delete") freset();
+    else if (K == "h") fkeep();
     else if (k == "Home") fpick(0, false);
     else if (k == "End") fpick(forder.length - 1, false);
     else if (k == "Escape") fv.pause();
@@ -140,7 +141,7 @@ addEventListener("keydown", (ev) => {
   let done = true;
   if (k == "Tab") view(((curView + (ev.shiftKey ? 1 : 0)) % 3) + 1);
   else if (K == "f" && curView != 3) toggleFrame();
-  else if (K == "g") curView == 3 ? toast("Click a dancer to follow them through this shot") : followMode(!followOn);
+  else if (K == "g") curView == 3 ? toast("Click a person (their ring) to follow them through this shot · H keeps the one the crop is on") : followMode(!followOn);
   else if (k == "Escape" && followOn) followMode(false);
   else done = KEYS[curView](k, K, ev) !== false;
   if (!done) return;

@@ -3,7 +3,11 @@
 // shows them); the editor moves it two ways, both kept per clip in picks.json and applied by the next re-plan:
 //   "portrait": [["m:ss.ss", x, y], ...]  pans -- the crop's centre at a time (fractions of the frame); one pan in a
 //                                          shot holds it there, several and the crop glides between them
-//   "follow":   [["m:ss.ss", x, y], ...]  a person, where the editor clicked them: the planner tracks their face
+//   "follow":   [["m:ss.ss", x, y], ...]  a person, where the editor clicked them: the planner tracks them through
+//                                          the shot, head and body, whether or not they show a face
+// The four fixes, in the Frame portrait view: click a person (their ring) to follow them · H keeps the person the
+// crop is on now for the whole shot · Shift+click puts a focus point at the playhead (hands, a prop; more at other
+// times and the crop glides between them) · drag pans. The state line says what the planner's crop is on, and why.
 // The frame is drawn over the picture in every view (F); the Frame portrait view goes through a reel's portrait cut
 // shot by shot with the result beside it.
 let frameOn = !!ls.get("frame"), followOn = false, staleCrop = null, finding = null;
@@ -34,7 +38,8 @@ function fetchCrop(c, a, b, k) {
       redrawFrames();
     });
 }
-const cropKey = (c, a, b) => c.id + "|" + a.toFixed(2) + "|" + b.toFixed(2);
+// (the people followed in the stretch are part of the key: an undo shows the planner's crop again, not the followed one)
+const cropKey = (c, a, b) => c.id + "|" + a.toFixed(2) + "|" + b.toFixed(2) + "|" + inShot(folkeys(c.id), a, b).map((k) => k.join(",")).join(";");
 // the crop as the cut has it, when this stretch is one of its portrait shots
 function planCrop(c, a, b) {
   const s = c.P.find(([x, y]) => Math.abs(x - a) < 0.03 && Math.abs(y - b) < 0.03);
@@ -47,6 +52,7 @@ function derived(c, a, b) {
   const stand = planCrop(c, a, b) || lastCrop.get(c.id);
   if (hit) return stand || hit;                 // (the server could not work it out: the cut's own crop, if any)
   if (!server) return stand || { err: "off" };
+  if (Sync.timer || Sync.busy) return stand;    // (a change on its way to picks.json: the server's crop after it lands)
   if (!crops.has(k)) {
     if (cropBusy) cropNext = [c, a, b, k];
     else {
@@ -78,18 +84,23 @@ function frameAt(c, a, b, t) {
     const kt = ks.map((k) => k[0]);
     o = { x: clamp(lerp(kt, ks.map((k) => k[1]), t), cr.w / 2, 1 - cr.w / 2), y: clamp(lerp(kt, ks.map((k) => k[2]), t), cr.h / 2, 1 - cr.h / 2) };
   }
-  return { d, o, w: cr.w, h: cr.h, z: cr.z, fol: cr.follow, kind: framingOf(c.id, a, b), n: ks.length };
+  const who = (cr.people || []).map((p) => ({ x: lerp(p.t.map((q) => a0 + q), p.x, t), y: lerp(p.t.map((q) => a0 + q), p.y, t), r: p.r, sub: p.sub,
+    here: t >= a0 + p.t[0] - 0.3 && t <= a0 + p.t[p.t.length - 1] + 0.3 })).filter((p) => p.here);
+  return { d, o, w: cr.w, h: cr.h, z: cr.z, fol: cr.follow, on: cr.on, why: cr.why, who, kind: framingOf(c.id, a, b), n: ks.length };
 }
 // what frames the shot, in words; warn: it did not go as asked
+const ON = { person: "on one person", pair: "on two together", floor: "on someone on the floor (their body, not their head)", hands: "on the hands at work" };
 function framingText(c, a, b, F) {
   const kind = framingOf(c.id, a, b);
   if (finding && finding.id == c.id && Math.abs(finding.a - a) < 0.03) return { kind, text: "Finding the person you clicked…", warn: true };
-  if (kind == "pan") return { kind, text: F && F.n > 1 ? `Your pan — gliding through ${F.n} points` : "Your pan" };
+  if (kind == "pan") return { kind, text: F && F.n > 1 ? `Your focus points — gliding through ${F.n}` : "Your pan" };
   if (kind == "follow") {
     if (!server) return { kind, text: "Following the person you clicked (shown after the next re-plan)" };
-    if (F && F.fol == "point") return { kind, text: "No face found where you clicked — the crop holds on your click", warn: true };
-    return { kind, text: "Following the person you clicked" };
+    if (F && F.fol == "point") return { kind, text: "Nobody tracked where you clicked — the crop holds on your click. Shift+click sets focus points instead", warn: true };
+    if (F && F.fol == "face") return { kind, text: "Following the face you clicked" };
+    return { kind, text: "Following the person you clicked, whole shot" + (F && F.on && F.on != "person" ? ` (${ON[F.on] || F.on})` : "") };
   }
+  if (F && F.on) return { kind, text: `Planner: ${ON[F.on] || F.on}` + (F.why ? ` — ${F.why}` : "") };
   return { kind, text: "The planner's framing" };
 }
 function frameDraw(el, wrap, v, c, a, b, t) {
@@ -111,9 +122,10 @@ function frameDraw(el, wrap, v, c, a, b, t) {
   const r = vrect(wrap, v, c), A = F.o || F.d, say = framingText(c, a, b, F);
   const box = (p, cls) => `<i class="fbox ${cls}" style="left:${r.l + (p.x - F.w / 2) * r.w}px;top:${r.t + (p.y - F.h / 2) * r.h}px;width:${F.w * r.w}px;height:${F.h * r.h}px"></i>`;
   const pin = inShot(folkeys(c.id), a, b).find((k) => Math.abs(k[0] - t) <= 0.6);
-  el.innerHTML = box(A, "act " + say.kind) + (F.o ? box(F.d, "der") : "") +
+  const ring = (p) => `<i class="fwho${p.sub ? " sub" : ""}" style="left:${r.l + p.x * r.w}px;top:${r.t + p.y * r.h}px;width:${Math.max(18, p.r * r.h)}px;height:${Math.max(18, p.r * r.h)}px"></i>`;
+  el.innerHTML = box(A, "act " + say.kind) + (F.o ? box(F.d, "der") : "") + F.who.map(ring).join("") +
     (pin ? `<i class=fpin style="left:${r.l + pin[1] * r.w}px;top:${r.t + pin[2] * r.h}px" title="the person you chose to follow"></i>` : "") +
-    (el.id == "ffr" ? "" : `<span class=frl><b>${esc(say.text)}</b>${F.z > 1.001 ? " · zoom " + F.z.toFixed(2) : ""}${say.kind == "auto" ? " · drag to pan, G then click a dancer to follow" : ""}</span>`);
+    (el.id == "ffr" ? "" : `<span class=frl><b>${esc(say.text)}</b>${F.z > 1.001 ? " · zoom " + F.z.toFixed(2) : ""}${say.kind == "auto" ? " · drag to pan, G then click a person to follow" : ""}</span>`);
   return F;
 }
 function toggleFrame() {
@@ -172,11 +184,10 @@ function clearFocus(c, a, b) {
 }
 // once a change is saved the server's crops of that clip are worked out again (a followed person changes them)
 App.onSaved = () => {
-  if (!staleCrop) return;
   const id = staleCrop;
   staleCrop = null;
-  for (const k of [...crops.keys()]) if (k.startsWith(id + "|")) crops.delete(k);
-  redrawFrames();
+  if (id) for (const k of [...crops.keys()]) if (k.startsWith(id + "|")) crops.delete(k);
+  setTimeout(redrawFrames, 0);                  // (once the save has settled: the crops held back meanwhile are asked for)
 };
 // the frame's mouse: drag the bright frame to pan it (a drag begun outside it brings it under the pointer); a click
 // follows the person there when follow is armed (G) or the view says so (opts.clickFollows), else centres the crop
@@ -189,7 +200,7 @@ function frameMouse(el, wrap, v, ctx, redraw, stop, opts = {}) {
   const pan = (ev) => {
     const F = g.F, [mx, my] = pos(ev);
     const cx = g.inside ? g.c0[0] + mx - g.m[0] : mx, cy = g.inside ? g.c0[1] + my - g.m[1] : my;
-    panTo(g.x, clamp(cx, F.w / 2, 1 - F.w / 2), clamp(cy, F.h / 2, 1 - F.h / 2), opts.whole && opts.whole());
+    panTo(g.x, clamp(cx, F.w / 2, 1 - F.w / 2), clamp(cy, F.h / 2, 1 - F.h / 2), !g.point && opts.whole && opts.whole());
     g.dirty = true;
     redraw();
   };
@@ -198,7 +209,7 @@ function frameMouse(el, wrap, v, ctx, redraw, stop, opts = {}) {
     const x = ctx();
     if (!x) return;
     stop();
-    g = { x, F: frameAt(x.c, x.a, x.b, x.t), moved: false, px: ev.clientX, py: ev.clientY };
+    g = { x, F: frameAt(x.c, x.a, x.b, x.t), moved: false, px: ev.clientX, py: ev.clientY, point: ev.shiftKey };
     g.m = pos(ev);
     if (typeof g.F == "object" && !g.F.err) {
       const A = g.F.o || g.F.d;
@@ -227,7 +238,15 @@ function frameMouse(el, wrap, v, ctx, redraw, stop, opts = {}) {
       g = null;
       if (!d.dirty) return toast("There is no portrait crop to pan here", "warn");
       save();
-      toast("Crop panned — Ctrl+Z undoes");
+      toast(d.point ? `Focus point at ${fmt(d.x.t)} — Ctrl+Z undoes` : "Crop panned — Ctrl+Z undoes");
+      flashState();
+    } else if (d.point && d.F) {                 // Shift+click: a focus point here, at the playhead
+      d.inside = false;
+      pan(ev);
+      g = null;
+      save();
+      const n = inShot(fkeys(d.x.c.id), d.x.a, d.x.b).length;
+      toast(n > 1 ? `Focus point ${n} at ${fmt(d.x.t)}: the crop glides between them — Ctrl+Z undoes` : `Focus point at ${fmt(d.x.t)} — move the playhead and Shift+click again to make the crop glide`);
       flashState();
     } else if (follows) {
       g = null;
@@ -397,10 +416,21 @@ function fnudge(d) {
   fdraw();
 }
 const freset = () => FX() && clearFocus(FX().c, FX().a, FX().b);
+// H: the person the crop is on now keeps it for the whole shot (a follow click on their head; with nobody tracked in
+// the crop, the middle of its upper third)
+function fkeep() {
+  const x = FX(), t = fnow(), F = x && frameAt(x.c, x.a, x.b, t);
+  if (!x || typeof F != "object" || F.err) return toast("There is no portrait crop to keep here", "warn");
+  const A = F.o || F.d, inside = F.who.filter((p) => Math.abs(p.x - A.x) <= F.w / 2);
+  const p = inside.sort((m, n) => Math.abs(m.x - A.x) - Math.abs(n.x - A.x))[0];
+  followAt({ c: x.c, a: x.a, b: x.b, t }, p ? p.x : A.x, p ? p.y : A.y - F.h * 0.18);
+  toast(p ? "Keeping this person for the whole shot — Ctrl+Z undoes" : "Nobody tracked in the crop here: holding where it is — click a person instead", p ? undefined : "warn");
+}
 $("fprevb").onclick = () => fstep(-1);
 $("fnextb").onclick = () => fstep(1);
 $("fplay").onclick = fplay;
 $("freset").onclick = freset;
+$("fkeep").onclick = fkeep;
 $("fopen").onclick = () => FX() && openInClips(FX().i, FX().a, -1);
 const floopBack = () => {
   const x = FX();
