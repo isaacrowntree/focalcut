@@ -1869,3 +1869,22 @@ def test_a_clip_left_alone_never_piles_up_while_picks_have_more_to_play():
     assert seq[0] is picks[0] and seq[-1]["unit"]["clip"] == "X"       # the last shot stays
     stuck = [x for i in range(8) for x in (_pick(f"P{i}", 10.0, 11.0, 2, whole=[10.0, 11.0]), plain_(i))]
     assert P.thin_clips(stuck, beat) == 0 and len(stuck) == 16         # no pick has more footage: nothing goes
+
+
+def test_a_looks_phrase_transition_needs_a_cut_the_music_hits():
+    """A look's pulse (a glitch cut by each 4-bar phrase) goes on the cut near the phrase that the music hits
+    hardest, and nowhere when none does: on SSMC's night 13 of 21 sat on beats softer than their neighbours, eight
+    off the phrase's first beat -- transitions cycled from a menu, with no reason in the cut."""
+    from focalcut.fx.glitch import LOOKS
+    look = LOOKS["clean"]
+
+    def run(acc):
+        seq = [shot("energy", f"U{i}", act="night", beats=3) for i in range(22)]      # cuts at beats 3, 6, ... 63
+        P.glitch_look(seq, dict(beats=list(np.arange(0, 100, 0.5)), start=0.0, beat_accent=list(acc)),
+                      dict(look, extra=[], hits=[]))
+        return {3 * i: (s["transition"], s["why"]) for i, s in enumerate(seq) if s.get("transition")}
+    assert run(np.ones(200)) == {}                           # an even beat: nothing asks for one
+    acc = np.ones(200)
+    acc[18], acc[15], acc[48] = 1.5, 2.0, 0.4                # by the phrase at 16: beat 15 hits hardest; at 48: soft
+    got = run(acc)
+    assert list(got) == [15] and got[15] == (look["transitions"][0], "the phrase's hit (2.0x)")

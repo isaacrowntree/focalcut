@@ -2914,6 +2914,9 @@ def transitions(seq, music, cfg, direction=None):
                 break
 
 
+PULSE_HIT = 1.2          # glitch_look: a look's phrase transition needs a cut whose beat hits this hard (accent)
+
+
 def glitch_look(seq, music, look):
     """The film's effects said in its glitch look (fx/glitch.py LOOKS; transitions() already speaks it): the stock
     subject effects become the look's (look["fx"]); each act gets one more subject effect on a move it suits
@@ -2925,8 +2928,8 @@ def glitch_look(seq, music, look):
     pos, rec = [], 0
     for s in seq:
         pos.append(rec); rec += s["beats"]
-    every = look.get("pulse")                     # a glitch cut on the cut nearest each phrase (look["pulse"] beats),
-    if every:                                     # where none is near: the look's transitions in turn
+    every = look.get("pulse")                     # a glitch cut by each phrase (look["pulse"] beats), on the cut near
+    if every:                                     # it that the music hits hardest: the look's transitions in turn
         cuts = {pos[i]: i for i in range(1, len(seq))}
         names = look["transitions"]
         k = 0
@@ -2940,10 +2943,13 @@ def glitch_look(seq, music, look):
             near = [p for p in cuts if abs(p - b) <= every // 4]
             if any(seq[cuts[p]].get("transition") for p in near):
                 continue
-            ok = sorted((p for p in near if cuttable(cuts[p])), key=lambda p: abs(p - b))
-            if ok:
-                i = cuts[ok[0]]
-                seq[i]["transition"], seq[i]["why"] = names[k % len(names)], "phrase"
+            hit = lambda p: float(acc[p]) if p < len(acc) else 1.0
+            ok = sorted((p for p in near if cuttable(cuts[p]) and hit(p) >= look.get("pulse_hit", PULSE_HIT)),
+                        key=lambda p: (-hit(p), abs(p - b)))
+            if ok:                                # (a phrase with no cut the music marks keeps its hard cuts: on
+                i = cuts[ok[0]]                   #  SSMC's night 13 of 21 phrase glitches sat on beats softer than
+                seq[i]["transition"] = names[k % len(names)]   # the ones around them, 8 off the phrase's first)
+                seq[i]["why"] = f"the phrase's hit ({hit(ok[0]):.1f}x)"
                 k += 1
     swap = look.get("fx", {})
     for s in seq:

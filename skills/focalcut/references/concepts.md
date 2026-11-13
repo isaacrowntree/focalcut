@@ -190,6 +190,9 @@ Reasons:
 - **glitch:** in or out of the DJ.
 - **fade:** between daytime scenes: both shots daytime footage, never into or out of the night's.
 
+A look's phrase transition (`pulse`: one by each 4-bar phrase) goes on the cut near the phrase that the music
+hits hardest (accent 1.2 or more), and nowhere when none does: never on the calendar alone.
+
 A transition other than a flash needs two beats of each shot (`grammar.MIN_BEATS`): across a one-beat shot the
 dissolve or push is the whole shot. The change of act takes its signature only where the shots can carry it: the
 velocity whip into the climax needs a ramp (the planner's own shots) or the same movement across the cut; between

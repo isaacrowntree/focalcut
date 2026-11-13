@@ -97,6 +97,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A look's phrase transition needs a hit.** The glitch looks put a transition on the cut nearest every 4-bar
+  phrase whatever the music did there; on SSMC 2026's night cut 13 of those 21 sat on beats softer than the ones
+  around them and eight were off the phrase's first beat (27 transitions in three minutes). It now goes on the cut
+  by the phrase that the music hits hardest (accent 1.2 or more, `plan.PULSE_HIT`, a look's `pulse_hit`), and
+  nowhere when none does.
 - **Transitions only where the cut can carry them.** A dissolve joins daytime scenes only (it went into the
   night's crowd shots as "one daytime scene to the next"); no transition but a flash goes across a one-beat shot;
   and the change of act into the climax is a velocity whip only with a ramp or travel to whip between: across an

@@ -744,7 +744,7 @@ LOOKS = {
                   base=[], subject=["g_outline", "g_damage", "g_sandstorm"],
                   transitions=["g_tear", "g_slices", "g_sortwipe", "g_blocks"],
                   accents=["g_freeze", "g_punch", "g_jpeg"],
-                  use="a glitch transition on the cut nearest every 4-bar phrase, plus the cuts with a reason; outline and "
+                  use="a glitch transition by each 4-bar phrase where a cut lands on a hit, plus the cuts with a reason; outline and "
                       "damage on the moves; freeze, punch and JPEG crunch on the hits",
                   # how the planner says it (plan.glitch_look): each transition reason in this look's terms, its
                   # subject effects in place of the stock ones, one extra subject effect per act on the move it
@@ -753,7 +753,7 @@ LOOKS = {
                            "fade": "g_sortwipe", "glitch": "g_blocks", "dipwhite": "g_tear",
                            "lightleak": "g_sortwipe"},
                   fx={"spotlight": "g_outline", "neon": "g_damage", "aura": "g_sandstorm"},
-                  pulse=16,                         # beats: a glitch cut on the cut nearest each 4-bar phrase
+                  pulse=16,                         # beats: a glitch cut by each 4-bar phrase, on a cut that hits
                   extra=[("arrival", "g_outline", ("spin", "style", "pattern", "energy")),
                          ("shows", "g_outline", ("spin", "style", "pattern")),
                          ("shows", "g_damage", ("spin", "trick", "dip", "style")),
