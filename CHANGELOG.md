@@ -97,6 +97,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Transitions only where the cut can carry them.** A dissolve joins daytime scenes only (it went into the
+  night's crowd shots as "one daytime scene to the next"); no transition but a flash goes across a one-beat shot;
+  and the change of act into the climax is a velocity whip only with a ramp or travel to whip between: across an
+  editor's picks it is a flash when the music hits there, else the plain cut (it was a bare swipe).
+- **Nothing shown twice.** Quick cuts made from picks no longer replay footage the reel shows elsewhere
+  (`plan.replays`; Electric Nation's main reel had 4 in landscape, 8 in portrait); `reuse: true` allows them.
+- **The picks are no longer condensed out in favour of two unpicked clips.** With `pick_hold` and no `pick_share`,
+  the picks' share grows when little footage was left alone (`plan.rest_share`), a clip left alone gives up the
+  shots it has above its share to the picks' own in-outs (`plan.thin_clips`), and in a cut with no night act the
+  day's picks may play in the climax. SSMC 2026's day cut: 30 picks of 46 in landscape (it was 22), 37 in
+  portrait (27); its two unpicked show clips 10 shots of 46 (it was 18 of 47), 8 of 49 in portrait (22 of 53).
 - **Cuts land on the beat again.** The planner timed cuts as so many beats of the song's nominal period, and for
   a song whose beat grid was kept as tracked (the tempo drifting, a DJ mix, an intro the tracker wandered through)
   that period is the tracker's hop-quantised median: 1% out, a whole beat after a hundred. On Electric Nation and

@@ -1376,7 +1376,7 @@ def test_pick_hold_cuts_picks_to_pieces_between_the_rest_of_the_footage(tmp_path
     picks["U00"]["open"] = "0:10-0:12.40"
     picks["U01"]["end"] = "0:58-1:00.40"
     for fmt in ("landscape", "portrait"):
-        pr.config["plan"] = {fmt: {"pick_hold": 3}}
+        pr.config["plan"] = {fmt: {"pick_hold": 3, "pick_share": 0.5}}
         plan = P.build(pr, fmt, music, moments, stinger_len=0.0, picks=picks, assess_shots=False)
         shots, beat = plan["shots"], plan["beat"]
         assert P.pick_report(shots, picks, plan["picks_condensed"], only=False) == []
@@ -1388,7 +1388,7 @@ def test_pick_hold_cuts_picks_to_pieces_between_the_rest_of_the_footage(tmp_path
         assert shots[0]["span"] == [10.0, 12.4] and shots[-1].get("ending") and shots[-1]["span"] == [58.0, 60.4]
         assert not any(not s.get("span") and s["unit"]["id"] in picks for s in shots)   # nothing else of it
         assert sum(s["beats"] for s in shots) == round(plan["video_length"] / plan["beat"])
-        pr.config["plan"] = {fmt: {"pick_hold": 3, "only_picks": False}}
+        pr.config["plan"] = {fmt: {"pick_hold": 3, "pick_share": 0.5, "only_picks": False}}
         plan = P.build(pr, fmt, music, moments, stinger_len=0.0, picks=picks, assess_shots=False)
         assert any(not s.get("span") and s["unit"]["id"] in picks for s in plan["shots"])   # the rest of it too
 
@@ -1769,3 +1769,103 @@ def test_cuts_follow_the_tracked_beats_not_a_nominal_period():
     steady = dict(beats=(1.0 + 0.5 * np.arange(100)).tolist(), beat=0.5, start=3.0, length=40.0)
     assert abs(clock(steady)(37) - 18.5) < 1e-9 and beats_in(steady) == 80
     assert clock(dict(beat=0.5, beats=[], start=0.0, length=10.0))(4) == 2.0
+
+
+def test_a_dissolve_joins_daytime_scenes_only_and_never_a_one_beat_shot():
+    """The arrival's fade says "one daytime scene to the next": not into the night's crowd (EN: a "daytime" dissolve
+    into crowd-night), and not across a one-beat shot, where the dissolve is the whole shot."""
+    music = dict(beats=list(np.arange(0, 100, 0.6)), start=0.0)
+    def day(i, **k):
+        return shot("broll", f"D{i}", act="arrival", role="transition", tag="class", **k)
+    seq = [day(0), day(1), shot("broll", "N", act="arrival", role="transition", tag="crowd-night"), day(2), day(3)]
+    P.transitions(seq, music, P.CFG["landscape"])
+    assert [s.get("transition") for s in seq] == [None, "fade", None, None, "fade"]
+    seq = [day(0), day(1, beats=1), day(2), day(3), day(4)]
+    P.transitions(seq, music, P.CFG["landscape"])
+    assert [s.get("transition") for s in seq] == [None, None, None, "fade", None]
+    flagged = [day(0), day(1), day(2)]
+    flagged[1]["unit"]["day"] = False                       # story()'s own mark wins over the tag
+    P.transitions(flagged, music, P.CFG["landscape"])
+    assert not any(s.get("transition") for s in flagged)
+
+
+def test_an_act_change_takes_its_signature_only_where_the_shots_can_carry_it():
+    """The change of act: no push or dip across a one-beat shot (a sliver), and into the climax the velocity whip
+    needs a ramp or travel to whip between -- an editor's picks play at real speed, so the drop gets a flash when the
+    music hits there, and the cut itself when it does not. Never a bare swipe with nothing moving."""
+    music = dict(beats=list(np.arange(0, 100, 0.6)), start=0.0)
+    seq = [shot("broll", "A", act="arrival", role="transition", tag="class", beats=1), shot("shake", "B"), shot("shake", "C")]
+    P.transitions(seq, music, P.CFG["landscape"])
+    assert not seq[1].get("transition")                     # arrival -> shows: its zoom, but A is one beat
+    def pick(u, act):
+        return dict(shot("shake", u, act=act), span=[1.0, 2.2])
+    for hit, want in ((1.0, None), (2.4, "flash")):
+        acc = np.ones(200)
+        acc[4] = hit
+        seq = [pick("A", "night"), pick("B", "night"), pick("C", "climax"), pick("D", "climax")]
+        P.transitions(seq, dict(music, beat_accent=list(acc)), P.CFG["landscape"])
+        assert seq[2].get("transition") == want and not any(s["fx"] for s in seq)
+    seq = [shot("shake", "A", act="night", beats=4), shot("shake", "B", act="climax", beats=4),
+           shot("shake", "C", act="climax", beats=4)]
+    P.transitions(seq, music, P.CFG["landscape"])           # the planner's own shots: the velocity edit, as before
+    assert seq[1]["transition"] == "swipe" and seq[0]["fx"] == ["flashout"] and seq[1]["fx"] == ["flashin"]
+    seq = [pick("A", "night"), pick("B", "climax")]
+    P.transitions(seq, music, P.CFG["landscape"], direction=lambda u, t: (0.3, 0.3))
+    assert seq[1]["transition"] == "swipe"                   # the movement carries across: the whip has its reason
+
+
+def _pick(u, a, b, beats, act="night", **k):
+    return dict(unit=dict(id=u, clip=u, source=u + ".MP4", role="show", tag=""), span=[a, b], beats=beats, act=act, fx=[],
+                rank=1.0, t=(a + b) / 2, add=True, **k)
+
+
+def test_no_quick_cut_replays_footage_the_reel_shows_elsewhere():
+    """Quick cuts made from picks fill beats; one that shows footage seen elsewhere in the reel is a repeat (EN main:
+    8 in the portrait cut). It goes, and its beats go to picks with more of their own in-out to play; with nowhere
+    for them to go it stays (a repeat beats a long hold)."""
+    beat = 0.5
+    a = _pick("A", 10.0, 12.0, 2, whole=[10.0, 14.0])
+    b = _pick("B", 30.0, 31.0, 2)
+    again = _pick("B", 30.0, 30.5, 1, reuse=True)            # B's opening again
+    tail = _pick("A", 13.0, 13.5, 1, reuse=True)             # A's unseen end: not a replay
+    seq = [a, again, tail, b]
+    assert P.replays(seq, beat) == [again]
+    P.no_reuse(seq, beat, only=P.replays(seq, beat))
+    assert seq == [a, tail, b] and a["beats"] == 3 and sum(s["beats"] for s in seq) == 6
+    assert P.replays(seq, beat) == []                        # (A's unseen end is footage of its own)
+    full = [_pick("A", 10.0, 11.0, 2), dict(again), _pick("B", 30.0, 31.0, 2)]
+    P.no_reuse(full, beat, only=P.replays(full, beat))
+    assert len(full) == 3                                    # nobody has footage to play in its place: it stays
+
+
+def test_the_picks_take_more_of_the_reel_when_little_else_can_fill_it():
+    def rec(i, role, picked):
+        return dict(id=f"U{i}", role=role, orient="landscape", unit={}, moments=[
+            dict(t=1.0, add=True, span=[0, 2]) if picked else dict(t=1.0)])
+    many = [rec(i, "show", i < 4) for i in range(24)]         # 20 clips left alone: half the reel is theirs
+    assert P.rest_share(many, "landscape", 4, 136) == 0.5
+    few = [rec(i, "show", i < 20) for i in range(22)] + [rec(30, "transition", False)]   # two, and a B-roll clip
+    assert P.rest_share(few, "landscape", 4, 136) == round(1 - (2 * 8 + 4) / 136, 2)
+    assert P.rest_share([rec(i, "show", True) for i in range(9)], "landscape", 4, 136) == P.PICK_SHARE[1]
+
+
+def test_a_clip_left_alone_never_piles_up_while_picks_have_more_to_play():
+    """SSMC day: two unpicked show clips took 18 of 47 shots, back and forth to the end, with half the picks
+    condensed out. A clip over its share gives its plain shots' beats back to the picks' own in-outs."""
+    beat = 0.5
+    def plain_(k):
+        return dict(unit=dict(id="X", clip="X", source="X.MP4", role="show", tag=""), beats=2, act="night",
+                    fx=[], rank=0.1 * k, t=5.0 * k)
+    picks = [_pick(f"P{i}", 10.0, 11.0, 2, whole=[10.0, 13.0]) for i in range(8)]
+    seq = [x for i in range(8) for x in (picks[i], plain_(i))]
+    seq[5]["fx"] = ["g_punch"]                               # an effect shot is not plain: it stays
+    total = sum(s["beats"] for s in seq)
+    gone = P.thin_clips(seq, beat)
+    left = [s for s in seq if s["unit"]["clip"] == "X"]
+    assert gone == 4 and len(left) == P.CLIP_FLOOR and any(s["fx"] for s in left)
+    assert sum(s["beats"] for s in seq) == total             # the grid stays
+    assert all(p["whole"][0] <= p["span"][0] and p["span"][1] <= p["whole"][1] + 1e-6
+               and abs((p["span"][1] - p["span"][0]) - p["beats"] * beat) < 1e-6 for p in picks)
+    assert seq[0] is picks[0] and seq[-1]["unit"]["clip"] == "X"       # the last shot stays
+    stuck = [x for i in range(8) for x in (_pick(f"P{i}", 10.0, 11.0, 2, whole=[10.0, 11.0]), plain_(i))]
+    assert P.thin_clips(stuck, beat) == 0 and len(stuck) == 16         # no pick has more footage: nothing goes

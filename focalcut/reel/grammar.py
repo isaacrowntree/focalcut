@@ -9,7 +9,7 @@ each may appear, and every transition needs its reason in the two shots it joins
   zoom    a push in to a face (the next shot a close-up, at least as tight)
   flash   a hit in the music: the beat's accent at least FLASH_AT for the act
   glitch  in or out of the DJ: the digital edge belongs to the booth
-  fade    a dissolve between daytime B-roll scenes
+  fade    a dissolve between daytime B-roll scenes (both shots daytime footage: never into or out of the night)
 
 The change of act gets its own signature transition (SIGNATURE). Never two transitions back to back, and none into
 a crowd reaction or a band-member insert: those cut straight in. Everything here can be overridden per project in
@@ -28,6 +28,7 @@ CAPS = dict(arrival=dict(fade=3), shows=dict(spin=3, swipe=3, zoom=2), night=dic
             climax=dict(flash=4, spin=2, swipe=3), finale=dict(zoom=1))
 FLASH_AT = dict(night=1.8, climax=1.6)                   # how hard a beat must hit (accent) to earn a flash
 TRAVEL = 0.12                                            # flow speed both sides of a cut need for a swipe
+MIN_BEATS = 2                                            # both shots of a transition (a flash aside) run this long
 # beats each side of the cut a transition takes (a shot keeps half a beat of its own); the looks' own too
 HALF = {"flash": 0.25, "zoom": 0.25, "swipe": 0.25, "spin": 0.34, "fade": 0.5, "dipwhite": 0.75, "lightleak": 1.0,
         "glitch": 0.25, "g_tear": 0.375, "g_slices": 0.375, "g_blocks": 0.375, "g_signal": 0.25, "g_stutter": 0.25,
@@ -35,16 +36,16 @@ HALF = {"flash": 0.25, "zoom": 0.25, "swipe": 0.25, "spin": 0.34, "fade": 0.5, "
         "c_whip": 0.25, "c_flash": 0.25, "c_stripes": 0.375, "c_sun": 0.375, "c_burst": 0.5}   # (fx/carnival.py)
 
 
-def reasons(A, B, vocab, accent, flash_at, travel=None):
+def reasons(A, B, vocab, accent, flash_at, travel=None, daytime=None):
     """The transitions this cut has a reason for, in the act's order of preference: [(name, why), ...].
     A, B: the shots either side (kind, unit role/tag/clip, crop); travel(A, B) -> bool: the same movement carries
-    across the cut."""
+    across the cut; daytime(unit) -> bool: the footage was shot in the day (None: not known, every scene counts)."""
     a_k, b_k = A["kind"], B["kind"]
     broll = A["unit"]["role"] == "transition" or B["unit"]["role"] == "transition"
     za = (A.get("crop") or {}).get("z", 1); zb = (B.get("crop") or {}).get("z", 1)
     out = []
     for name in vocab:
-        if name == "fade" and broll:
+        if name == "fade" and broll and (daytime is None or (daytime(A["unit"]) and daytime(B["unit"]))):
             out.append((name, "dissolve from one daytime scene to the next"))
         elif name == "spin" and a_k in ("spin", "pattern") and b_k in ("spin", "pattern") and \
                 A["unit"]["clip"] != B["unit"]["clip"]:
