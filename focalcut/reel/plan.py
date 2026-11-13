@@ -4833,9 +4833,19 @@ def portrait_parts(project, shots):
         a, L = played(s)
         if whole[1] - whole[0] < L + PART_STEP:
             continue
-        if any(a - FOCUS_REACH <= k[0] <= a + L + FOCUS_REACH
-               for k in focus_keys(picks, u, "portrait") + follow_keys(picks, u)):
+        keys = [k[0] for k in focus_keys(picks, u, "portrait") + follow_keys(picks, u)]
+        if any(a - FOCUS_REACH <= k <= a + L + FOCUS_REACH for k in keys):
             continue                                         # framed by the editor: as they framed it
+        mine = sorted(k for k in keys if whole[0] - FOCUS_REACH <= k <= whole[1] + FOCUS_REACH)
+        if mine:                                             # framed elsewhere in the pick: play the part they framed
+            na = float(min(max(mine[0] - 0.05, whole[0]), whole[1] - L))   # (Isaac: "focus on the girl in red in
+            if not any(x is not s and x["unit"]["id"] == u["id"] and          #  this shot" -- the part his focal
+                       min(na + L, played(x)[0] + played(x)[1]) - max(na, played(x)[0]) > -SNAP_GAP for x in shots):
+                dt = na - a                                  #  points cover, not one he never framed)
+                s.update(t=round(s["t"] + dt, 3), src_in=round(s["src_in"] + dt, 3), part=round(dt, 2),
+                         crop=reframe(project, u, s["src_in"] + dt, s["length"], "portrait"))
+                moved.append((u["id"], round(dt, 2)))
+            continue
         c0 = part_cost(s.get("crop"))
         if c0 is None or c0 <= 0:
             continue
@@ -4969,7 +4979,7 @@ def played(s):
     u, L = s["unit"], s["length"]
     ctx = fx.Context(fps=FPS, beat=s["beat"], peak=s["peak"], seed=0,
                      params={"group": s.get("group"), "closeup": s.get("kind") == "closeup",
-                             "cap": 3.5 if u["role"] == "transition" else 1.5, "pace": s.get("speed") or 1.0})
+                             "cap": 1.0 if s.get("add") or s.get("span") else 3.5 if u["role"] == "transition" else 1.5, "pace": s.get("speed") or 1.0})
     src_len, src_peak = L, s["peak"]
     for n in s["fx"]:
         e = fx.EFFECTS[n]()

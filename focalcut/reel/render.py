@@ -177,6 +177,7 @@ def read_length(s) -> float:
     return s["length"] * (s.get("speed") or 1.0) + 0.1
 
 
+LOCK_WAIT = 720          # 5 s tries (an hour) for a locked output file before giving up
 LONG_ARGS = 24000         # a command longer than this (Windows' limit is 32,767) reads its filter graph from a file
 
 
@@ -394,7 +395,7 @@ def fx_shot(project, s, fmt, beat, out):
     u, L = s["unit"], s["length"]
     ctx = fx.Context(fps=FPS, beat=beat, peak=s["peak"], seed=int(key(s)[:4], 16), params={"group": s.get("group"), "closeup": s["kind"] == "closeup",
                                      "face": s["kind"] == "closeup" or (s.get("crop") or {}).get("face", 0) >= 0.5,
-                                     "cap": 3.5 if u["role"] == "transition" else 1.5,   # dancing never past 1.5x
+                                     "cap": 1.0 if s.get("add") or s.get("span") else 3.5 if u["role"] == "transition" else 1.5,   # dancing never past 1.5x
                                      "pace": s.get("speed") or 1.0})
     if s.get("span"):                              # an editor's selection: all of it, from their in-point
         ctx.params["src_len"] = s["span"][1] - s["span"][0]
@@ -731,7 +732,17 @@ def run(project, fmt, draft=False, cut=None) -> str:
                         "-c:v", "copy", "-bsf:v", hw.VUI, "-c:a", "aac", "-b:a", "320k", "-shortest",
                         "-movflags", "+faststart",
                         final + ".part.mp4"], check=True)
-        os.replace(final + ".part.mp4", final)
+        for k in range(LOCK_WAIT):                               # a player holding the old file open (Windows locks
+            try:                                                 # it): wait for it to let go rather than lose the render
+                os.replace(final + ".part.mp4", final)
+                break
+            except PermissionError:
+                if k == 0:
+                    print(f"[reel] {os.path.basename(final)} is open in another program: waiting for it to close",
+                          flush=True)
+                if k == LOCK_WAIT - 1:
+                    raise
+                time.sleep(5)
     if not draft:                                            # the cut as rendered: what "keep": true re-cuts from
         project.dump(f"plan_{cut}_rendered.json", plan)
     rep = timer.report()
