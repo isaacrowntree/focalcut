@@ -247,7 +247,8 @@ def features(y: np.ndarray, sr: int, bt: np.ndarray, lo: float, hi: float) -> di
     for i in np.where(~have)[0]:                             # past the audio: as the nearest beat that was heard
         j = hv[np.argmin(np.abs(hv - i))]
         kick[i], drive[i], sec[i] = kick[j], drive[j], sec[j]
-    return dict(beat_kick=kick.round(3).tolist(), beat_drive=drive.round(3).tolist(), beat_section=sec,
+    return dict(beat_kick=kick.astype(float).round(3).tolist(), beat_drive=drive.astype(float).round(3).tolist(),
+                beat_section=sec,
                 beat_sustain=held.astype(int).tolist(), sustains=sustains(held))
 
 

@@ -346,6 +346,7 @@ def phrase_feel(music, a, n):
     return out
 
 
+EVEN_RUN = 4             # pace_lengths: ... and no shot gives a beat to end up one of this many equal lengths running
 CALM_BEATS = 4           # pace_lengths: a shot that starts where the music is calm is given up to this many beats
 
 
@@ -353,28 +354,46 @@ def _starts(lengths):
     return [0, *itertools.accumulate(lengths)][:-1]
 
 
-def pace_lengths(lengths, lo, hi, calm, give=None, take=None, calm_beats=CALM_BEATS):
+def pace_lengths(lengths, lo, hi, calm, give=None, take=None, calm_beats=CALM_BEATS, group=None):
     """Picture energy follows music energy, for shots whose order is settled (the editor's picks): a shot that
     starts where the music is calm (calm: a flag per beat of the reel -- an intro, a breakdown) is given beats, up
     to calm_beats and its own most (hi), by the shots that start where the music drives, down to their least (lo).
-    give(i) / take(i): which gives first / takes first (the highest; default the longest / the shortest). The total
-    stays. Returns the new lengths."""
+    give(i) / take(i): which gives first / takes first (the highest; default the longest / the shortest). group
+    (a label per shot, e.g. its act): beats only move between shots of one group. The total stays. Returns the new
+    lengths."""
     L = list(lengths)
     at = lambda p: bool(calm[p]) if p < len(calm) else False
+
+    def same(i):                                             # how many shots running are as long as shot i
+        a = b = i
+        while a > 0 and L[a - 1] == L[i]:
+            a -= 1
+        while b + 1 < len(L) and L[b + 1] == L[i]:
+            b += 1
+        return b - a + 1
     skip = set()
-    for _ in range(sum(L)):
+    for _ in range(2 * sum(L)):
         pos = _starts(L)
         takers = [i for i in range(len(L)) if at(pos[i]) and L[i] < min(hi[i], calm_beats) and i not in skip]
-        givers = [i for i in range(len(L)) if not at(pos[i]) and L[i] > lo[i]]
+        givers = [i for i in range(len(L)) if not at(pos[i]) and L[i] > lo[i] and i not in skip]
         if not takers or not givers:
             break
         t = max(takers, key=lambda i: ((take(i) if take else 0), -L[i], -i))
+        if group:
+            givers = [i for i in givers if group[i] == group[t]]
+            if not givers:
+                skip.add(t)
+                continue
         g = max(givers, key=lambda i: ((give(i) if give else 0), L[i], i))
+        run = same(g)
         L[t] += 1; L[g] -= 1
         pos = _starts(L)                                     # (a move that pushes its own taker out of the calm, or
         if not at(pos[t]) or at(pos[g]):                     #  its giver into it, would only be taken back)
             L[t] -= 1; L[g] += 1
             skip.add(t)
+        elif same(g) >= EVEN_RUN and same(g) > run:          # (rule 11: where the music drives the lengths still
+            L[t] -= 1; L[g] += 1                             #  vary -- no giver joins a run of equal shots)
+            skip.add(g)
     return L
 
 
@@ -383,22 +402,36 @@ def hold_sustains(lengths, lo, hi, sustain, locked=()):
     the reel -- nothing new sounds on the beats between), a cut that falls on one of the held beats moves back onto
     the hit (the shot before gives its last beats to the one after, which then starts on the hit and holds through
     it) or on to the beat the music next sounds (the shot before holds through), whichever moves it less and both
-    shots allow (lo, hi: each shot's least and most beats; locked: indices of shots whose opening cut stays).
-    Returns (new lengths, the cuts left inside a sustain as shot indices)."""
+    shots allow (lo, hi: each shot's least and most beats; locked: indices of shots whose opening cut stays). When
+    the shot that should give has none to spare, the one beyond it gives instead (the shot between keeps its length
+    and moves whole), so long as its own cut does not land on a held beat. Returns (new lengths, the cuts left
+    inside a sustain as shot indices)."""
     L, stuck = list(lengths), []
+    held = {b for a, e in sustain for b in range(a + 1, e)}
     for a, e in sustain:
         for i in range(1, len(L)):
-            p = _starts(L)[i]
+            pos = _starts(L)
+            p = pos[i]
             if not a < p < e:
                 continue
             back, on = p - a, e - p
-            ways = [(d, w) for d, w, ok in ((back, -1, L[i - 1] - back >= lo[i - 1] and L[i] + back <= hi[i]),
-                                            (on, 1, L[i] - on >= lo[i] and L[i - 1] + on <= hi[i - 1])) if ok]
+            ways = []                                        # (beats moved, giver, taker)
+            if L[i] + back <= hi[i]:                         # back onto the hit: the shot after takes the beats
+                if L[i - 1] - back >= lo[i - 1]:
+                    ways.append((back, 0, i - 1, i))
+                elif i >= 2 and L[i - 2] - back >= lo[i - 2] and i - 1 not in locked and pos[i - 1] - back not in held:
+                    ways.append((back, 1, i - 2, i))
+            if L[i - 1] + on <= hi[i - 1]:                   # on to the next beat that sounds: the shot before does
+                if L[i] - on >= lo[i]:
+                    ways.append((on, 0, i, i - 1))
+                elif i + 2 < len(L) and L[i + 1] - on >= lo[i + 1] and i + 1 not in locked \
+                        and pos[i + 1] + on not in held:
+                    ways.append((on, 1, i + 1, i - 1))
             if i in locked or not ways:
                 stuck.append(i)
                 continue
-            d, w = min(ways)
-            L[i - 1] += w * d; L[i] -= w * d
+            d, _, g, t = min(ways)
+            L[g] -= d; L[t] += d
     return L, stuck
 
 
@@ -3057,11 +3090,13 @@ DROP_FX = ("bullet", "hero", "aura", "montage")   # the big subject effects: slo
 DROP_REACH = 4           # drop_effect: the drop's effect goes on one of the climax's first this many shots
 
 
-def drop_effect(seq):
+def drop_effect(seq, music=None):
     """The climax's one big subject effect on the drop, whoever's shot carries it: when the climax has none (the
     editor's picks took the planner's slow-motion slots), the strongest dancing shot of the climax's first
     DROP_REACH with room for slow motion (3 beats) takes "bullet" -- an editor's pick as readily as any (Isaac: effects
-    are allowed on picks). Never the ending, the close, B-roll, the band, a logo or beside another effect.
+    are allowed on picks) -- of the shots that start where the music drives, when it is known (music.feel): a climax
+    that opens over a vocal break keeps its effect for the drop itself. Never the ending, the close, B-roll, the
+    band, a logo or beside another effect.
     Returns the index given it, or None."""
     cl = [i for i, s in enumerate(seq) if s["act"] == "climax"]
     if not cl or any(f in DROP_FX for i in cl for f in seq[i]["fx"]):
@@ -3072,7 +3107,10 @@ def drop_effect(seq):
         return (s["beats"] >= 3 and not s["fx"] and s["unit"]["role"] != "transition"
                 and not any(s.get(k) for k in ("ending", "close", "band", "logo", "logo_image", "title", "reaction"))
                 and not any(seq[j]["fx"] for j in (i - 1, i + 1) if 0 <= j < len(seq)))
-    cand = [i for i in cl[:DROP_REACH] if ok(i)] or [i for i in cl if ok(i)]
+    calm = MU.feel(music)["calm"] if music else ()          # the act may start before the music's drop does (a
+    pos = _starts([s["beats"] for s in seq])                # vocal break, a build): the effect waits for the drop
+    live = [i for i in cl if not (pos[i] < len(calm) and calm[pos[i]])] or cl
+    cand = [i for i in live[:DROP_REACH] if ok(i)] or [i for i in live if ok(i)] or [i for i in cl if ok(i)]
     if not cand:
         return None
     i = max(cand, key=lambda i: (seq[i]["kind"] in MOVES or seq[i]["kind"] == "closeup", seq[i].get("rank", 0)))
@@ -4197,9 +4235,13 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
         seq, acts = story(fmt, cfg, music, moments, video_beats, total_beats, direction, spot_rater(project, fmt))
     if fmt == "portrait" and assess_shots and not mode:
         recast(project, fmt, seq, moments, beat)
-    if cfg.get("drop_effect", True) and drop_effect(seq) is not None:   # (the picks took the slow-motion slots)
+    if cfg.get("drop_effect", True) and drop_effect(seq, music) is not None:   # (the picks took the slow-motion slots)
         print(f"[reel] {fmt}: the drop's effect on {next(s['unit']['id'] for s in seq if 'bullet' in s['fx'])}")
     act_logos(seq, project.config.get("act_logos"))
+    if not mode and cfg.get("follow_music", True):           # (picks mode: pick_story did, before it trimmed them)
+        n = pace_through(seq, music, beat)
+        if n:
+            print(f"[reel] {fmt}: {n} shots take or give beats to follow the music (longer where it is calm)")
     plan = place(project, fmt, seq, music, cfg, direction, stinger_len, acts)
     if fmt == "portrait" and assess_shots and not mode:
         recast_placed(project, fmt, plan["shots"], moments, cfg)
@@ -4990,27 +5032,74 @@ def lands(project, seq, beat, hold):
             seq[j]["beats"] -= 1; s["beats"] += 1
 
 
-STAY = ("ending", "logo", "logo_image", "open", "close", "reaction", "band", "title", "span", "velocity")
+STAY = ("ending", "logo", "logo_image", "open", "close", "reaction", "band", "title", "velocity", "reuse", "fill")
+
+
+def _bounds(seq, beat=None):
+    """(least, most) beats each shot of a sequence may take when the music moves its cuts (hold_through,
+    pace_through). A shot with an effect, the logo, the ending, a band insert or a reaction keeps its length. An
+    editor's pick may give beats down to PICK_FLOOR and take them up to its whole in-out; a plain shot down to 2
+    (1 when it is shorter already) and up to its clip's length."""
+    lo, hi = [], []
+    for s in seq:
+        n, u = s["beats"], s["unit"]
+        if s["fx"] or any(s.get(k) for k in STAY) or (s.get("span") and not beat):
+            a = b = n
+        elif s.get("span"):
+            w = s.get("whole") or s["span"]
+            a, b = min(n, PICK_FLOOR), max(n, int((w[1] - w[0]) / beat + 0.25))
+        else:
+            room = int((u["t1"] - u["t0"]) / beat) if beat and "t1" in u else 10 ** 6
+            a, b = min(n, 2), max(n, min(n + MU.SUSTAIN_MAX, room))
+        lo.append(a); hi.append(b)
+    return lo, hi
+
+
+def _resize(s, n, beat):
+    """Shot s at n beats: an editor's pick plays that much of its whole in-out, from its own in-point where it can."""
+    if n != s["beats"] and s.get("span") and beat:
+        w = s.get("whole") or s["span"]
+        a = max(w[0], min(s["span"][0], w[1] - n * beat))
+        s["span"] = [round(a, 3), round(min(w[1], a + n * beat), 3)]
+        if s["span"][1] - s["span"][0] < w[1] - w[0] - 0.05:
+            s["whole"] = list(w)
+        else:
+            s.pop("whole", None)
+        s["t"] = round((s["span"][0] + s["span"][1]) / 2, 2)
+    s["beats"] = n
 
 
 def hold_through(seq, sustain, beat=None):
     """Holds on sustains (hold_sustains), for a sequence about to be placed: a cut that falls inside a sustain moves
-    onto the hit before it or the beat the music next sounds. Only between two plain shots of one act: a shot with an
-    effect, an editor's pick (pick_story fits those itself, before it trims them), the logo, the ending, a band
-    insert or a reaction keeps its length, and so does a shot whose landing needs it. Returns the shots whose
-    opening cut is still inside a sustain."""
+    onto the hit before it or the beat the music next sounds, within what the two shots can give and take
+    (_bounds), and never across a change of act. Returns the shots whose opening cut is still inside a sustain."""
     if not sustain:
         return []
-    fixed = lambda s: bool(s["fx"]) or any(s.get(k) for k in STAY)
-    lo = [s["beats"] if fixed(s) else 2 if s.get("land") is not None else 1 for s in seq]
-    lo = [min(a, s["beats"]) for a, s in zip(lo, seq)]
-    room = lambda s: int((s["unit"]["t1"] - s["unit"]["t0"]) / beat) if beat else 10 ** 6   # (the clip's length)
-    hi = [s["beats"] if fixed(s) else max(s["beats"], min(s["beats"] + MU.SUSTAIN_MAX, room(s))) for s in seq]
+    lo, hi = _bounds(seq, beat)
+    lo = [max(a, min(2, s["beats"])) if s.get("land") is not None else a for a, s in zip(lo, seq, strict=True)]
     locked = [i for i in range(1, len(seq)) if seq[i]["act"] != seq[i - 1]["act"]]
     L, stuck = hold_sustains([s["beats"] for s in seq], lo, hi, sustain, locked)
-    for s, n in zip(seq, L):
-        s["beats"] = n
+    for s, n in zip(seq, L, strict=True):
+        _resize(s, n, beat)
     return stuck
+
+
+def pace_through(seq, music, beat):
+    """Picture energy follows music energy, for the story's sequence (pace_lengths): inside each act, the shots that
+    start where the music is calm (music.feel: an intro, a breakdown) take beats from those that start where it
+    drives -- B-roll gives before people, and people take before B-roll. The acts keep their lengths. Returns the
+    number of shots whose length changed."""
+    F = MU.feel(music)
+    if not F["known"] or not F["calm"].any():
+        return 0
+    lo, hi = _bounds(seq, beat)
+    b = [s["unit"]["role"] == "transition" for s in seq]
+    old = [s["beats"] for s in seq]
+    L = pace_lengths(old, lo, hi, F["calm"], give=lambda i: b[i], take=lambda i: not b[i],
+                     group=[s["act"] for s in seq])
+    for s, n in zip(seq, L, strict=True):
+        _resize(s, n, beat)
+    return sum(a != c for a, c in zip(old, L, strict=True))
 
 
 def real_speed_close(seq):
