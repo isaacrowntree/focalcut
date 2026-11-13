@@ -37,6 +37,8 @@ ASPECT = 9 / 16          # frame height over width, for distances in frame width
 # they passed (bench/portrait_eval.py --fit), rounded; each feature is 0..1 across the people of the shot.
 WEIGHTS = dict(size=1.7, act=1.0, bounce=0.45, face=0.35, sharp=1.0, seen=1.8, opens=0.0, central=1.4, centring=0.35,
                front=0.2, opener=0.85, held=0.0, alone=1.0, dom=1.0)
+BEHIND = 0.8             # choose(): the person a shot opens on keeps it only if they're at least this big against the
+SOFTER = 0.85            # best candidate (not further back) and at least this sharp (not out of the focus plane)
 KEEP = 0.33              # choose(): the score someone needs over the person the shot opens on to take it from them
 TOGETHER = 0.85          # a companion's head is within this share of the strip's width of the subject's
 PEER = 0.6               # a companion is at least this share of the subject's size (head or body height)
@@ -222,7 +224,7 @@ def features(trs, t0, length, cam=None, strip=None):
     shot it holds their head)."""
     t1 = t0 + length
     n = len(trs)
-    f = {k: np.zeros(n) for k in WEIGHTS}
+    f = {k: np.zeros(n) for k in (*WEIGHTS, "mid")}
     if not n:
         return f
     grid = np.arange(t0, t1 + 1e-6, 0.2)
@@ -249,10 +251,12 @@ def features(trs, t0, length, cam=None, strip=None):
         hx, hy = tr["head"][m, 0], tr["head"][m, 1]
         f["central"][i] = float(np.clip(1 - 2 * np.mean(np.abs(tr["torso"][m, 0] * 0.5 + hx * 0.5 - 0.5)), 0, 1))
         if strip is not None:
-            off = np.abs(hx - np.interp(tr["t"][m] - t0, strip[0], strip[1])) <= 0.4 * strip[2]
+            d = np.abs(hx - np.interp(tr["t"][m] - t0, strip[0], strip[1])) / (0.4 * strip[2])
+            off = d <= 1
             f["held"][i] = float(off.mean())
             first = tr["t"][m] <= t0 + 0.5
             f["opener"][i] = float(off[first].mean()) if first.any() else 0.0
+            f["mid"][i] = float(np.clip(1 - d[first], 0, 1).mean()) if first.any() else 0.0
         if m.sum() >= 3:
             k = max(1, m.sum() // 3)
             gain = abs(hx[:k].mean() - 0.5) - abs(hx[-k:].mean() - 0.5)
@@ -306,9 +310,13 @@ def choose(trs, t0, length, cam=None, weights=None, strip=None):
     margin = float(score[order[0]] - score[order[1]]) / total if len(order) > 1 else 1.0
     k = int(order[0])
     if strip is not None and f["opener"].max() >= 0.5:        # the shot keeps the person it opens on, unless
-        op = int(np.argmax(f["opener"] + 0.5 * f["held"] + 1e-3 * score))   # someone is clearly more its subject
-        if op != k and f["opener"][k] < 0.5 and score[k] - score[op] < KEEP:
-            k = op
+        op = int(np.argmax(f["opener"] + 0.5 * f["held"] + 0.5 * f["mid"] + 1e-3 * score))   # someone is clearly
+        # more its subject; of two in the strip as it opens, the one at its middle (SSMC's opening: the instructor,
+        # not the dancer behind him at the strip's edge)
+        behind = (f["size"][op] < BEHIND * f["size"][k]                 # never someone further back and softer
+                  and f["sharp"][op] < SOFTER * f["sharp"][k])         # than the best (Isaac: "she's on a 3d
+        if op != k and f["opener"][k] < 0.5 and score[k] - score[op] < KEEP and not behind:   # plane further
+            k = op                                                     # behind him, not even in full focus")
     return k, margin, f
 
 
@@ -365,6 +373,9 @@ def companion(trs, k, f, cw):
     for j, o in enumerate(trs):
         if j == k or f["size"][j] < PEER * f["size"][k] or f["seen"][j] < 0.6 * f["seen"][k] or f["front"][j] < 0.5:
             continue
+        if f["size"][j] < BEHIND * f["size"][k] and f["sharp"][j] < SOFTER * f["sharp"][k]:   # smaller and softer:
+            continue                                         # further back, out of the subject's focus plane (Isaac:
+            #                                                  "on a 3d plane further behind him, not in full focus")
         lo, hi = max(me["t"][0], o["t"][0]), min(me["t"][-1], o["t"][-1])
         if hi - lo < 0.2 and len(me["t"]) > 2:
             continue

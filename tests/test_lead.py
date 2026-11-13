@@ -148,3 +148,17 @@ def test_a_trimmed_picks_part_is_judged_by_cut_heads_halved_people_and_pairs():
     assert PL.part_cost(dict(on="person", cut=0.0, halved=0.6)) > PL.part_cost(whole) + PL.PART_GAIN
     assert PL.part_cost(dict(on="pair", cut=0.0, halved=0.0)) < PL.part_cost(whole)
     assert PL.part_cost(dict(w=0.3, path=[])) is None          # nobody followed: nothing to judge by
+
+
+def test_someone_further_back_and_softer_never_shares_or_takes_the_strip():
+    import numpy as np
+
+    from focalcut.reel import lead
+    n = 2
+    f = {k: np.zeros(n) for k in (*lead.WEIGHTS, "mid")}
+    f["size"][:] = [1.0, 0.73]; f["sharp"][:] = [0.34, 0.25]; f["seen"][:] = 1.0; f["front"][:] = 1.0
+    t = np.arange(0, 2, 0.2)
+    tr = lambda x: dict(t=t, head=np.stack([np.full_like(t, x), np.full_like(t, 0.3)], 1))   # noqa: E731
+    assert lead.companion([tr(0.45), tr(0.30)], 0, f, 0.316) == -1          # behind him, out of his focus plane
+    f["sharp"][1] = 0.33                                                     # as sharp: side by side, a pair
+    assert lead.companion([tr(0.45), tr(0.30)], 0, f, 0.316) == 1
