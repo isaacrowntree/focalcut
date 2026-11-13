@@ -2625,6 +2625,7 @@ def open_broll(P, seq, recs, acts=("teaser", "arrival")):
 
 
 PICK_FLOOR = 2           # picks mode: a pick trimmed for room keeps this many beats (or its own length, when shorter)
+PICK_CLEAR = 3           # ... the picks give up beats in this many groups, the least clearly seen group first
 PICK_FLOOR_BROLL = {"portrait": 1}   # ... a B-roll pick this many in these formats, where it also goes before a pick
                          # of people is trimmed (Isaac: "most b-roll in portrait mode is terrible so focus on picks")
 FILL_BEATS = 3           # picks mode: a filler B-roll shot is about this long (2 to 4 beats)
@@ -2777,7 +2778,9 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
       - it opens on the editor's opening (picks "open", reel.json "open") under the logo, else on B-roll; the picks of
         "open_with" follow it; the picks of "end_with" lead into the ending ("ending", picks "end"), or into the pick
         named by "close", which then ends the reel;
-      - B-roll gives before people: its picks lose their beats first and go first; in portrait (PICK_FLOOR_BROLL),
+      - B-roll gives before people: its picks lose their beats first and go first, and among each the least
+        starred, then the least clearly seen (PICK_CLEAR groups: a clear shot of people keeps its length); in
+        portrait (PICK_FLOOR_BROLL),
         where B-roll plays badly, a B-roll pick goes down to one beat and then out before a pick of people is trimmed;
       - the lengths follow the music (music.feel): once the order is settled, picks that play where it is calm keep
         more of their length, given by those that play where it drives (pace_lengths), and no cut falls on a beat
@@ -2878,26 +2881,28 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
     asked = sum(beats.values())
     over = asked - room
     dropped = []
+    q = {}                                                   # how clearly each pick is seen, among its own kind:
+    if over > 0:                                             # 0 (the least) .. 1, on the scrub's windows
+        wins = load_windows(project, "landscape") or load_windows(project, fmt) or {}
+        for grp in (True, False):
+            g = sorted((x for x in every if (x[0]["role"] == "transition") == grp),
+                       key=lambda x: (_part_score(wins.get(x[0]["unit"]["id"]), *x[1]["span"]), x[1]["span"][0]))
+            q.update({id(x[1]): (k + 1) / len(g) for k, x in enumerate(g)})
+    third = lambda m: min(int(q.get(id(m), 1.0) * PICK_CLEAR - 1e-9), PICK_CLEAR - 1)
 
-    def trim(kind):                                          # these give a beat each while the reel is over
-        nonlocal over
-        while over > 0:
+    def trim(kind):                                          # these give a beat each while the reel is over: the
+        nonlocal over                                        # least starred first, then the least clearly seen
+        while over > 0:                                      # (clear shots of people get the length)
             c = [m for _, m in every if beats.get(id(m), 0) > floor(m) and kind(m)]
             if not c:
                 break
-            m = max(c, key=lambda m: (-stars(m), beats[id(m)] / want(m), beats[id(m)]))   # (each the same share
-            beats[id(m)] -= 1                                # of its length: a long pick stays a long shot)
+            m = max(c, key=lambda m: (-stars(m), -third(m), beats[id(m)] / want(m), beats[id(m)]))   # (each the
+            beats[id(m)] -= 1                                # same share of its length: a long pick stays long)
             over -= 1
 
     def drop(kind):                                          # ... and these go, the least wanted first
         nonlocal over
-        wins = load_windows(project, "landscape") or load_windows(project, fmt) or {}
-        q = {}
-        for grp in (True, False):                            # each pick's place among its own kind
-            g = sorted((x for x in picks if (x[0]["role"] == "transition") == grp),
-                       key=lambda x: (_part_score(wins.get(x[0]["unit"]["id"]), *x[1]["span"]), x[1]["span"][0]))
-            q.update({id(x[1]): (k + 1) / len(g) for k, x in enumerate(g)})
-        for x in sorted((x for x in picks if kind(x[1])), key=lambda x: (not broll[id(x[1])], stars(x[1]), q[id(x[1])])):
+        for x in sorted((x for x in picks if kind(x[1])), key=lambda x: (not broll[id(x[1])], stars(x[1]), q.get(id(x[1]), 1.0))):
             if over <= 0:
                 break
             over -= beats.pop(id(x[1]))
@@ -2914,7 +2919,7 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
         c = [m for _, m in every if beats[id(m)] < want(m)]
         if not c:
             break
-        m = max(c, key=lambda m: (not broll[id(m)], stars(m), want(m) - beats[id(m)]))
+        m = max(c, key=lambda m: (not broll[id(m)], stars(m), third(m), want(m) - beats[id(m)]))
         beats[id(m)] += 1
         over += 1
 
@@ -5201,6 +5206,12 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
                 acts={k: [T(a), T(min(b, rec))] for k, (a, b) in (acts or {}).items()})
     if song or music.get("song"):
         plan["song"] = song or music["song"]
+    if F["known"]:                                           # what the music does under the cut, in reel seconds
+        cuts = set(_starts([s["beats"] for s in seq])[1:])
+        plan["music"] = dict(
+            sections=[[v, round(T(a), 2), round(T(min(b, rec)), 2)] for a, b, v in MU._runs(F["section"][:rec])],
+            sustains=[[round(T(a), 2), round(T(min(e, rec)), 2), not any(a < c < e for c in cuts)]
+                      for a, e in F["sustain"] if a < rec])   # (from, to, held: no cut on its held beats)
     return plan
 
 
@@ -5288,6 +5299,13 @@ def run(project, fmt, stinger_len=0.0) -> dict:
         for line in bad:
             print(f"[reel]     {line}")
     print("[reel]   effects:", {f: fxs.count(f) for f in sorted(set(fxs))})
+    mu = plan.get("music")
+    if mu:                                                   # the music under the cut (music.feel)
+        print("[reel]   music: " + ", ".join(f"{v} {a:.1f}-{b:.1f}" for v, a, b in mu["sections"]))
+        cut = [f"{a:.1f}" for a, b, held in mu["sustains"] if not held]
+        print(f"[reel]   sustains: {len(mu['sustains'])}, {len(mu['sustains']) - len(cut)} held through"
+              + (f"; a cut on a held beat after {', '.join(cut)} s (the shots there cannot give or take a beat)"
+                 if cut else ""))
     if not picks_mode(config(project, fmt)):                 # (cut from the picks: nothing else is meant to be in)
         coverage_report(project, fmt, plan)
     window_report(project, fmt, plan)

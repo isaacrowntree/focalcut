@@ -85,7 +85,8 @@ picks and nothing else needs setting:
   never sits beside B-roll, and runs of one-beat or equal-length shots are broken up.
 - **More picks than reel:** the picks give up beats, each the same share of its length, and none goes under two
   beats (or its own length, if shorter). B-roll picks give theirs first, down to that floor, before any pick of
-  people loses a beat; among each kind the least starred go first, so stars keep a pick whole. A trimmed pick plays
+  people loses a beat; among each kind the least starred go first, so stars keep a pick whole, and among equal stars
+  the least clearly seen third (on the scrub's windows), so a clear shot of people keeps its length. A trimmed pick plays
   its clearest part. Only when every pick is down to two beats do picks go, B-roll before people, the least
   starred, then the least clearly seen, and the plan log names each one. The log also says how many beats the picks
   ask for against how many the reel has, how many B-roll and people picks were trimmed, and roughly how many fewer

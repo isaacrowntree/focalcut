@@ -206,7 +206,8 @@ def grid(music: dict, plan: dict, n: int, fps: int) -> dict:
     bar_i = [i for i, b in enumerate(beats) if round(b, 3) in bars]
     e = acc / (np.median(acc) + 1e-9)
     if F["known"]:
-        drop_beats.update(F["entries"])                          # the rhythm section coming in
+        drop_beats.update(i for i in F["entries"] if i >= 8 and beats[i - 8] >= 0)   # the rhythm section coming
+                                                                 # in (after two bars without it that the reel plays)
     else:
         for j in range(4, len(bar_i) - 4):                      # the low end jumping back in after a build
             i = bar_i[j]

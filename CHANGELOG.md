@@ -27,8 +27,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - **Holds on sustains.** No cut on a beat the music holds (`plan.hold_sustains`): it moves onto the hit or the
     next beat that sounds. A velocity edit lands on the sustain's first beat, and a plain shot's landing is slid
     onto it (`velocity.on_sustain`).
+  - The plan carries what the music does under the cut (`plan["music"]`: sections and sustains in reel seconds, and
+    whether each sustain is held through), and the plan log prints it.
 - **Picks mode: B-roll gives before people.** When the picks overrun the reel, B-roll picks give up their beats
-  first, and go first when picks must go; the log counts the trims by kind. In portrait a B-roll pick goes down to
+  first, and go first when picks must go; among equal stars the least clearly seen picks are trimmed first, so a
+  clear shot of people keeps its length; the log counts the trims by kind. In portrait a B-roll pick goes down to
   one beat and then out (named in the log) before a pick of people is trimmed.
 
 - **Frame portrait**, a third view of the source browser (`sources.html#frame=<reel>`): the reel's portrait cut
