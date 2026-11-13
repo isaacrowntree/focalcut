@@ -69,7 +69,7 @@ PHRASES = {
 LONG = ("pattern", "travel", "spin", "trick", "dip", "style")    # moves that need time to play out
 SIZE = {"landscape": (1920, 1080), "portrait": (1080, 1920)}
 MOVES = ("spin", "dip", "trick", "pattern", "shake")
-SPEED = ("hero", "bullet", "montage", "flashin", "flashout", "jumpcut", "fit")
+SPEED = ("hero", "bullet", "montage", "flashin", "flashout", "jumpcut", "fit", "glide")
 FAST = ("flashin", "flashout", "jumpcut", "fit")       # the ones that speed footage up (an editor's pick never is)
 ACT_NAMES = ("teaser", "arrival", "shows", "night", "climax", "finale")
 DAY_ACTS = ("arrival", "shows")
@@ -5267,6 +5267,28 @@ def pace_through(seq, music, beat):
     return sum(a != c for a, c in zip(old, L, strict=True))
 
 
+GLIDE_BEATS = 2          # glide_calm: a shot this long or longer (beats) may glide
+
+
+def glide_calm(seq, music):
+    """Gentle slow motion where the music is calm (music.feel: an intro, a breakdown, a build): every shot that
+    starts there with no effect of its own, GLIDE_BEATS or longer, glides (fx "glide": 0.8x throughout, optical-flow
+    in-betweens) -- the picture slows and flows with the music. Never the ending, the close, a title, the band or a
+    reaction; an editor's pick glides like any shot (never sped up: glide is slower). Returns how many glide."""
+    from . import music as MU
+    calm = MU.feel(music)["calm"] if music else ()
+    n, rec = 0, 0
+    for k, s in enumerate(seq):
+        at, rec = rec, rec + s["beats"]
+        if k == len(seq) - 1 or s["fx"] or s["beats"] < GLIDE_BEATS or not (at < len(calm) and calm[at]):
+            continue
+        if any(s.get(x) for x in ("ending", "close", "title", "logo_image", "band", "reaction")):
+            continue
+        s["fx"], s["effect"] = ["glide"], "glide"
+        n += 1
+    return n
+
+
 def real_speed_close(seq):
     """The reel's closing shot (the last, the configured ending, finale_reuse's close) plays at 1x: no speed effect."""
     for k, s in enumerate(seq):
@@ -5342,6 +5364,8 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
     if look_of(cfg):
         glitch_look(seq, music, look_of(cfg))
         real_speed_close(seq)                                # (a look's own effects for these: none either)
+    if cfg.get("glide", fmt == "landscape"):                 # calm passages float (Isaac: landscape, gentle)
+        glide_calm(seq, music)
     for s in seq:                                            # velocity edits changed some shots' speed effects
         if any(f in SPEED for f in s["fx"]) and not s.get("ending"):
             src_in = round(in_point(s, s["beat"]), 3)

@@ -37,7 +37,7 @@ import numpy as np
 
 from . import exposure, hw
 
-SPEED_FX = ("hero", "bullet", "montage", "flashin", "flashout", "jumpcut", "fit")
+SPEED_FX = ("hero", "bullet", "montage", "flashin", "flashout", "jumpcut", "fit", "glide")
 
 SIZE = {"landscape": (1920, 1080), "portrait": (1080, 1920)}   # 1080p: the default (reel.json "resolution")
 FPS = 50

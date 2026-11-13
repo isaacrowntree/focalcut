@@ -108,6 +108,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Calm passages glide (landscape)** (Isaac: "in the calm sections for landscape gentle slow mo"). Where the music is
+  calm (music.feel: an intro, a breakdown, a build), every shot of two beats or more with no effect of its own plays
+  at 0.8x throughout (fx "glide", optical-flow in-betweens, the face guard keeping faces sharp); picks included,
+  never the ending, the close, titles, the band or a reaction. `plan.<fmt>.glide`: true / false (default: landscape
+  only). Slow-motion in-betweens find their optical flow at 960 px and scale it up, so a 4K slow-motion shot costs
+  what a 1080p one did.
 - **Steadying is a crop, not a warp** (`render.steady_crop`, reel.json `"stabilise"`). vidstab followed the dancers on
   SSMC's animation shots and came out 4-5x shakier (single frames lurching a third of the strip). Now the camera's
   motion is measured on the very frames the shot decodes (same decoder: Quick Sync and the CPU land a seek two

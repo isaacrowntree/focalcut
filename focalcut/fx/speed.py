@@ -24,6 +24,25 @@ def settle_tail(v, t, out_len, ctx, tail=TAIL):
     return v + (1 - v) * w
 
 
+FLOW_W = 960             # optical flow is found on frames this wide and scaled up (4K flow: 16x the work, same warp)
+
+
+def _flows(dis, a, b):
+    """Forward and backward optical flow between two RGB frames, at full size: found at FLOW_W wide and scaled up
+    (a 4K shot's in-betweens cost what a 1080p one's do)."""
+    h, w = a.shape[:2]
+    k = min(1.0, FLOW_W / w)
+    g0 = cv2.cvtColor(a, cv2.COLOR_RGB2GRAY); g1 = cv2.cvtColor(b, cv2.COLOR_RGB2GRAY)
+    if k < 1.0:
+        sz = (int(round(w * k)), int(round(h * k)))
+        g0, g1 = cv2.resize(g0, sz, interpolation=cv2.INTER_AREA), cv2.resize(g1, sz, interpolation=cv2.INTER_AREA)
+    f01, f10 = dis.calc(g0, g1, None), dis.calc(g1, g0, None)
+    if k < 1.0:
+        f01 = cv2.resize(f01, (w, h), interpolation=cv2.INTER_LINEAR) / k
+        f10 = cv2.resize(f10, (w, h), interpolation=cv2.INTER_LINEAR) / k
+    return f01, f10
+
+
 class Speed(Effect):
     """A velocity curve the way CapCut's custom curve and a time-remap ramp are built: fast through the move, easing
     down to arrive slow exactly as the dancer lands (the shot's peak: frame dwell detected by the planner), holding
@@ -100,8 +119,7 @@ class Speed(Effect):
             if a < 0.05 or i >= last:
                 out.append(frames[i]); continue
             if i not in flow_cache:                # slow: flow-warp both neighbours to the in-between time
-                g0 = cv2.cvtColor(frames[i], cv2.COLOR_RGB2GRAY); g1 = cv2.cvtColor(frames[i + 1], cv2.COLOR_RGB2GRAY)
-                flow_cache = {i: (dis.calc(g0, g1, None), dis.calc(g1, g0, None))}
+                flow_cache = {i: _flows(dis, frames[i], frames[i + 1])}
             f01, f10 = flow_cache[i]
             h, w = f01.shape[:2]
             if face and float(np.percentile(np.hypot(f01[..., 0], f01[..., 1]), 90)) > GHOST * w:
@@ -117,6 +135,17 @@ class Speed(Effect):
 @register
 class Montage(Speed):
     name = "montage"; fast, slow, hold, ease = 1.5, 0.5, 0.75, 0.25      # quick in, a short hold, quick out
+
+
+@register
+class Glide(Speed):
+    """Gentle slow motion for a calm passage (an intro, a breakdown): the whole shot at GLIDE x, no ramp, no hold --
+    optical-flow in-betweens, so it floats rather than stutters, and the face guard keeps faces sharp."""
+    name = "glide"
+    GLIDE = 0.8
+
+    def speed(self, t, out_len, ctx):
+        return np.full_like(t, ctx.params.get("glide", self.GLIDE), dtype=float)
 
 
 @register

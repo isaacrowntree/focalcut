@@ -49,3 +49,24 @@ def test_stabilise_all_reaches_prestabilised_sources():
         got = copy.deepcopy(shots)
         plan.stabilise(got, dict(stabilise=mode, shake=[0.0012, 0.006]))
         assert [s["stab"] for s in got] == want
+
+
+def test_calm_shots_glide_in_landscape_only_where_the_music_is_calm():
+    seq = [dict(act="teaser", beats=4, fx=[], unit=dict(role="transition")),
+           dict(act="night", beats=2, fx=[], unit=dict(role="dance"), span=[1, 2], add=True),
+           dict(act="night", beats=1, fx=[], unit=dict(role="dance")),
+           dict(act="climax", beats=4, fx=[], unit=dict(role="dance")),
+           dict(act="climax", beats=4, fx=["bullet"], unit=dict(role="dance")),
+           dict(act="finale", beats=4, fx=[], unit=dict(role="dance"), ending=True)]
+    beats = list(np.arange(40) * 0.5)
+    sec = ["intro"] * 7 + ["drop"] * 33
+    music = dict(beats=beats, start=0.0, beat_section=sec, beat_drive=[0.1] * 7 + [0.9] * 33)
+    assert plan.glide_calm(seq, music) == 2
+    assert [s["fx"] for s in seq] == [["glide"], ["glide"], [], [], ["bullet"], []]
+
+
+def test_glide_is_a_steady_gentle_slow_motion():
+    from focalcut import fx
+    g = fx.EFFECTS["glide"]()
+    ctx = fx.Context(fps=50, beat=0.5, peak=0.5, seed=0, params={})
+    assert abs(g.source_length(2.0, ctx) - (1.6 + 2 / 50)) < 0.03
