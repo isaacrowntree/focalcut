@@ -1033,7 +1033,7 @@ def spread_picks(seq, recs, home, beat, budget, full=0.9):
     if not beat or not budget:
         return {}
     shown = {(x["unit"]["id"], tuple(x["span"])) for x in seq if x.get("span")}
-    want = lambda m: max(1, min(PICK_BEATS, round((m["span"][1] - m["span"][0]) / beat)))
+    want = lambda m: pick_beats(m["span"], beat)
     todo = [(r, m) for r in recs for m in r["moments"] if m.get("add") and m.get("span")
             and (r["unit"]["id"], tuple(m["span"])) not in shown]
     act_of = lambda r: home.get(r["id"], "night" if r["role"] == "transition" else "climax")
@@ -2775,6 +2775,16 @@ def card_shuffle(items, key, broll=lambda x: False, beats=None, before=None, aft
     return out
 
 
+PICK_OVER = 0.1          # pick_beats: a pick may run this share of a beat past its out-point (~50 ms), never more
+
+
+def pick_beats(span, beat):
+    """A pick's length in whole beats: as many as fit inside the editor's in-out (rounding down), PICK_OVER of a beat
+    to spare, never past PICK_BEATS -- rounding up ran picks past the out-point into what the editor cut away (EN 90 s:
+    the C2122 close ran 0.2 s on into a camera whip before the ending)."""
+    return max(1, min(PICK_BEATS, math.floor((span[1] - span[0]) / beat + PICK_OVER)))
+
+
 def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
     """The reel cut from the editor's picks (reel.json "mode": "picks"): what they chose, as they chose it.
 
@@ -2806,7 +2816,7 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
     acts = {name: (a * 4, b * 4) for name, a, b in (cfg["acts"] or default_acts(cfg, total_beats // 4))}
     home = home_acts(recs, cfg)
     order = {a: k for k, a in enumerate(ACT_NAMES)}
-    want = lambda m: max(1, min(PICK_BEATS, round((m["span"][1] - m["span"][0]) / beat)))
+    want = lambda m: pick_beats(m["span"], beat)
     picks = [(r, m) for r in recs for m in r["moments"] if m.get("add") and m.get("span") and not m.get("open")]
     picked = {r["id"] for r in recs for m in r["moments"] if m.get("add") or m.get("open")}
 

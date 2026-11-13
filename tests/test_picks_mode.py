@@ -285,3 +285,11 @@ def test_portrait_drops_broll_picks_before_it_trims_people_and_keeps_starred_one
     kept = [s for s in pp if role(s)]
     assert [(s["unit"]["id"], s["beats"], (s.get("whole") or s["span"])[0]) for s in kept] == [("U07", 1, 10.0)]
     assert len(port["picks_condensed"]) == 3                     # and the three left out are named
+
+
+def test_a_pick_never_runs_past_its_out_point():
+    from focalcut.reel.plan import pick_beats
+    b = 0.4918
+    assert pick_beats([157.23, 158.50], b) == 2          # 2.58 beats: 2, not 3 (3 ran into the camera whip)
+    assert pick_beats([0.0, 2 * b - 0.03], b) == 2       # a hair short of 2 beats: 2
+    assert pick_beats([0.0, 0.3], b) == 1                # never under one beat
