@@ -991,14 +991,16 @@ def test_shake_hf_ignores_pans_and_keeps_one_value_per_frame():
     assert hf(jolt)[0] == pytest.approx(hf(jolt)[30], rel=0.3)    # no zero-padding dip at the ends
 
 
-def test_stabilise_runs_after_rotation_before_the_crop_and_changes_the_cache_key(tmp_path, monkeypatch):
+def test_a_steadied_shot_uses_its_steadied_crop_after_rotation_and_changes_the_cache_key(tmp_path, monkeypatch):
     from focalcut.reel import render
-    monkeypatch.setattr(render, "stab", lambda path, t, dur, rot: "/tmp/x: y.trf")
+    steadied = dict(w=0.485, h=0.97, z=1.0, path=[[0, 0.51, 0.5], [0.02, 0.49, 0.5]], steadied=True)
+    monkeypatch.setattr(render, "steady_crop", lambda project, s, dur, qsv=True: steadied)
     pr = Project(str(tmp_path))
     s = dict(unit=dict(id="C1", source="C1.MP4", rotate="transpose=2", role="dance"), src_in=1.0, length=2.0,
              frames=100, fx=[], crop=dict(w=0.5, h=1.0, z=1.0, path=[[0, 0.5, 0.5]]), peak=1.0, kind="spin", stab=True)
     f = render.shot_filter(s, "portrait", pr)
-    assert f.index("transpose") < f.index("vidstabtransform") < f.index("crop=") and "x\\: y.trf" in f
+    assert "vidstab" not in f and f.index("transpose") < f.index("crop=") and "iw*0.485" in f and "ih*0.97" in f
+    assert "iw*0.5:" in render.shot_filter(dict(s, stab=False), "portrait", pr)
     assert render.key(s, 0.6) != render.key(dict(s, stab=False), 0.6) != render.key(dict(s, stab=False), 0.5)
 
 
