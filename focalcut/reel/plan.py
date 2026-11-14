@@ -2897,7 +2897,8 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
     beats = {id(m): want(m) for _, m in every}
     stars = lambda m: 9 if id(m) in pinned else m.get("stars") or 3
     broll = {id(m): r["role"] == "transition" and id(m) not in pinned for r, m in every}
-    floor = lambda m: min(want(m), PICK_FLOOR_BROLL.get(fmt, PICK_FLOOR) if broll[id(m)] else PICK_FLOOR)
+    scenery = {id(m): broll[id(m)] and not people_broll(r["unit"]) for r, m in every}   # (a DJ, a singer: a person --
+    floor = lambda m: min(want(m), PICK_FLOOR_BROLL.get(fmt, PICK_FLOOR) if scenery[id(m)] else PICK_FLOOR)   # kept)
     asked = sum(beats.values())
     over = asked - room
     dropped = []
@@ -2930,7 +2931,8 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
             dropped.append(x)
     trim(lambda m: broll[id(m)])                             # B-roll gives up its beats before any shot of people
     if fmt in PICK_FLOOR_BROLL:                              # (portrait: B-roll plays badly in a 9:16 strip, so its
-        drop(lambda m: broll[id(m)] and stars(m) <= 3)       #  picks go before a pick of people loses a beat)
+        drop(lambda m: scenery[id(m)] and stars(m) <= 3)     #  picks go before a pick of people loses a beat;
+        #                                                       a DJ or performer is people: Victor's DJ shots stay)
     trim(lambda m: True)
     if over > 0:                                             # still over at the floor: the least wanted picks go
         drop(lambda m: True)
