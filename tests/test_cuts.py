@@ -153,3 +153,8 @@ def test_picks_as_several_reels_takes_each_ones_picks():
                                                                   "0:05-0:06": ["main"]}}
     assert only_reel(e, ["day", "night"])["add"] == ["0:01-0:02", "0:03-0:04"]
     assert only_reel(e, "day")["add"] == ["0:01-0:02"]
+
+
+def test_fits_matches_a_clip_by_id():
+    u = dict(id="C1985-C1986", category="animations", tag="animations")
+    assert fits(u, ["=C1985"]) and not fits(dict(u, id="C2037"), ["=C1985"]) and fits(u, ["animation"])

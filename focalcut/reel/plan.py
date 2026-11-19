@@ -1917,8 +1917,10 @@ def band_in(P, seq, recs, music, cfg):
 
 def fits(unit, match):
     """Is this footage one of these (substrings of its category or tag)? "!x" rules out footage matching x;
-    "@portrait" / "@landscape" match the way it was shot. Empty match: anything."""
+    "@portrait" / "@landscape" match the way it was shot; "=C1985" matches a clip by its id (the start of it: a day
+    animation among night ones that share a category and a tag). Empty match: anything."""
     has = lambda k: unit.get("orient") == k[1:] if k.startswith("@") else \
+        str(unit.get("id") or "").startswith(k[1:]) if k.startswith("=") else \
         k in (unit.get("category") or "") or k in (unit.get("tag") or "")
     yes, no = [k for k in match if not k.startswith("!")], [k[1:] for k in match if k.startswith("!")]
     return (not yes or any(map(has, yes))) and not any(map(has, no))
