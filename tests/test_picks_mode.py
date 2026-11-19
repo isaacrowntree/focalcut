@@ -293,3 +293,12 @@ def test_a_pick_never_runs_past_its_out_point():
     assert pick_beats([157.23, 158.50], b) == 2          # 2.58 beats: 2, not 3 (3 ran into the camera whip)
     assert pick_beats([0.0, 2 * b - 0.03], b) == 2       # a hair short of 2 beats: 2
     assert pick_beats([0.0, 0.3], b) == 1                # never under one beat
+
+
+def test_when_picks_must_go_a_clip_with_many_gives_them_up_before_a_clip_loses_its_only_one(tmp_path):
+    picks = many_picks(n_clips=2, per=12, length=1.2)               # two clips with twelve picks each ...
+    for u in ("U04", "U05", "U06"):                                  # ... and three with one each
+        picks[u] = {"add": [rng(10, 11.2)]}
+    pr, music, moments = picks_reel(tmp_path, picks, bars=8)         # far too many for eight bars
+    used = {s["unit"]["id"] for s in P.build(pr, "landscape", music, moments)["shots"] if s.get("add")}
+    assert {"U04", "U05", "U06"} <= used                             # every clip keeps something

@@ -2923,11 +2923,23 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
             beats[id(m)] -= 1                                # same share of its length: a long pick stays long)
             over -= 1
 
-    def drop(kind):                                          # ... and these go, the least wanted first
+    def drop(kind, spread=False):                            # ... and these go, the least wanted first
         nonlocal over
-        for x in sorted((x for x in picks if kind(x[1])), key=lambda x: (not broll[id(x[1])], stars(x[1]), q.get(id(x[1]), 1.0))):
-            if over <= 0:
-                break
+        if not spread:
+            for x in sorted((x for x in picks if kind(x[1])), key=lambda x: (not broll[id(x[1])], stars(x[1]), q.get(id(x[1]), 1.0))):
+                if over <= 0:
+                    break
+                over -= beats.pop(id(x[1]))
+                picks.remove(x)
+                dropped.append(x)
+            return
+        while over > 0:                                      # one at a time, keeping the spread: scenery B-roll, the
+            cand = [x for x in picks if kind(x[1])]          # least starred, then from the clip with the most left, then
+            if not cand:                                     # B-roll before people, then the least clearly seen --
+                break                                        # a clip with 13 picks gives some up before a DJ's one
+            left = Counter(x[0]["unit"]["clip"] for x in picks)   # shot goes (EN's Instagram cut of the main picks)
+            x = min(cand, key=lambda x: (not scenery[id(x[1])], stars(x[1]), -left[x[0]["unit"]["clip"]],
+                                         not broll[id(x[1])], q.get(id(x[1]), 1.0), x[0]["unit"]["id"], x[1]["span"][0]))
             over -= beats.pop(id(x[1]))
             picks.remove(x)
             dropped.append(x)
@@ -2936,8 +2948,8 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
         drop(lambda m: scenery[id(m)] and stars(m) <= 3)     #  picks go before a pick of people loses a beat;
         #                                                       a DJ or performer is people: Victor's DJ shots stay)
     trim(lambda m: True)
-    if over > 0:                                             # still over at the floor: the least wanted picks go
-        drop(lambda m: True)
+    if over > 0:                                             # still over at the floor: the least wanted picks go,
+        drop(lambda m: True, spread=True)                    # the spread kept
     every = first + picks + lead_out
     while over < 0:                                          # (a dropped pick freed more than was over: people first)
         c = [m for _, m in every if beats[id(m)] < want(m)]
