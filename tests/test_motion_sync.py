@@ -139,3 +139,77 @@ def test_kiss_spans_join_runs_and_need_a_sure_frame():
     q[20:22] = 0.9                                           # close dancing the model is not sure of
     sp = spans_of(t, q)
     assert len(sp) == 1 and sp[0][2] == 0.99 and sp[0][0] == 0.5 and sp[0][1] == 3.5
+
+
+def _cast_reel(monkeypatch, a_moments=(), act_b="night"):
+    """Five four-beat shots at 120 BPM; the music stops half a second into the last one (beats 17-19). A, in that
+    slot, never stops moving (another moment of its clip, at 21 s, lands at 20.5 s); B (slot 1) lands at 10.5 s of
+    its clip and rests; C, D, E keep moving."""
+    from focalcut.reel import plan as PL
+    from focalcut.reel import shake
+    go = series([0.3] * 750)
+    rest = {"A": series([0.3] * 512 + [0.005] * 238), "B": series([0.3] * 262 + [0.005] * 488)}
+    monkeypatch.setattr(MO, "series", lambda project, u: rest.get(u["id"], go))
+    monkeypatch.setattr(shake, "series", lambda project, name: None)
+    n = 20
+    F = dict(known=True, stops=[(17, 19, 1.0)], bursts=[], texture=np.full(n, 0.5), level=np.ones(n),
+             drive=np.ones(n))
+    monkeypatch.setattr(PL.MU, "feel", lambda music, whole=False: F)
+
+    def unit(k):
+        return dict(id=k, clip="clip" + k, role="dance", t0=0.0, t1=30.0, score=k, source=k + ".mp4", tag="",
+                    category="floor")
+    shots, recs = [], []
+    for i, (k, t) in enumerate([("C", 5.0), ("B", 11.0), ("D", 5.0), ("E", 5.0), ("A", 5.0)]):
+        shots.append(dict(unit=unit(k), t=t, kind="pattern", rank=0.5, face=0.5, framing=0.5, thumb=None, fx=[],
+                          effect=None, act=act_b if k == "B" else "night", beats=4, beat=0.5, length=2.0,
+                          src_in=t - 1.0, peak=1.0, rec_in=2.0 * i, crop=None, jitter=None))
+        ms = [dict(t=t, kind="pattern", score=0.5)] + [dict(t=x, kind="pattern", score=0.5) for x in (a_moments if k == "A" else ())]
+        recs.append(dict(id=k, unit=unit(k), role="dance", orient="landscape", moments=ms))
+    cfg = dict(validate=False, shake=[1.0, 2.0], late=[], day=[], day_shows=[], night_shows=[])
+    return PL, shots, recs, cfg, dict(beat=0.5, beats=[], start=0.0)
+
+
+def test_motion_cast_trades_footage_so_the_picture_rests_on_the_stop(monkeypatch):
+    PL, shots, recs, cfg, music = _cast_reel(monkeypatch)
+    lines = PL.motion_cast(None, "landscape", shots, music, cfg, recs, W={})
+    assert len(lines) == 1 and "traded" in lines[0]
+    assert [s["unit"]["id"] for s in shots] == ["C", "A", "D", "E", "B"]
+    assert abs(shots[4]["src_in"] + 0.5 - 10.5) <= 0.25     # B lands as the music stops, half a second in
+    assert all(s["beats"] == 4 and s["length"] == 2.0 for s in shots)   # the cuts stay where they were
+
+
+def test_motion_cast_is_deterministic_and_keeps_to_the_casting(monkeypatch):
+    import copy
+    PL, shots, recs, cfg, music = _cast_reel(monkeypatch)
+    again = copy.deepcopy(shots)
+    PL.motion_cast(None, "landscape", shots, music, cfg, recs, W={})
+    PL.motion_cast(None, "landscape", again, music, cfg, recs, W={})
+    assert shots == again
+    PL, shots, recs, cfg, music = _cast_reel(monkeypatch, act_b="climax")   # B is another act's: no trade
+    assert PL.motion_cast(None, "landscape", shots, music, cfg, recs, W={}) == []
+    PL, shots, recs, cfg, music = _cast_reel(monkeypatch)
+    shots[4]["add"], shots[4]["span"] = True, [4.0, 6.0]     # the editor's pick on the stop: as they chose it
+    assert PL.motion_cast(None, "landscape", shots, music, cfg, recs, W={}) == []
+
+
+def test_motion_cast_takes_another_moment_of_the_slots_own_unit(monkeypatch):
+    PL, shots, recs, cfg, music = _cast_reel(monkeypatch, a_moments=(21.0,), act_b="climax")
+    lines = PL.motion_cast(None, "landscape", shots, music, cfg, recs, W={})
+    assert len(lines) == 1 and "its moment at 21.0 s" in lines[0]
+    assert shots[4]["unit"]["id"] == "A" and abs(shots[4]["src_in"] + 0.5 - 20.5) <= 0.25   # it lands on the stop
+    PL, shots, recs, cfg, music = _cast_reel(monkeypatch, a_moments=(21.0,), act_b="climax")
+    shots[4]["unit"]["bans"] = [[19.0, 23.0]]                # ... never into the editor's ban
+    assert PL.motion_cast(None, "landscape", shots, music, cfg, recs, W={}) == []
+
+
+def test_motion_cast_brings_in_a_unit_only_where_no_unit_leaves(monkeypatch):
+    import copy
+    PL, shots, recs, cfg, music = _cast_reel(monkeypatch)
+    shots[1] = dict(shots[1], unit=shots[3]["unit"], t=15.0, src_in=14.0, act="night")   # B is not in the reel
+    one = copy.deepcopy(shots)
+    assert PL.motion_cast(None, "landscape", one, music, cfg, recs, W={}) == []   # A's one shot: A stays
+    shots[0] = dict(shots[0], unit=shots[4]["unit"], t=25.0, src_in=24.0)        # A has another shot
+    lines = PL.motion_cast(None, "landscape", shots, music, cfg, recs, W={})
+    assert len(lines) == 1 and "B (not in the reel yet)" in lines[0]
+    assert shots[4]["unit"]["id"] == "B" and abs(shots[4]["src_in"] + 0.5 - 10.5) <= 0.25
