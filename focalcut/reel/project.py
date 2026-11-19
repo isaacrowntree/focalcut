@@ -244,7 +244,7 @@ class Project:
     @property
     def reel_id(self) -> str:
         """This reel's name in picks.json's per-selection "only" lists: the cut, or "main" for the project's reels --
-        or the reel a cut takes its picks from (reel.json cut "picks_as": "short": an Instagram cut of the 90 s)."""
+        or the reel(s) a cut takes its picks from (reel.json cut "picks_as": "short", or ["day", "night"])."""
         return self.config.get("picks_as") or self.cut or "main"
 
     def picks(self, rejects=True, reel=True) -> dict:
@@ -355,7 +355,7 @@ class Project:
         return self.path(name)
 
 
-def only_reel(entry: dict, reel: str) -> dict:
+def only_reel(entry: dict, reel) -> dict:
     """A clip's picks for one reel. Its "only" gives values to some reels: keyed by the "add" range as written, or
     "<field>:<value>" for "ban", "prefer", "open" and "end" ("more:" for "more"); a value not listed is in every reel."""
     only = entry.get("only")
@@ -367,9 +367,11 @@ def only_reel(entry: dict, reel: str) -> dict:
             f, _, val = k.partition(":") if k.split(":", 1)[0] in TAGGED else ("add", "", k)
             keyed[(f, "*" if f == "more" else val.strip() if val.strip() == "all" else _span_key(val))] = v
 
+    reels = list(reel) if isinstance(reel, (list, tuple)) else [reel]   # (several: a day-and-night mix takes both's)
+
     def ours(f, v):
         key = (f, "*" if f == "more" else "all" if str(v).strip() == "all" else _span_key(v))
-        return reel in keyed.get(key, [reel])
+        return any(r in keyed.get(key, reels) for r in reels)
     e = {k: v for k, v in entry.items() if k != "only"}
     for f in ("add", "ban", "prefer"):
         if isinstance(e.get(f), list):

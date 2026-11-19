@@ -145,3 +145,11 @@ def test_a_cut_takes_another_reels_picks_and_drops_some(tmp_path):
     short, insta = Project(str(tmp_path), "short").picks()["C1"], Project(str(tmp_path), "insta").picks()["C1"]
     assert short["add"] == ["0:01.00-0:02.00", "0:05.00-0:06.00"]
     assert insta["add"] == ["0:01.00-0:02.00"] and "0:05.00-0:06.00" in insta["ban"]
+
+
+def test_picks_as_several_reels_takes_each_ones_picks():
+    from focalcut.reel.project import only_reel
+    e = {"add": ["0:01-0:02", "0:03-0:04", "0:05-0:06"], "only": {"0:01-0:02": ["day"], "0:03-0:04": ["night"],
+                                                                  "0:05-0:06": ["main"]}}
+    assert only_reel(e, ["day", "night"])["add"] == ["0:01-0:02", "0:03-0:04"]
+    assert only_reel(e, "day")["add"] == ["0:01-0:02"]
