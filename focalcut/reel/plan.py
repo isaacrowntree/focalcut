@@ -48,7 +48,9 @@ import numpy as np
 from . import frame as FR
 from . import grammar as G
 from . import lead as LD
+from . import motion as MO
 from . import music as MU
+from . import sync as SY
 from . import validate as VA
 from . import velocity as V
 
@@ -3009,7 +3011,21 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
         st = [3 if s is not None else stars(m) for r, m, n, s in run]
         calm = F["calm"][n0:]
         L = pace_lengths(L, lo, hi, calm, give=lambda i: (is_b[i], -st[i]), take=lambda i: (not is_b[i], st[i]))
-        L, stuck = hold_sustains(L, lo, hi, [(a - n0, e - n0) for a, e in F["sustain"]])
+        follow = cfg.get("follow_motion", True)              # (a stop is held through like a sustain: the shot over
+        holds = [(a - n0, e - n0) for a, e in F["holds" if follow else "sustain"]]   # it shows the landing)
+        pinned_at = set(range(len(first))) | set(range(len(run) - len(lead_out), len(run)))
+        if follow:
+            L, n = stage_holds(L, lo, hi, holds, pinned_at)
+            if n:
+                print(f"[reel] {fmt}: {n} stops in the music are held through: shots nearby give a beat each so one "
+                      f"shot plays the landing and the rest")
+        L, stuck = hold_sustains(L, lo, hi, holds)
+        if follow:                                           # which pick plays where follows the song's movement
+            lim = {id(x): (a, b) for x, a, b in zip(run, lo, hi, strict=True)}
+            sw = motion_order(project, run, L, n0, music, key, fixed=pinned_at, limits=lambda x: lim[id(x)])
+            if sw:
+                print(f"[reel] {fmt}: {len(sw)} pairs of picks trade places to follow the music (a rest on a stop, "
+                      f"movement on an entry, soft with soft)")
         for x, k in zip(run, L):
             if x[3] is not None:
                 x[3]["beats"] = k
@@ -4311,6 +4327,17 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     """The plan for one format: shots with beat-locked record positions and source in-points. picks: the editor's
     overrides (apply_picks); None reads them from the project. assess_shots: rank moments on how they play in this
     format (framing, face, shake) first."""
+    if project is not None and getattr(project, "config", {}).get("no_kissing"):   # no kiss plays in this reel
+        if not os.path.exists(project.path("kisses.json")):  # (where each starts and ends: timed now when the
+            from .people import kiss_spans as time_kisses  # people step hasn't)
+            time_kisses(project)
+        given = picks
+        picks = project.picks()
+        ks = project.kiss_spans()
+        print(f"[reel] {fmt}: no kissing: {sum(len(v) for v in ks.values())} kisses in {len(ks)} clips kept out"
+              + (f"; {len(project.kissed)} picks that play one left out: "
+                 + ", ".join(f"{k} {v}" for k, v in project.kissed) if project.kissed else ""))
+        picks = picks if given is None else given
     picks = project.picks() if picks is None else picks
     cfg = config(project, fmt)
     portrait_rules(cfg)
@@ -4319,6 +4346,8 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
         cfg["ending"] = [*end, (list(cfg.get("ending") or []) + [None] * 4)[3] or 0.5]   # (its crop: as configured)
     if os.path.exists(project.path("people.json")):          # everyone in it (the people step)
         cfg["people"] = project.load("people.json")
+        if project.config.get("no_kissing"):                 # (no kiss is a must-have of this reel)
+            cfg["people"] = dict(cfg["people"], kisses={})
     moments = [r for r in copy.deepcopy(moments) if project.in_cut(r["unit"])]   # a cut: its own footage
     if picks:
         apply_picks(moments, picks, only=cfg.get("only_picks", True))   # a picked clip: the editor's picks alone
@@ -4387,6 +4416,18 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
     steady_shots(project, fmt, plan["shots"], fm, cfg)       # the planner's own shots: their clip's steadiest part
     if fmt == "portrait":
         portrait_parts(project, plan["shots"])               # a trimmed pick: the part of it that frames best
+    if project is not None and hasattr(project, "path"):     # the picture's movement follows the song's (sync.py)
+        was = motion_score(project, plan["shots"], music)
+        if was and cfg.get("follow_motion", True):
+            lines = follow_motion(project, fmt, plan["shots"], music, cfg, no=kiss_spans(project))
+            if lines:
+                print(f"[reel] {fmt}: {len(lines)} shots play the part of their own footage that moves with the music:")
+                for x in lines:
+                    print(f"[reel]     {x}")
+        now = motion_score(project, plan["shots"], music) if was else None
+        if now:
+            plan["motion"] = {k: v for k, v in now.items() if k != "shots"}
+            plan["motion"]["before"] = {k: v for k, v in was.items() if k != "shots"}
     if project is not None and assess_shots:                 # the last word: every shot against the editor's rules,
         plan["validation"] = VA.run(project, fmt, plan["shots"], fm, cfg)   # the planner's that break one replaced
     stabilise(plan["shots"], cfg)
@@ -4915,6 +4956,254 @@ def portrait_parts(project, shots):
     return len(moved)
 
 
+MOTION_REACH = 2.0       # follow_motion: one of the planner's own shots moves at most this far (s) along its clip
+MOTION_STEP = 0.1        # ... in-points tried this far apart (s)
+MOTION_GAIN = (0.06, 0.12)   # ... it moves for this much better a fit (sync.fit): under a stop or an entry / elsewhere
+MOTION_NEAR = 0.01       # ... each second moved counts as this much worse a fit (of two that fit as well, the nearer)
+MOTION_SHAKE = 1.15      # ... never onto a stretch shaking this much more than the one it leaves
+MOTION_CLEAR = 0.85      # ... a pick's new part is at least this clearly seen (of the old), a strip frames this well
+ORDER_REACH = 8          # motion_order: picks trade places at most this many shots apart
+ORDER_GAIN = 0.12        # ... for this much better a fit between them (sync.fit, summed over the two)
+
+
+def _fit_at(M, span, L, ctx, whole=True):
+    """The best sync.fit of a pick span played for L seconds under ctx: its in-point when it plays whole, else the
+    best in-point inside it (every 0.2 s). Returns (fit score, in-point)."""
+    if whole or span[1] - span[0] <= L + 0.05:
+        return SY.fit(M, span[0], 1.0, ctx)["score"], span[0]
+    best = max((SY.fit(M, float(x), 1.0, ctx)["score"], -float(x)) for x in np.arange(span[0], span[1] - L + 1e-6, 0.2))
+    return best[0], -best[1]
+
+
+HOLD_REACH = 10          # stage_holds: a shot gives a beat to a hold at most this many shots away
+
+
+def stage_holds(L, lo, hi, holds, fixed=()):
+    """A shot holds through each stop (picks mode): where a cut falls inside a hold (music.feel "holds": from the last
+    beat that sounded until the music sounds again) and the shots at it and next to it cannot give the beats to move
+    it (hold_sustains), shots further off do -- each one beat, the nearest first, at most HOLD_REACH shots away,
+    never under their least (lo) -- and the cuts between move a beat along the grid with them: either the shot
+    before the cut plays on until the music sounds again (the movement lands and rests in one shot), or the shot
+    after it starts on the last beat that sounded. No other cut may end up inside a hold. fixed: shots that keep
+    their length. Returns (new lengths, holds staged)."""
+    L, made = list(L), 0
+    held = {b for a, e in holds for b in range(a + 1, e)}
+    inside = lambda v: sum(p in held for p in _starts(v)[1:])
+    for a, e in holds:
+        L1, stuck = hold_sustains(L, lo, hi, holds)
+        pos = _starts(L1)
+        bad = [i for i in stuck if a < pos[i] < e]
+        if not bad:
+            continue
+        i, p = bad[0], pos[bad[0]]
+        ways = []
+        for taker, need, donors in ((i - 1, e - p, range(i, min(i + HOLD_REACH, len(L)))),
+                                    (i, p - a, range(i - 1, max(i - 1 - HOLD_REACH, -1), -1))):
+            if taker in fixed or L1[taker] + need > hi[taker]:
+                continue
+            v, left = list(L1), need
+            for d in donors:
+                while left and d not in fixed and v[d] - 1 >= lo[d]:
+                    v[d] -= 1
+                    left -= 1
+                if not left:
+                    break
+            if left:
+                continue
+            v[taker] += need
+            if inside(v) < inside(L1):
+                ways.append((inside(v), sum(x != y for x, y in zip(v, L1)), v))
+        if ways:
+            L = min(ways)[2]
+            made += 1
+    return L, made
+
+
+def motion_order(project, run, lengths, n0, music, key, fixed=(), limits=None):
+    """Which pick plays where follows the music (picks mode, once the order and the lengths are settled): two picks
+    that can play each other's lengths (limits(item) -> (least, most) beats; without it, of the same length), in
+    the same act of the story and of the same kind (B-roll or people), at most ORDER_REACH shots apart (twice that for the shot on a stop or an
+    entry), trade places when the two fit the music better that way round (sync.fit: at rest where the music stops,
+    taking off where it comes in, flowing where it is soft, punching where it is hard) -- by ORDER_GAIN or more,
+    and never so that two shots of one clip end up side by side. The cuts and the lengths stay where they are; the
+    editor's picks all still play. run: [(record, moment, beats, shot | None)]; lengths: beats per item; n0: the
+    beat the run starts on; key(item) -> its act's order; fixed: indexes that stay. Returns the swaps made as
+    [(i, j)] (run is reordered in place)."""
+    F = MU.feel(music)
+    if not F["known"] or len(run) < 2:
+        return []
+    T = clock(music)
+    beat = music["beat"]
+    at = [n0 + sum(lengths[:i]) for i in range(len(run))]
+    ctx = [SY.context(F, at[i], lengths[i], T) for i in range(len(run))]
+    series = lambda x: MO.series(project, x[0]["unit"])
+    memo = {}
+
+    def fit(k, i):                                           # item k in slot i
+        if (k, i) not in memo:
+            m = items[k][1]
+            memo[k, i] = _fit_at(series(items[k]), m["span"], lengths[i] * beat, ctx[i],
+                                 whole=lengths[i] * beat >= m["span"][1] - m["span"][0] - 0.05)[0]
+        return memo[k, i]
+    items = list(run)
+    pos = list(range(len(run)))                              # pos[i]: which item sits in slot i
+    clip = lambda k: items[k][0]["unit"]["clip"]
+    kind = lambda k: (key(items[k])[0], items[k][0]["role"] == "transition")
+    movable = [x[3] is None and x[1].get("span") and i not in fixed for i, x in enumerate(run)]
+
+    def clash(i, k):                                         # item k in slot i beside its own clip
+        return any(0 <= j < len(pos) and clip(pos[j]) == clip(k) for j in (i - 1, i + 1))
+    def takes(k, n):                                         # item k can play n beats (its own floor .. its whole)
+        return limits(items[k])[0] <= n <= limits(items[k])[1] if limits is not None else n == lengths[k]
+    swaps = []
+    order = sorted(range(len(run)), key=lambda i: (-sum(e[2] for e in ctx[i]["events"]), i))   # the stops first
+    for i in order:
+        a = pos[i]
+        if not movable[a]:
+            continue
+        best = None
+        reach = ORDER_REACH * (2 if any(e[2] >= 1.0 for e in ctx[i]["events"]) else 1)   # (a stop, an entry: wider)
+        for j in range(max(i - reach, 0), min(i + reach + 1, len(run))):
+            b = pos[j]
+            if j == i or not movable[b] or kind(a) != kind(b) or clip(a) == clip(b) or not (
+                    takes(a, lengths[j]) and takes(b, lengths[i])):
+                continue
+            gain = fit(b, i) + fit(a, j) - fit(a, i) - fit(b, j)
+            if gain >= ORDER_GAIN and (best is None or gain > best[0]):
+                pos[i], pos[j] = b, a
+                bad = clash(i, b) or clash(j, a)
+                pos[i], pos[j] = a, b
+                if not bad:
+                    best = (gain, j)
+        if best:
+            j = best[1]
+            pos[i], pos[j] = pos[j], pos[i]
+            swaps.append((min(i, j), max(i, j)))
+    run[:] = [items[k] for k in pos]
+    return swaps
+
+
+def follow_motion(project, fmt, shots, music, cfg, W=None, no=()):
+    """The picture's movement follows the song's (sync.py): each shot plays the part of its own footage that fits the
+    music under it -- a movement landing where the music stops or closes down and at rest until it sounds again, a
+    movement taking off where it comes in, soft and flowing movement under soft music, punchy movement under hard.
+    Only in-points move; the cuts stay on the beat grid and nothing changes speed.
+
+      - an editor's pick that plays trimmed: any part of the pick as they marked it ("whole") -- never outside their
+        in-out, clear of the pick's other pieces; one they framed in this format (a focal point or a follow click
+        in it) stays as framed;
+      - one of the planner's own shots: up to MOTION_REACH seconds along its clip, clear of the editor's bans and
+        the clip's other shots, on passing windows when it was on them (never onto failing ones);
+      - a pick played whole, the opening, the ending, the close, a title and a shot timed by a speed effect or a
+        velocity edit stay (those land on the music's hits, sustains and stops in place()).
+    A shot moves for a clearly better fit (MOTION_GAIN), the nearest of equals, and never for a worse picture: no
+    shakier (MOTION_SHAKE), a pick's part as clearly seen on the scrub (MOTION_CLEAR), a portrait strip framing as
+    well and on the same people. no: source stretches {unit id: [(from, to)]} to stay out of (no_kissing).
+    Returns the moves as log lines."""
+    from . import shake
+    F = MU.feel(music)
+    if not F["known"]:
+        return []
+    T = clock(dict(music, beat=music.get("beat") or float(np.median(np.diff(music["beats"])))))
+    W = (load_windows(project, fmt) or {}) if W is None else W
+    picks = project.picks()
+    lo = cfg["shake"][0]
+    moved, r0 = [], 0
+
+    def free(uid, a, b, me):
+        return not any(x is not me and x["unit"]["id"] == uid and
+                       min(b, played(x)[0] + played(x)[1]) - max(a, played(x)[0]) > -SNAP_GAP for x in shots)
+
+    for s in shots:
+        at, r0 = r0, r0 + s["beats"]
+        u = s["unit"]
+        if any(s.get(k) for k in ("ending", "open", "logo", "logo_image", "title", "close", "velocity", "lead_beats",
+                                  "land_on", "reaction")) or any(f in SPEED and f != "glide" for f in s["fx"]):
+            continue
+        M = MO.series(project, u)
+        if M is None:
+            continue
+        a, L = played(s)
+        ctx = SY.context(F, at, s["beats"], T)
+        p = L / ctx["length"] if ctx["length"] > 0 else 1.0
+        pick = bool(s.get("add") and s.get("span") and not s.get("person") and not s.get("reuse"))
+        if pick:
+            whole = s.get("whole")
+            if not whole or whole[1] - whole[0] < L + MOTION_STEP:
+                continue
+            if fmt == "portrait" and any(whole[0] - FOCUS_REACH <= k[0] <= whole[1] + FOCUS_REACH
+                                         for k in focus_keys(picks, u, "portrait") + follow_keys(picks, u)):
+                continue                                     # framed by the editor: as they framed it
+            xs = np.arange(whole[0], whole[1] - L + 1e-6, MOTION_STEP)
+        elif editors(s):
+            continue
+        else:
+            xs = np.arange(max(u["t0"], a - MOTION_REACH), min(u["t1"] - L, a + MOTION_REACH) + 1e-6, MOTION_STEP)
+        f0 = SY.fit(M, a, p, ctx)["score"]
+        gain = MOTION_GAIN[0] if ctx["events"] else MOTION_GAIN[1]
+        cands = sorted(((SY.fit(M, float(x), p, ctx)["score"] - MOTION_NEAR * abs(float(x) - a), float(x)) for x in xs
+                        if abs(float(x) - a) >= 0.05), key=lambda c: (-c[0], abs(c[1] - a)))
+        z = shake.series(project, u["score"])
+        w = max((s.get("crop") or {}).get("w", 1.0), 0.2)
+        j0 = _shake_over(*z, a, L, w) if z is not None else None
+        on = span_ok(W.get(u["id"]), a, a + L)
+        q0 = _part_score(W.get(u["id"]), a, a + L)
+        g0 = framed(s.get("crop"), u["role"]) if fmt == "portrait" else None
+        for f1, na in cands[:5]:
+            if f1 < f0 + gain:
+                break
+            na = round(na, 3)
+            dt = na - a
+            if not free(u["id"], na, na + L, s) or any(min(na + L, y) - max(na, x) > 0 for x, y in no.get(u["id"], ())):
+                continue
+            if not pick and (in_bans(na, L, u) or (span_ok(W.get(u["id"]), na, na + L) is not True if on is True
+                                                   else span_ok(W.get(u["id"]), na, na + L) is False)):
+                continue
+            if pick and _part_score(W.get(u["id"]), na, na + L) < MOTION_CLEAR * q0:
+                continue
+            j = _shake_over(*z, na, L, w) if z is not None else None
+            if j0 is not None and j is not None and j > max(MOTION_SHAKE * j0, STEADY_FLOOR * lo):
+                continue
+            c = reframe(project, u, s["src_in"] + dt, s["length"] * (L / s["length"] if s.get("span") else 1.0), fmt) \
+                if s.get("crop") or fmt == "portrait" else None
+            if fmt == "portrait":
+                if framed(c, u["role"]) < MOTION_CLEAR * g0 or (part_cost(c) or 0.0) > (part_cost(s.get("crop")) or 0.0) + 0.05:
+                    continue
+                both = np.arange(max(a, na), min(a, na) + L + 1e-6, 0.1)   # the same people, where the two overlap
+                if pick and len(both) and c and s.get("crop"):
+                    was, now = np.array(s["crop"]["path"]), np.array(c["path"])
+                    if np.abs(np.interp(both - a, was[:, 0], was[:, 1]) -
+                              np.interp(both - na, now[:, 0], now[:, 1])).mean() > PART_SAME * c["w"]:
+                        continue
+            s.update(t=round(s["t"] + dt, 3), src_in=round(s["src_in"] + dt, 3), crop=c or s.get("crop"),
+                     motion=dict(moved=round(dt, 2), fit=[round(f0, 2), round(f1 + MOTION_NEAR * abs(dt), 2)]))
+            if s.get("span"):
+                s["span"] = [round(s["span"][0] + dt, 3), round(s["span"][1] + dt, 3)]
+            s.pop("land", None); s.pop("land_fits", None)
+            if j is not None:
+                s["jitter"] = round(j, 5)
+            what = ", ".join(sorted({"a stop" if k == "rest" else "an entry" for _, k, _, _ in ctx["events"]})) or \
+                ("soft music" if ctx["texture"] < 0.5 else "hard music")
+            moved.append(f"{u['id']} {dt:+.1f} s at {s.get('rec_in', 0.0):.1f} s ({what}: fit {f0:.2f} -> "
+                         f"{f1 + MOTION_NEAR * abs(dt):.2f})")
+            break
+    return moved
+
+
+def kiss_spans(project):
+    """{unit id: [(from, to), ...]} in source seconds: the kisses a reel with "no_kissing" keeps out (none without)."""
+    return project.kiss_spans() if project is not None and hasattr(project, "kiss_spans") else {}
+
+
+def motion_score(project, shots, music):
+    """How well the cut's picture follows its music (sync.score), or None when the music has no description."""
+    F = MU.feel(music)
+    if not F["known"]:
+        return None
+    T = clock(dict(music, beat=music.get("beat") or float(np.median(np.diff(music["beats"])))))
+    return SY.score(shots, F, T, lambda u: MO.series(project, u), played)
+
+
 END_FILL = ("band", "singer", "stage", "dj", "crowd")   # what follows a last shot cut short, in that order
 
 
@@ -5370,6 +5659,10 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
     for a in onsets:                                         # the slow hold plays through the held note
         if a < len(acc):
             acc[a] += V.SUSTAIN
+    for a, e, _w in F["stops"]:                              # ... and where the music stops or closes down: the
+        if a not in onsets and a < len(acc):                 # dancer lands as it does, at rest until it sounds again
+            onsets[a] = e
+            acc[a] += V.SUSTAIN
     acc = list(acc)
     from . import shake
     lo = cfg["shake"][0]
@@ -5389,7 +5682,7 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
     hold = max(cfg.get("land_hold", 1.0) * beat, 0.45)
     real_speed_close(seq)
     lands(project, seq, beat, hold)
-    hold_through(seq, F["sustain"], beat)
+    hold_through(seq, F["holds" if cfg.get("follow_motion", True) else "sustain"], beat)
     rec = 0
     for s in seq:
         L = T(rec + s["beats"]) - T(rec)
@@ -5540,6 +5833,10 @@ def run(project, fmt, stinger_len=0.0) -> dict:
         print(f"[reel]   sustains: {len(mu['sustains'])}, {len(mu['sustains']) - len(cut)} held through"
               + (f"; a cut on a held beat after {', '.join(cut)} s (the shots there cannot give or take a beat)"
                  if cut else ""))
+    mo = plan.get("motion")
+    if mo:                                                   # how the picture's movement follows the music (sync.py)
+        print(f"[reel]   motion: {SY.line(mo)}" + (f" (before the shots moved: {SY.line(mo['before'])})"
+                                                  if mo.get("before") and mo["before"] != {k: v for k, v in mo.items() if k != "before"} else ""))
     if not picks_mode(config(project, fmt)):                 # (cut from the picks: nothing else is meant to be in)
         coverage_report(project, fmt, plan)
     window_report(project, fmt, plan)

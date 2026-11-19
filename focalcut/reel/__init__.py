@@ -29,7 +29,7 @@ import subprocess
 
 from .project import Project
 
-STEPS = ["units", "score", "shake", "focus", "subject", "semantic", "moments", "faces", "expression", "people", "persons", "role",
+STEPS = ["units", "score", "shake", "motion", "focus", "subject", "semantic", "moments", "faces", "expression", "people", "persons", "role",
          "windows", "music", "plan", "render",
          "xml", "review"]
 FORMATS = ["landscape", "portrait"]
@@ -85,7 +85,7 @@ def run(folder: str, steps=None, formats=None, workers: int = 2, draft: bool = F
             if step == "review":                    # the one source page serves every reel (a cut's too)
                 from . import browse
                 browse.run(Project(folder) if cut else project)
-        elif step in ("shake", "focus"):
+        elif step in ("shake", "motion", "focus"):
             mod.run(project, workers=max(workers, 1) + 1)
         else:                                       # units, subject, semantic, moments, faces, people, role
             mod.run(project)

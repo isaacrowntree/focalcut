@@ -230,7 +230,7 @@ def features(y: np.ndarray, sr: int, bt: np.ndarray, lo: float, hi: float) -> di
         win = have
     if not win.any():
         return dict(beat_kick=[1.0] * n, beat_drive=[1.0] * n, beat_section=["groove"] * n, beat_sustain=[0] * n,
-                    sustains=[])
+                    beat_texture=[1.0] * n, sustains=[])
     per = lambda x, a, b: np.array([x[i:j].mean() if h and j > i else 0.0 for i, j, h in zip(a, b, have)])
     norm = lambda v: v / (np.percentile(v[win], 90) + 1e-9)
     kick = np.clip(np.maximum(norm(per(low, ia, ib)), norm(per(low_p, ia, ib))), 0, 1.5)
@@ -239,6 +239,10 @@ def features(y: np.ndarray, sr: int, bt: np.ndarray, lo: float, hi: float) -> di
     drive = np.array([np.median(mix[max(i - 2, 0):i + 3]) for i in range(n)])
     act = per(onset, ja, jb)
     held = have & (act < HELD * (np.median(act[win]) + 1e-9))
+    tex = np.clip(0.6 * pc + 0.4 * kick, 0, 1)               # texture: how much of the beat is struck -- drums,
+                                                             # stabs, plucks against the song's loud level, and
+                                                             # the kick under them (pads and held voices: soft)
+    tex = np.array([np.median(tex[max(i - 1, 0):i + 2]) for i in range(n)])
     wi = np.where(win)[0]
     a, b = wi[0], wi[-1] + 1
     sec = ["groove"] * n
@@ -246,9 +250,9 @@ def features(y: np.ndarray, sr: int, bt: np.ndarray, lo: float, hi: float) -> di
     hv = np.where(have)[0]
     for i in np.where(~have)[0]:                             # past the audio: as the nearest beat that was heard
         j = hv[np.argmin(np.abs(hv - i))]
-        kick[i], drive[i], sec[i] = kick[j], drive[j], sec[j]
+        kick[i], drive[i], sec[i], tex[i] = kick[j], drive[j], sec[j], tex[j]
     return dict(beat_kick=kick.astype(float).round(3).tolist(), beat_drive=drive.astype(float).round(3).tolist(),
-                beat_section=sec,
+                beat_section=sec, beat_texture=tex.astype(float).round(3).tolist(),
                 beat_sustain=held.astype(int).tolist(), sustains=sustains(held))
 
 
@@ -259,6 +263,81 @@ def describe(m: dict, pad: float = 8.0) -> dict:
     a = max(m["start"] - pad, 0.0)
     y, sr = librosa.load(m["song"], sr=22050, mono=True, offset=a, duration=m["end"] + pad - a)
     return dict(m, **features(y, sr, np.array(m["beats"]) - a, m["start"] - a, m["end"] - a))
+
+
+STOP = dict(fall=0.6, deep=0.45, floor=0.3, driving=0.7, kick=0.35, back=1.8, max=4)   # movement(): see there
+ENTRY = dict(rise=1.5, level=0.7, kick=0.5)
+MOVES = ("stop", "close", "rise", "burst", "pulse", "glide")
+
+
+def movement(level, kick=None, calm=None, held=None, section=None) -> dict:
+    """The song's movement, beat by beat -- what the picture's own movement is matched to (plan.follow_motion):
+
+      stop    everything pauses or closes down: the level falls away suddenly from a driving passage (to STOP["fall"]
+              of the four beats before it, or the kick drops out from under them), for at most STOP["max"] beats or
+              until the music sounds again. The picture comes to rest with it: a settle lands here
+      close   the same fall inside a calm passage, or a beat the music holds (a sustain): a phrase resolving, the
+              breath before a drop. A settle lands here too, a little less insistently
+      burst   the music comes in: the level jumps (ENTRY) onto a loud or kicked beat after a stop, a close or a calm
+              passage -- a drop, an entry. A movement takes off here
+      rise    the beats leading into a burst that build towards it
+      pulse   a driving groove
+      glide   calm: an intro, a breakdown
+
+    level: per-beat loudness, 1 about the song's loud level (feel() norms beat_energy); kick, calm, held, section:
+    as feel() has them (optional: level alone finds the stops). Returns dict(move=[label per beat],
+    stops=[(beat, end, weight)]: the picture at rest from `beat` until `end` (weight 1 a stop, 0.6 a close, 0.5 a
+    sustain), bursts=[beat, ...]). Only these structural moments are matched: motion rhythm and music rhythm are
+    not one to one (M2Beats, IJCAI 2024), and a cut synced to every beat reads as a gimmick."""
+    e = np.asarray(level, float)
+    n = len(e)
+    k = np.asarray(kick, float) if kick is not None else None
+    calm = np.asarray(calm, bool) if calm is not None else e < 0.5
+    held = np.asarray(held, bool) if held is not None else np.zeros(n, bool)
+    move = ["glide" if c else "pulse" for c in calm]
+    stops, bursts = [], []
+    i = 4
+    while i < n:
+        pe = float(np.median(e[i - 4:i]))
+        pk = float(np.median(k[i - 4:i])) if k is not None else 0.0
+        fell = pe >= STOP["floor"] and e[i] <= STOP["fall"] * pe
+        cut = k is not None and pk >= 0.5 and k[i] <= STOP["kick"] * pk and e[i] <= 0.8 * pe
+        if not (fell or cut):
+            i += 1
+            continue
+        j = i + 1
+        while j < n and j - i < STOP["max"] and e[j] <= max(STOP["fall"] * pe, e[i] * 1.2) and e[j] < STOP["back"] * e[j - 1]:
+            j += 1
+        if j - i == 1 and e[i] > STOP["deep"] * pe:          # one soft beat in a groove (a salsa bar's quiet 4) is
+            i += 1                                           # the groove itself, not a stop
+            continue
+        hard = pe >= STOP["driving"] or pk >= 0.5
+        if stops and stops[-1][1] == i:                      # it goes on falling: the same stop
+            a0, _, w0 = stops.pop()
+            i, hard = a0, hard or w0 == 1.0
+        stops.append((i, j, 1.0 if hard else 0.6))
+        move[i:j] = ["stop" if hard else "close"] * (j - i)
+        i = j
+    taken = {b for a, b2, _ in stops for b in range(a, b2)}
+    for a, b, v in _runs([bool(x) for x in held]):           # a sustain: the music lands on the beat before and holds
+        if v and a > 0 and not any(x in taken for x in range(a - 1, b + 1)):
+            stops.append((a, min(b, a + SUSTAIN_MAX), 0.5))
+            move[a:b] = ["close"] * (b - a)
+    stops.sort()
+    for i in range(2, n):
+        before = float(np.median(e[max(i - 2, 0):i]))
+        loud = e[i] >= ENTRY["level"] or (k is not None and k[i] >= ENTRY["kick"])
+        quiet = move[i - 1] in ("stop", "close", "glide", "rise")   # (a groove's own loud beat is no entry)
+        if loud and quiet and e[i] >= ENTRY["rise"] * before and (not bursts or i - bursts[-1] > 2):
+            bursts.append(i)
+            move[i] = "burst"
+            for j in range(i - 1, max(i - 5, -1), -1):       # the beats that build into it
+                if move[j] != "glide" or (section is not None and section[j] != "build" and e[j] <= e[max(j - 1, 0)]):
+                    break
+                move[j] = "rise"
+    if section is not None:
+        move = ["rise" if s == "build" and m == "glide" else m for s, m in zip(section, move)]
+    return dict(move=move, stops=stops, bursts=bursts)
 
 
 def feel(music: dict, whole: bool = False) -> dict:
@@ -274,6 +353,15 @@ def feel(music: dict, whole: bool = False) -> dict:
       held     nothing new sounds on the beat (a sustain)
       sustain  [(hit, end), ...] in beats: the music lands on beat `hit` and holds until beat `end` sounds
       entries  beats where the rhythm section comes in after two bars or more without it (a drop, the first groove)
+      level    loudness, 1 about the reel's loud level (beat_energy)
+      texture  0 soft and flowing (pads, held voices) .. 1 hard and struck (drums, stabs): beat_texture, else from
+               the drive and the kick
+      move     the song's movement on the beat: stop / close / rise / burst / pulse / glide (movement())
+      stops    [(beat, end, weight), ...]: the music pauses or closes down from `beat` until `end`
+      bursts   beats where the music comes in
+      holds    [(hit, end), ...]: the sustains and the stops together, as sustain has them -- a shot holds from the
+               last beat that sounded (`hit`) until the music sounds again (`end`): no cut between, so the movement
+               is seen landing and at rest, and the cut comes with the music
       known    the analysis had these fields (False: the fallbacks above)
 
     No audio library needed: the planner and the render read music.json with this."""
@@ -294,10 +382,21 @@ def feel(music: dict, whole: bool = False) -> dict:
     driving = [not c for c in calm]
     entries = [a for k, (a, b, v) in enumerate(_runs(driving)) if v and k and a - _runs(driving)[k - 1][0] >= 8] \
         if n > i0 else []
-    return dict(accent=accent, drive=drive, kick=kick, section=section, calm=calm, held=held,
+    known = bool(music.get("beat_drive"))
+    en = arr("beat_energy", 1.0)
+    j1 = len(en) if whole or not n else max(int(np.searchsorted(bt, music.get("end", bt[-1]) + 1e-6)) - i0, 1)
+    level = en / (np.percentile(en[:j1], 90) + 1e-9) if len(en) else en
+    texture = arr("beat_texture", 1.0) if music.get("beat_texture") else np.clip(0.6 * drive + 0.4 * kick, 0, 1)
+    mv = movement(level, kick if known else None, calm if known else None, held, section if known else None) \
+        if music.get("beat_energy") else dict(move=["pulse"] * len(level), stops=[], bursts=[])
+    sus = [(a, a + k + 1) for a, k in sustains(held)]
+    holds = sorted(set(sus) | {(a - 1, e) for a, e, _ in mv["stops"] if a >= 1})
+    holds = [h for h in holds if not any(o != h and o[0] <= h[0] and h[1] <= o[1] for o in holds)]
+    return dict(accent=accent, drive=drive, kick=kick, section=section, calm=calm, held=held, holds=holds,
+                level=level, texture=texture, move=mv["move"], stops=mv["stops"], bursts=mv["bursts"],
                 hit=np.where(calm, 0.0, accent), blink=blink,
-                sustain=[(a, a + k + 1) for a, k in sustains(held)], entries=entries,
-                known=bool(music.get("beat_drive")))
+                sustain=sus, entries=entries,
+                known=known)
 
 
 def analyse(song: str, start="auto", start_hint=None, max_len: float = 180.0, phrase: bool = True,
@@ -447,7 +546,7 @@ def join(songs: list[dict], max_len: float, preroll: float = 0.5, mix: dict | bo
             if not p["h_out"]:
                 p["out"] = "cut"
     beats, energy, accent, sections, acts, t = [], [], [], [], [], preroll
-    extra = {k: [] for k in ("beat_kick", "beat_drive", "beat_section", "beat_sustain")}
+    extra = {k: [] for k in ("beat_kick", "beat_drive", "beat_section", "beat_sustain", "beat_texture")}
     for k, p in enumerate(parts):
         m, s, e = p["m"], p["s"], p["e"]
         bt, ph = np.array(m["beats"]), m["bar_phase"]

@@ -80,6 +80,10 @@ reel.json keys (all optional except song):
                                          the same picks in every format. A cut may set its own
     profiles           {"<name>": {...}}  named rule sets, any keys a cut takes (and "use" of other profiles), e.g.
                                          "no-night": {"footage": ["!night"]}, "short": {"length": 90}
+    no_kissing         true: no kiss plays in the reel (a cut may set its own). Every kiss the people step found
+                                         (kisses.json: where each starts and ends) is banned footage for it, and
+                                         an editor's pick that plays one is left out, named in the plan log
+    follow_motion      false (in plan.<fmt>): the picture's movement is not matched to the song's (sync.py)
     use                ["<profile>", ...]  profiles applied in order, then this level's own keys: at the top level
                                          for the main reel, inside a cut for that cut. "footage" and "ban" add up
                                          across profiles, "plan" merges per format, any other key: the last wins
@@ -97,6 +101,8 @@ VIDEO_EXT = (".mp4", ".mov", ".mxf", ".m4v", ".mkv")
 MUSIC_KEYS = ("song", "songs", "start", "start_hint", "length", "mix", "to_end", "phrase_end")   # a cut with any of these: own music
 
 
+KISS_AROUND = 1.5         # no_kissing without kisses.json: this many seconds either side of a kiss moment are out
+KISS_TOUCH = 0.15         # no_kissing: a pick playing more than this much (s) of a kiss is left out
 ADDS_UP = ("footage", "ban")     # rule lists that add up across profiles instead of replacing
 
 
@@ -269,6 +275,18 @@ class Project:
             e["add"] = [a for a in e.get("add") or [] if _span_key(a) not in drop]   # footage banned for it
             e["ban"] = [*e.get("ban", []), *spans]
             out[k] = e
+        if reel:                                                 # "no_kissing": the picks that play a kiss are
+            self.kissed = []                                     # left out (named in the plan log), every kiss banned
+            x0 = self._export_t0() if self.kiss_spans() else {}
+            for k, spans in self.kiss_spans().items():
+                e = dict(out.get(k) or {})
+                sp = [(a - x0.get(k, 0.0), b - x0.get(k, 0.0)) for a, b in spans]
+                gone = [v for v in e.get("add") or [] if _plays(_span_key(v), sp)]
+                if gone:
+                    e["add"] = [v for v in e["add"] if v not in gone]
+                    self.kissed += [(k, v) for v in gone]
+                e["ban"] = [*e.get("ban", []), *(f"{max(a, 0.0):.2f}-{b:.2f}" for a, b in sp)]
+                out[k] = e
         for k, spans in (self.config.get("reject") or {}).items() if rejects else ():
             e = dict(out.get(k) or {})
             e["ban"] = [*e.get("ban", []), *spans]
@@ -280,6 +298,32 @@ class Project:
             for clip, v in (self.config.get("open") or {}).items():   # reel.json "open": {clip: in-out} -- the
                 out[clip] = {**out.get(clip, {}), "open": v}           # opening, unless a pick is marked as it
         return out
+
+    def kiss_spans(self) -> dict:
+        """{unit id: [(from, to), ...]} in source seconds: every kiss in the footage, for a reel with "no_kissing"
+        (reel.json, or a cut's own); {} without it. From kisses.json (people.kiss_spans: where each kiss starts and
+        ends), else from people.json's kiss moments, KISS_AROUND seconds either side of each."""
+        if not self.config.get("no_kissing"):
+            return {}
+        f, g = self.path("kisses.json"), self.path("people.json")
+        src = f if os.path.exists(f) else g if os.path.exists(g) else None
+        key = (src, os.stat(src).st_mtime_ns) if src else None
+        if getattr(self, "_kiss", (0,))[0] != key:
+            out = {}
+            if src == f:
+                out = {k: [(a, b) for a, b, *_ in v] for k, v in json.load(open(f))["spans"].items()}
+            elif src:
+                out = {k: [(t - KISS_AROUND, t + KISS_AROUND) for t, q in v if q >= 0.5]
+                       for k, v in (json.load(open(g)).get("kisses") or {}).items()}
+            self._kiss = (key, {k: v for k, v in out.items() if v})
+        return self._kiss[1]
+
+    def _export_t0(self) -> dict:
+        """{unit id: the source time its export file starts at}."""
+        if getattr(self, "_x0", None) is None:
+            us = self.load("units.json") if os.path.exists(self.path("units.json")) else []
+            self._x0 = {u["id"]: u.get("export_t0", 0.0) for u in us}
+        return self._x0
 
     def _named(self) -> set:
         """Clips the reel's settings name on purpose (an opening, ending, close, open_with / end_with pick): never
@@ -353,6 +397,12 @@ class Project:
         with open(self.path(name), "w") as f:
             json.dump(obj, f, indent=1)
         return self.path(name)
+
+
+def _plays(key, spans) -> bool:
+    """Does a pick (its _span_key) play one of these stretches (more than KISS_TOUCH of it; a one-moment pick: at all)?"""
+    return key is not None and any(
+        min(key[1], b) - max(key[0], a) > (KISS_TOUCH if key[1] > key[0] else -1e-9) for a, b in spans)
 
 
 def only_reel(entry: dict, reel) -> dict:

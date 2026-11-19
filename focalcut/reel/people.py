@@ -10,7 +10,8 @@ the planner check who a shot shows and put in the best shot of anyone missing (p
 
 Kisses are found per unit too (SigLIP 2 at a frame a second; face pairs touching without torch): the plan puts one of each couple's in.
 
-Writes <reel>/people.json ({"people": [...], "kisses": {unit: [times]}}) and review/people.jpg (one face per person, numbered, to check nobody was missed).
+Writes <reel>/kisses.json ({"spans": {unit: [[from, to, confidence], ...]}}: where each kiss starts and ends, for a
+reel with "no_kissing"), <reel>/people.json ({"people": [...], "kisses": {unit: [times]}}) and review/people.jpg (one face per person, numbered, to check nobody was missed).
 Per-unit detections are cached in scores/faces_<unit>.npz.
 """
 from __future__ import annotations
@@ -223,6 +224,101 @@ def scan_kisses(project, units, cand) -> dict:
     return out
 
 
+KISS_RATE = 3.0             # kiss_scores: frames a second (a kiss lasts a second or two; one frame a second, with
+                            # only a run's best frame kept, loses where it starts and ends)
+KISS_ON, KISS_SURE = 0.5, 0.97  # kiss_spans: a frame counts from the first; a run needs one frame at the second
+KISS_GAP, KISS_PAD = 1.0, 0.5   # ... runs this close (s) are one kiss; this much (s) kept clear either side
+
+
+def _kiss_model():
+    """score(images) -> the kiss probability of each (SigLIP 2 zero-shot: KISS against NOT_KISS), or None without
+    torch."""
+    try:
+        import torch
+        from transformers import AutoModel, AutoProcessor
+
+        from .faces import MODEL
+    except ImportError:
+        return None
+    if os.environ.get("FOCALCUT_DISABLE_CUDNN"):
+        torch.backends.cudnn.enabled = False
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dt = torch.float16 if dev == "cuda" else torch.float32
+    mdl = AutoModel.from_pretrained(MODEL).to(dev, dt).eval()
+    proc = AutoProcessor.from_pretrained(MODEL)
+    with torch.inference_mode():
+        tin = proc(text=KISS + NOT_KISS, return_tensors="pt", padding="max_length", max_length=64).to(dev)
+        t = mdl.get_text_features(**tin)
+        txt = torch.nn.functional.normalize(getattr(t, "pooler_output", t).float(), dim=-1)
+
+    def score(imgs):
+        with torch.inference_mode():
+            pin = proc(images=imgs, return_tensors="pt").to(dev)
+            e = mdl.get_image_features(pixel_values=pin["pixel_values"].to(dt))
+            im = torch.nn.functional.normalize(getattr(e, "pooler_output", e).float(), dim=-1)
+            return (im @ txt.T * 100).softmax(-1)[:, :len(KISS)].sum(-1).cpu().numpy()
+    return score
+
+
+def kiss_scores(project, units, rate: float = KISS_RATE) -> dict:
+    """{unit id: (t, q)}: the kiss probability of every unit's frames at `rate` a second, in source seconds (cached
+    in scores/<unit>_kiss.npz; resumable). Units with no export file, or everything without torch, are left out."""
+    from PIL import Image
+
+    from .shake import export_of
+    out, score = {}, None
+    for u in units:
+        f = project.path("scores", u["id"].replace("#", "_") + "_kiss.npz")
+        if os.path.exists(f):
+            z = np.load(f)
+            out[u["id"]] = (z["t"], z["q"])
+            continue
+        path = export_of(project, u)
+        if not path:
+            continue
+        if score is None:
+            score = _kiss_model()
+            if score is None:
+                return out
+        w = 512
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{u['t0'] - u.get('export_t0', 0.0):.3f}", "-t",
+                              f"{u['t1'] - u['t0']:.3f}", "-i", path, "-vf", f"fps={rate},scale={w}:288", "-f",
+                              "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
+        fr = np.frombuffer(raw, np.uint8)[: len(raw) // (w * 288 * 3) * w * 288 * 3].reshape(-1, 288, w, 3)
+        q = [x for k in range(0, len(fr), 32) for x in score([Image.fromarray(a) for a in fr[k:k + 32]])]
+        t = u["t0"] + (np.arange(len(fr)) + 0.5) / rate
+        os.makedirs(os.path.dirname(f), exist_ok=True)
+        np.savez(f, t=t, q=np.array(q, np.float32))
+        out[u["id"]] = (t, np.array(q, np.float32))
+    return out
+
+
+def spans_of(t, q, rate: float = KISS_RATE) -> list:
+    """[[from, to, confidence], ...]: the kisses in a unit's frame scores -- runs of frames over KISS_ON, runs
+    KISS_GAP apart or less taken as one, kept when a frame of it is sure (KISS_SURE), KISS_PAD clear either side."""
+    runs = []
+    for x, v in zip(t, q):
+        if v <= KISS_ON:
+            continue
+        if runs and x - runs[-1][1] <= KISS_GAP + 1e-6:
+            runs[-1][1], runs[-1][2] = float(x), max(runs[-1][2], float(v))
+        else:
+            runs.append([float(x), float(x), float(v)])
+    h = 0.5 / rate
+    return [[round(a - h - KISS_PAD, 2), round(b + h + KISS_PAD, 2), round(v, 3)] for a, b, v in runs if v >= KISS_SURE]
+
+
+def kiss_spans(project, units=None) -> dict:
+    """Every kiss in the footage as stretches of source time, {unit id: [[from, to, confidence], ...]}: what a reel
+    with "no_kissing" keeps out. Written to <reel>/kisses.json (the people step does; the planner does when the
+    file is missing and a reel asks for no kissing)."""
+    units = project.load("units.json") if units is None else units
+    out = {k: sp for k, (t, q) in kiss_scores(project, units).items() if (sp := spans_of(t, q))}
+    with open(project.path("kisses.json"), "w") as f:
+        json.dump(dict(rate=KISS_RATE, units=len(units), spans=out), f)
+    return out
+
+
 def linger(apps) -> float:
     """How long the camera stays on this person, in seconds: their longest unbroken run of samples in one unit with
     the face big (8%+ of the frame height) and near the centre. Someone filmed on purpose, not a passer-by."""
@@ -320,6 +416,8 @@ def run(project) -> None:
     kiss = scan_kisses(project, units, {u["id"]: k for u in units if (k := kisses(D[u["id"]]))})
     with open(project.path("people.json"), "w") as f:
         json.dump(dict(people=people, kisses=kiss), f)
+    sp = kiss_spans(project, units)                          # where each kiss starts and ends ("no_kissing")
+    print(f"[reel] people: {sum(len(v) for v in sp.values())} kisses timed in {len(sp)} units -> kisses.json")
     n = sum(len(d["t"]) for d in D.values())
     print(f"[reel] people: {len(people)} people from {n} faces in {len(units)} units, kisses in "
           f"{sum(len(v) for v in kiss.values())} moments in {len(kiss)} units -> {sheet(project, people, units)}")
