@@ -503,3 +503,32 @@ none of them. Never cut through a person, leaving them half in and half out of t
 
 Selection order: scrub every clip densely for windows that pass all of these, then choose moments and coverage
 from those. Don't pick by energy and reject afterwards.
+
+## 20. The picture moves with the music
+
+Isaac, 2026-11-20: "sync the clips to the song movement. e.g. the singer sings 'right to the start' on the edm track
+and everything pauses/closes down. you need to find a natural movement in the shot that fits that" -- and "same for
+the song texture - soft and flowy is soft and flowy movement".
+
+- **The song's movement** (`music.movement`, read through `music.feel`): a *stop* (the level falls away from a
+  driving passage, or the kick drops out, for up to four beats), a *close* (the same in a calm passage; a sustain),
+  a *burst* (the music comes back in), rise, pulse, glide. And its *texture*: soft and flowing (pads, held voices)
+  to hard and struck (drums, stabs).
+- **The picture's movement** (`motion.py`, the `motion` step): Davis & Agrawala's directogram and impact envelope
+  ("Visual Rhythm and Beat", 2018) -- optical flow by direction inside the people's boxes with the camera's own
+  motion removed; its deceleration peaks are the visual beats (a foot planted, a pose hit, an arm stopping). From
+  it: `settle` (a burst then a rest: the kinematic beat of dance research), `burst`, and `punch` (how much of the
+  movement ends in an impact: staccato high, a sway or a glide low, stillness soft).
+- **The match** (`sync.fit`, weighed in this order): at rest on a stop, the landing seen where the shot has room;
+  taking off on an entry; texture with texture; energy with energy.
+- **What moves** (`plan.stage_holds`, `motion_order`, `follow_motion`): a shot holds through each stop and the cut
+  comes with the music; picks of one act and kind trade places; in-points slide inside the editor's in-out (a
+  trimmed pick) or up to 2 s (the planner's own shot). Cuts stay on the beat grid, picks are never sped up -- where
+  Bellini et al. ("Dance to the beat", 2018) warp time, the planner moves in-points and reorders.
+- **What doesn't**: every beat. Motion rhythm and music rhythm are not one to one (M2Beats, IJCAI 2024); a gesture
+  finishes before the cut; over-syncing reads as a gimmick. Shots under plain groove are left to the other rules.
+- **Never for a worse picture**: no shakier, no less clear on the scrub, a portrait strip framing as well and on the
+  same people, clear of bans and kisses; the validator still has the last word.
+- **Check it**: the plan log's `motion:` line -- stops met, entries met, texture r, energy r, before and after.
+
+No kissing: `"no_kissing": true` on a reel or a cut keeps every kiss out (`people.kiss_spans`, `kisses.json`).

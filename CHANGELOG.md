@@ -9,6 +9,31 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The picture's movement follows the song's** (`reel/music.py` `movement`, `reel/motion.py`, `reel/sync.py`,
+  `plan.stage_holds` / `motion_order` / `follow_motion`; on by default, `plan.<fmt>` `"follow_motion": false` turns
+  it off). The music is read for its movement, beat by beat: a **stop** (everything pauses or closes down: the
+  level falls away from a driving passage, or the kick drops out), a **close** (a phrase resolving in a calm
+  passage, a sustain), a **burst** (the music coming back in), rise, pulse, glide -- and its **texture**, soft and
+  flowing to hard and struck (`beat_texture`). The picture is read for its own: a new `motion` step measures each
+  clip's directogram (Davis & Agrawala, "Visual Rhythm and Beat", 2018: optical flow by direction, inside the
+  people's boxes, the camera's motion taken out) at 25 fps, from which come the speed of the movement, its impact
+  envelope (deceleration: their visual beats), where a movement settles or takes off, and how much it punches
+  rather than flows. `sync.fit` scores a stretch of footage against the music it would play under; the planner
+  then (1) holds a shot through each stop (no cut between the last beat that sounded and the beat the music comes
+  back on: shots nearby give a beat each), (2) in picks mode trades picks of the same act and kind between places
+  so the ones that rest sit on the stops, the ones that take off on the entries, soft with soft and hard with
+  hard, (3) slides in-points -- any part of a trimmed pick inside the editor's own in-out, a planner's own shot up
+  to 2 s along its clip -- for a clearly better fit, never onto shakier, less clear or worse-framed footage, and
+  (4) lands velocity edits and plain landings on stops as it did on sustains. Cuts stay on the beat grid; nothing
+  is sped up; only structure and texture are matched, never every beat (M2Beats, IJCAI 2024). The plan log gains
+  a `motion:` line (`plan["motion"]`): the mean fit, the stops and entries met, and the correlations of texture and
+  energy, shot by shot. Without the `motion` step the score step's 10 fps subject motion stands in; without
+  `beat_texture` (an older music.json) the drive and the kick do.
+- **`"no_kissing": true`** (reel.json, or a cut's own): no kiss plays in the reel. `people.kiss_spans` times every
+  kiss (SigLIP 2 at 3 frames a second, runs with a frame at 0.97 or more, half a second clear either side) into
+  `kisses.json`; each is banned footage for the reel, and an editor's pick that plays more than 0.15 s of one is
+  left out and named in the plan log. The planner times the kisses itself when the people step hasn't.
+
 - **The editor's rules are checked on every shot the planner chose, and a shot that breaks one is replaced**
   (`reel/validate.py`, the last pass of `plan.build`, in story and picks mode). Each shot is measured over exactly
   the stretch it plays, as the strip shows it: the subject in focus (an absolute floor -- a sharp foreground stand,

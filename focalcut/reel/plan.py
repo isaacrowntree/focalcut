@@ -5164,8 +5164,7 @@ def follow_motion(project, fmt, shots, music, cfg, W=None, no=()):
             j = _shake_over(*z, na, L, w) if z is not None else None
             if j0 is not None and j is not None and j > max(MOTION_SHAKE * j0, STEADY_FLOOR * lo):
                 continue
-            c = reframe(project, u, s["src_in"] + dt, s["length"] * (L / s["length"] if s.get("span") else 1.0), fmt) \
-                if s.get("crop") or fmt == "portrait" else None
+            c = reframe(project, u, s["src_in"] + dt, s["length"], fmt) if s.get("crop") or fmt == "portrait" else None
             if fmt == "portrait":
                 if framed(c, u["role"]) < MOTION_CLEAR * g0 or (part_cost(c) or 0.0) > (part_cost(s.get("crop")) or 0.0) + 0.05:
                     continue

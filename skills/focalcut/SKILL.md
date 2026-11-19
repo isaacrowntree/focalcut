@@ -50,7 +50,7 @@ footage for can be given zero bars.
 
 1. **A full recap reel** (landscape + portrait, a story in acts):
    `focalcut reel init <folder> --song x.mp3 …`, then `focalcut reel run <folder>`.
-   Steps: units, score, shake, focus, subject, semantic, moments, faces, people, music, plan, render, xml, review.
+   Steps: units, score, shake, motion, focus, subject, semantic, moments, faces, people, music, plan, render, xml, review.
    Each step caches, so `--steps plan,render,xml,review` re-cuts in minutes. Full guide:
    `docs/recipes/recap-reel.md`.
 2. **Any other cut** (teaser, a player's highlight, a band promo, a 15 s story) from an analysed project:
