@@ -88,4 +88,4 @@ def test_rules_off_and_overridden():
     assert V.rules({"validate": False}) is None
     assert V.rules({"validate": {"close": 0.5}})["close"] == 0.5
     assert V.rules({})["broll_max"] == 2
-    assert V.cap(R, CROWD) == 2 and V.cap(R, BAND) == 4          # performers' footage gets more room than scenery
+    assert V.cap(R, CROWD) == 2 and V.cap(R, BAND) == 2          # a band or DJ clip: two shots at most, as scenery
