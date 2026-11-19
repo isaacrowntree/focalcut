@@ -2656,15 +2656,21 @@ def home_acts(recs, cfg):
     night's shows, the social floor and the rest of the B-roll in the night."""
     tag = lambda r: r["unit"].get("tag", "")
     cat = lambda r: r.get("category", "")
+
+    def hit(keys, r, *texts):                                # any key in these texts ("=C1985": the clip by id;
+        def one(k):                                          #  "!x": not footage that matches x)
+            return r["unit"]["id"].startswith(k[1:]) if k.startswith("=") else any(k in t for t in texts)
+        yes, no = [k for k in keys if not k.startswith("!")], [k[1:] for k in keys if k.startswith("!")]
+        return any(map(one, yes)) and not any(map(one, no))
     out = {}
     for r in recs:
-        if any(k in cat(r) or k in tag(r) for k in cfg["late"]):
+        if hit(cfg["late"], r, cat(r), tag(r)):
             out[r["id"]] = "finale" if r["role"] == "transition" else "climax"
         elif r["role"] == "transition":
-            out[r["id"]] = "arrival" if any(k in tag(r) for k in cfg["day"]) else "night"
+            out[r["id"]] = "arrival" if hit(cfg["day"], r, tag(r)) else "night"
         elif r["role"] == "show":
-            out[r["id"]] = "arrival" if any(k in cat(r) for k in cfg["day_shows"]) else \
-                "night" if any(k in cat(r) for k in cfg["night_shows"]) else "shows"
+            out[r["id"]] = "arrival" if hit(cfg["day_shows"], r, cat(r)) else \
+                "night" if hit(cfg["night_shows"], r, cat(r)) else "shows"
         else:
             out[r["id"]] = "night"
     return out
