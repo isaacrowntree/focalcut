@@ -29,6 +29,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a `motion:` line (`plan["motion"]`): the mean fit, the stops and entries met, and the correlations of texture and
   energy, shot by shot. Without the `motion` step the score step's 10 fps subject motion stands in; without
   `beat_texture` (an older music.json) the drive and the kick do.
+- **Story-mode reels choose which footage sits on the music's stops and entries** (`plan.motion_cast`, between
+  the steadier and `follow_motion`; `"follow_motion": false` turns it off too). A planner's own plain shot on a
+  stop, a close or an entry plays another moment of its own unit, a moment of a unit of the same casting the reel
+  has no shot of yet (only when its own unit keeps another shot), or trades footage with another of the planner's
+  shots of the same casting (same act, role, kind of footage, home act, day or night, crowd for crowd; the same
+  category under song sets or in a `climax_from` climax), at most 16 shots away, for a fit at least 0.12 better
+  (a trade: between the two, the slot on the music's event gaining half). Each moved shot must pass every rule the
+  validator holds (`validate.judge`), stay on passing windows where the old one was, clear of bans, kisses and
+  the unit's other shots, no shakier, framing as well in portrait, no B-roll clip over its share, never beside
+  its own clip. The editor's picks, effect and velocity shots, and a shot whose transition comes from its
+  footage (a whip, a turn, a push in) stay; the cuts stay on the grid. Deterministic: stops first, then by place.
 - **`"no_kissing": true`** (reel.json, or a cut's own): no kiss plays in the reel. `people.kiss_spans` times every
   kiss (SigLIP 2 at 3 frames a second, told apart from a close dance hold, a hug and a whisper as well; runs with
   a frame at 0.97 or more, half a second clear either side; the frames' embeddings are cached) into

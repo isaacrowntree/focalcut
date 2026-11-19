@@ -4418,6 +4418,13 @@ def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=N
         portrait_parts(project, plan["shots"])               # a trimmed pick: the part of it that frames best
     if project is not None and hasattr(project, "path"):     # the picture's movement follows the song's (sync.py)
         was = motion_score(project, plan["shots"], music)
+        if was and cfg.get("follow_motion", True) and not mode:   # (picks mode: motion_order, in pick_story)
+            lines = motion_cast(project, fmt, plan["shots"], music, cfg, fm, no=kiss_spans(project))
+            if lines:
+                print(f"[reel] {fmt}: {len(lines)} shots on the music's stops and entries play footage that moves "
+                      f"with it:")
+                for x in lines:
+                    print(f"[reel]     {x}")
         if was and cfg.get("follow_motion", True):
             lines = follow_motion(project, fmt, plan["shots"], music, cfg, no=kiss_spans(project))
             if lines:
@@ -5181,12 +5188,270 @@ def follow_motion(project, fmt, shots, music, cfg, W=None, no=()):
             s.pop("land", None); s.pop("land_fits", None)
             if j is not None:
                 s["jitter"] = round(j, 5)
-            what = ", ".join(sorted({"a stop" if k == "rest" else "an entry" for _, k, _, _ in ctx["events"]})) or \
-                ("soft music" if ctx["texture"] < 0.5 else "hard music")
-            moved.append(f"{u['id']} {dt:+.1f} s at {s.get('rec_in', 0.0):.1f} s ({what}: fit {f0:.2f} -> "
+            moved.append(f"{u['id']} {dt:+.1f} s at {s.get('rec_in', 0.0):.1f} s ({_what(ctx)}: fit {f0:.2f} -> "
                          f"{f1 + MOTION_NEAR * abs(dt):.2f})")
             break
     return moved
+
+
+CAST_GAIN = 0.12         # motion_cast: a slot on a stop or an entry takes other footage for this much better a fit
+                         # (sync.fit; a trade: summed over the two slots, the one on the music's event gaining half)
+CAST_REACH = 16          # ... it trades with a shot at most this many shots away
+CAST_TRY = 24            # ... at most this many of its candidates are checked against every rule, the best first
+CAST_STEP = 0.2          # ... in-points tried this far apart (s), up to MOTION_REACH either side of the moment's own
+CAST_INS = 3             # ... the best this many in-points of each footage choice are candidates,
+CAST_APART = 0.6         # ... this far apart (s)
+CAST_KEYS = ("unit", "t", "kind", "rank", "face", "framing", "thumb", "speed", "covered", "slid")   # a shot's footage
+MUSIC_WHY = ("act change", "a hit in the music", "the phrase's hit", "the music is calm",   # transitions that
+             "dissolve from one daytime scene")   # stay motivated whatever footage of the same casting is either side
+                         # (the music's, a daytime dissolve: B-roll by day stays that); a whip, a turn, a push in,
+                         # the DJ booth's glitch are the footage's own
+
+
+def _castable(shots, i):
+    """May motion_cast change the footage of shots[i]? The planner's own plain shots only -- no effect or velocity
+    edit timed to it, not the editor's, not a featured person, band, reaction, logo, title or ending shot, the slot's
+    transitions (in and out) motivated by the music, not by the footage either side."""
+    s = shots[i]
+    if not _swappable(s) or editors(s) or window_exempt(s) or any(s.get(k) for k in ("lead_beats", "land_on", "close")):
+        return False
+    for x in (s, shots[i + 1] if i + 1 < len(shots) else None):
+        if x is not None and x.get("transition") and not str(x.get("why") or "").startswith(MUSIC_WHY):
+            return False
+    return True
+
+
+def motion_cast(project, fmt, shots, music, cfg, moments, W=None, no=None):
+    """Which footage plays on the music's stops and entries (story mode; picks mode: motion_order). A planner's shot
+    on a stop, a close or an entry (sync.context's events) takes, when it fits the music better (sync.fit: at rest
+    where it stops, taking off where it comes in) by CAST_GAIN or more:
+
+      - another moment of its own unit (more than MOTION_REACH from what it plays: nearer is follow_motion's);
+      - a moment of a unit of the same casting the reel has no shot of yet, when its own unit has another shot (no
+        unit leaves the reel);
+      - or the footage of another of the planner's shots of the same casting, at most CAST_REACH shots away, the
+        two trading places (each may play another of its unit's moments).
+
+    The same casting: the same act, role, kind of footage (validate.kind_of), home act (home_acts), day or night, a
+    crowd shot for a crowd shot, the same category under song sets or in a climax_from climax. The cuts stay on
+    the beat grid and nothing changes speed. Never for a worse picture: every changed shot on passing windows where
+    the old one was (never on failing ones), clear of bans, kisses (no) and the unit's other shots (APART: another
+    scene), no shakier (MOTION_SHAKE), a portrait strip framing as well (MOTION_CLEAR), passing every rule the
+    validator holds (validate.judge) -- a slot whose shot already fails one is left to it -- no B-roll clip over its
+    share (validate.overused), never beside its own clip. The editor's picks, effect shots and a shot whose
+    transition comes from its footage stay. Stops first, then by place; ties by place and time: deterministic.
+    Returns the changes as log lines."""
+    from . import shake
+    F = MU.feel(music)
+    if not F["known"] or len(shots) < 2:
+        return []
+    T = clock(dict(music, beat=music.get("beat") or float(np.median(np.diff(music["beats"])))))
+    W = (load_windows(project, fmt) or {}) if W is None else W
+    no = no or {}
+    R = VA.rules(cfg)
+    recs = {r["id"]: r for r in moments}
+    home = home_acts(moments, cfg)
+    lo = cfg["shake"][0]
+    at, r0 = [], 0
+    for s in shots:
+        at.append(r0); r0 += s["beats"]
+    ctx = [SY.context(F, at[i], s["beats"], T) for i, s in enumerate(shots)]
+    weight = [sum(e[2] for e in c["events"]) for c in ctx]
+    ok = [_castable(shots, i) for i in range(len(shots))]
+    if not any(ok[i] and weight[i] > 0 for i in range(len(shots))):
+        return []
+    judged, was, memo, tries = {}, {}, {}, [0]
+
+    def passes(i):                                           # the slot's shot passes every rule as it plays now
+        if i not in judged:
+            judged[i] = R is None or not VA.judge(project, shots[i], fmt, R, cfg)
+        return judged[i]
+
+    def cast(u, act):                                        # who may stand in for whom
+        return (act, u["role"], VA.kind_of(u), home.get(u["id"]), bool(u.get("day")),
+                u["role"] == "transition" and "crowd" in u.get("tag", ""),
+                u.get("category") if cfg.get("sets") or (act == "climax" and cfg.get("climax_from")) else None)
+
+    def speed(c):
+        return c.get("speed") or 1.0
+
+    def fit(c, i, x):
+        return SY.fit(MO.series(project, c["unit"]), x, speed(c), ctx[i])["score"]
+
+    def windows(i, u, x, L):                                 # slot i playing u from x is on passing windows where
+        s = shots[i]                                         # its own shot is (never on failing ones), no shakier
+        if i not in was:                                     # over the slot's strip (cheap checks first: trial()
+            a0, n0 = played(s)                               # decides)
+            was[i] = span_ok(W.get(s["unit"]["id"]), a0, a0 + n0)
+        on = span_ok(W.get(u["id"]), x, x + L)
+        if on is False or (was[i] is True and on is not True):
+            return False
+        if s.get("jitter") is None:
+            return True
+        z = shake.series(project, u["score"])
+        j = _shake_over(*z, x, L, max((s.get("crop") or {}).get("w", 1.0), 0.2)) if z is not None else None
+        return j is None or j <= max(MOTION_SHAKE * s["jitter"], STEADY_FLOOR * lo)
+
+    def footage(uid, mine, base=None):                       # the unit's moments a slot may play: [footage]
+        r = recs.get(uid)
+        out, seen = [], set()
+        for m in (r["moments"] if r else ()):
+            if m["t"] in seen or m.get("unusable") or (m.get("fmt_ok") or {}).get(fmt) is False or \
+                    any(m.get(k) for k in ("pick", "add", "span", "open", "close")):
+                continue
+            seen.add(m["t"])
+            if any(all(y is not z for z in mine) and y["unit"]["id"] == uid and abs(y["t"] - m["t"]) < APART
+                   for y in shots):
+                continue
+            c = dict(base or {}, unit=(base or r)["unit"], t=m["t"], kind=m["kind"], rank=round(rk(m, fmt), 3),
+                     face=m.get("face", 0), framing=fr(m, fmt), thumb=m.get("thumb"))
+            if base is None:
+                c["speed"] = pace_of(r["unit"], cfg)
+            out.append(c)
+        return out
+
+    def best(cs, i, keep=None):                              # the best CAST_INS [(fit, in-point, footage)] of these
+        out = []                                             # footages in slot i, around each one's moment, on
+        s = shots[i]                                         # passing windows, CAST_APART apart (a stretch that
+        for c in cs:                                         # frames badly has neighbours that do too)
+            u, L = c["unit"], s["length"] * speed(c)
+            x0 = c["t"] - round(0.4 * s["beats"]) * s["beat"] * speed(c)
+            for x in np.arange(x0 - MOTION_REACH, x0 + MOTION_REACH + 1e-6, CAST_STEP):
+                x = round(float(x), 3)
+                if u["t0"] - 1e-6 <= x <= u["t1"] - L + 1e-6 and (keep is None or keep(x)) and windows(i, u, x, L):
+                    out.append((fit(c, i, x), -abs(x - x0), x, c))
+        out.sort(key=lambda v: (-v[0], -v[1], v[3]["unit"]["id"], v[2]))   # (of equals, the nearest its moment)
+        top = []
+        for f, _n, x, c in out:
+            if all(c["unit"]["id"] != d["unit"]["id"] or abs(x - y) >= CAST_APART for _, y, d in top):
+                top.append((f, x, c))
+            if len(top) == CAST_INS:
+                break
+        return top
+
+    def clear(u, x, L, me):                                  # bans, kisses, the unit's other shots
+        return not in_bans(x, L, u) and not any(min(x + L, b) - max(x, a) > 0 for a, b in no.get(u["id"], ())) and \
+            not any(all(y is not z for z in me) and y["unit"]["id"] == u["id"] and
+                    min(x + L, played(y)[0] + played(y)[1]) - max(x, played(y)[0]) > -SNAP_GAP for y in shots)
+
+    def trial(i, c, x):                                      # slot i playing footage c from x: the shot, or None
+        s, u = shots[i], c["unit"]                           # when it is a worse picture than the slot's own
+        L = s["length"] * speed(c)
+        y = dict(s, **{k: c[k] for k in CAST_KEYS if k in c})
+        for k in CAST_KEYS:
+            if k not in c:
+                y.pop(k, None)
+        y.pop("land", None); y.pop("land_fits", None)
+        y.update(src_in=round(x, 3), peak=round((c["t"] - x) / speed(c), 3), group=u["role"] == "show")
+        cr = reframe(project, u, x, s["length"], fmt) if s.get("crop") or fmt == "portrait" else None
+        y["crop"] = cr
+        if fmt == "portrait" and (framed(cr, u["role"]) < MOTION_CLEAR * framed(s.get("crop"), s["unit"]["role"]) or
+                                  (part_cost(cr) or 0.0) > (part_cost(s.get("crop")) or 0.0) + 0.05):
+            return None
+        j = shake.jitter(project, u, x, x + L)
+        j = j / max((y["crop"] or {}).get("w", 1.0), 0.2) if j is not None else None
+        if j is not None and s.get("jitter") is not None and j > max(MOTION_SHAKE * s["jitter"], STEADY_FLOOR * lo):
+            return None
+        y["jitter"] = round(j, 5) if j is not None else None
+        y["stab"] = bool(j is not None and j > lo and "_stabilized" not in u["source"])
+        if R is not None and VA.judge(project, y, fmt, R, cfg):
+            return None
+        return y
+
+    def tried(k, c, x):                                      # trial(), once per slot, footage and in-point (a slot
+        key = (k, c["unit"]["id"], c["t"], x)                # that changes is never tried again)
+        if key not in memo:
+            tries[0] += 1
+            memo[key] = trial(k, c, x)
+        return memo[key]
+
+    def clash(new, k):                                       # shot k beside its own clip
+        return any(0 <= q < len(new) and new[q]["unit"]["clip"] == new[k]["unit"]["clip"] for q in (k - 1, k + 1))
+
+    def over(new):                                           # B-roll clips past their share
+        return len(VA.overused(new, R)) if R is not None else 0
+
+    lines, done = [], set()
+    for i in sorted(range(len(shots)), key=lambda i: (-weight[i], i)):
+        if weight[i] <= 0:
+            break
+        s = shots[i]
+        if not ok[i] or i in done or MO.series(project, s["unit"]) is None:
+            continue
+        a, L = played(s)
+        f0 = fit(s, i, a)
+        me = cast(s["unit"], s["act"])
+        have = Counter(y["unit"]["id"] for y in shots)
+        cands = [(round(f - f0, 4), 0, i, x, None, c) for f, x, c in      # (gain, order, j, x, slot j's, footage)
+                 best(footage(s["unit"]["id"], (s,), s), i, keep=lambda x, a=a: abs(x - a) > MOTION_REACH)
+                 if f - f0 >= CAST_GAIN]
+        if have[s["unit"]["id"]] >= 2:                       # a unit the reel has no shot of yet
+            new = [c for uid in sorted(recs) if uid not in have and cast(recs[uid]["unit"], s["act"]) == me
+                   and not any(0 <= q < len(shots) and shots[q]["unit"]["clip"] == recs[uid]["unit"]["clip"]
+                               for q in (i - 1, i + 1)) and MO.series(project, recs[uid]["unit"]) is not None
+                   for c in footage(uid, ())]
+            cands += [(round(f - f0, 4), 2, i, x, None, c) for f, x, c in best(new, i) if f - f0 >= CAST_GAIN]
+        for j in range(max(i - CAST_REACH, 0), min(i + CAST_REACH + 1, len(shots))):   # a trade with another shot
+            o = shots[j]
+            if j == i or j in done or not ok[j] or cast(o["unit"], o["act"]) != me or \
+                    o["unit"]["clip"] == s["unit"]["clip"] or MO.series(project, o["unit"]) is None:
+                continue
+            new = list(shots)
+            new[i], new[j] = o, s
+            if clash(new, i) or clash(new, j):
+                continue
+            fj = fit(o, j, played(o)[0])
+            bi = [b for b in best(footage(o["unit"]["id"], (o, s), o), i) if b[0] - f0 >= CAST_GAIN / 2]
+            bj = best(footage(s["unit"]["id"], (o, s), s), j) if bi else []
+            cands += [(round(fi + fs - f0 - fj, 4), 1, j, x, (xj, cs), co) for fi, x, co in bi for fs, xj, cs in bj
+                      if fi + fs - f0 - fj >= CAST_GAIN]
+        if not cands or not passes(i):
+            continue
+        cands.sort(key=lambda c: (-c[0], c[1], abs(c[2] - i), c[2], c[5]["unit"]["id"], c[3]))
+        tries[0] = 0
+        for g, kind, j, x, other, c in cands:
+            if tries[0] >= CAST_TRY:
+                break
+            if j == i:                                       # its own unit's moment, or a unit not in the reel yet
+                y = tried(i, c, x) if clear(c["unit"], x, L, (s,)) else None
+                if y is None or (kind == 2 and c["unit"]["role"] == "transition" and
+                                 over(shots[:i] + [y] + shots[i + 1:]) > over(shots)):
+                    continue
+                shots[i] = y
+                y["cast"] = dict(was=[s["unit"]["id"], round(s["src_in"], 3)], fit=[round(f0, 2), round(f0 + g, 2)])
+                what = f"its moment at {c['t']:.1f} s instead of {s['t']:.1f} s" if kind == 0 else \
+                    f"{c['unit']['id']} (not in the reel yet) instead"
+                lines.append(f"{s['unit']['id']} at {s.get('rec_in', 0.0):.1f} s: {what} ({_what(ctx[i])}: fit "
+                             f"{f0:.2f} -> {f0 + g:.2f})")
+                done.add(i)
+                break
+            o, (xj, cs) = shots[j], other
+            if not passes(j) or not clear(c["unit"], x, s["length"] * speed(c), (s, o)) or \
+                    not clear(cs["unit"], xj, o["length"] * speed(cs), (s, o)):
+                continue
+            yi = tried(i, c, x)
+            yj = tried(j, cs, xj) if yi is not None else None
+            if yi is None or yj is None:
+                continue
+            new = list(shots)
+            new[i], new[j] = yi, yj
+            if s["unit"]["role"] == "transition" and over(new) > over(shots):
+                continue
+            shots[i], shots[j] = yi, yj
+            for y, z in ((yi, s), (yj, o)):
+                y["cast"] = dict(was=[z["unit"]["id"], round(z["src_in"], 3)])
+            yi["cast"]["fit"] = [round(f0, 2), round(fit(c, i, x), 2)]
+            lines.append(f"{o['unit']['id']} at {s.get('rec_in', 0.0):.1f} s, {s['unit']['id']} at "
+                         f"{o.get('rec_in', 0.0):.1f} s: traded ({_what(ctx[i])}: {g:+.2f} between them)")
+            done.update((i, j))
+            break
+    return lines
+
+
+def _what(c):
+    """The music under a shot's context, for the log."""
+    return ", ".join(sorted({"a stop" if k == "rest" else "an entry" for _, k, _, _ in c["events"]})) or \
+        ("soft music" if c["texture"] < 0.5 else "hard music")
 
 
 def kiss_spans(project):
@@ -5270,17 +5535,21 @@ def named(unit, k):
     return k in (i, unit.get("clip")) or (i.startswith(k) and not i[len(k):len(k) + 1].isalnum())
 
 
+def pace_of(unit, cfg):
+    """The base speed reel.json plan.<fmt> "pace" gives a unit's footage (1.0 without; never past 1.5)."""
+    rules = cfg.get("pace") or {}
+    return round(min(next((float(v) for k, v in rules.items() if named(unit, k) or fits(unit, [k])), 1.0), 1.5), 3)
+
+
 def pace_shots(shots, cfg):
     """A base speed under each shot (reel.json plan.<fmt> "pace": {"<footage match>": 1.15, ...}: a unit or clip
     id ("C1991", every unit cut from it) or a fits() match, the first that matches): footage danced slower than the track plays that much quicker throughout, its speed ramps
     on top of it, still never past the 1.5x cap. A plain shot reads its peak's moment as before (the source shifts
     so the move lands where it did); an editor's whole selection ("fit") plays as chosen."""
-    rules = cfg.get("pace") or {}
     changed = 0
     for s in shots:
         old = s.pop("speed", None) or 1.0
-        p = next((float(v) for k, v in rules.items() if named(s["unit"], k) or fits(s["unit"], [k])), 1.0)
-        p = 1.0 if "fit" in s["fx"] else round(min(p, 1.5), 3)
+        p = 1.0 if "fit" in s["fx"] else pace_of(s["unit"], cfg)
         if p != 1.0:
             s["speed"] = p
         if p == old:

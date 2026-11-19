@@ -529,6 +529,13 @@ the song texture - soft and flowy is soft and flowy movement".
   finishes before the cut; over-syncing reads as a gimmick. Shots under plain groove are left to the other rules.
 - **Never for a worse picture**: no shakier, no less clear on the scrub, a portrait strip framing as well and on the
   same people, clear of bans and kisses; the validator still has the last word.
+- **Which footage, in a story** (`plan.motion_cast`, story mode; picks mode has `motion_order`): a planner's shot on
+  a stop, a close or an entry plays another moment of its own unit, a unit of the same casting not in the reel yet
+  (only when its own unit has another shot), or trades footage with another of the planner's shots of the same
+  casting (act, role, kind of footage, home act, day or night, crowd for crowd, the category under song sets),
+  for a clearly better fit (0.12). Only shots that pass every rule now, onto footage that passes them too
+  (`validate.judge`, windows, bans, kisses, shake, portrait framing, B-roll caps, never beside its own clip); the
+  editor's picks, effect shots and shots whose transition comes from their footage stay.
 - **Check it**: the plan log's `motion:` line -- stops met, entries met, texture r, energy r, before and after.
 
 No kissing: `"no_kissing": true` on a reel or a cut keeps every kiss out (`people.kiss_spans`, `kisses.json`).
