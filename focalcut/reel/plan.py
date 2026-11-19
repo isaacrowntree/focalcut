@@ -4856,7 +4856,7 @@ def portrait_parts(project, shots):
                 dt = na - a                                  #  points cover, not one he never framed)
                 s.update(t=round(s["t"] + dt, 3), src_in=round(s["src_in"] + dt, 3), part=round(dt, 2),
                          crop=reframe(project, u, s["src_in"] + dt, s["length"], "portrait"))
-                moved.append((u["id"], round(dt, 2)))
+                moved.append(f"{u['id']} {dt:+.2f}s (to the part framed)")
             continue
         c0 = part_cost(s.get("crop"))
         if c0 is None or c0 <= 0:

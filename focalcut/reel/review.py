@@ -115,7 +115,7 @@ def run(project, fmt, cut=None) -> str:
                                  if os.path.exists(main.path(f"plan_{f}.json"))})
         f.write(page(plan, fmt, thumbs, sources(project, plan, fmt, os.path.dirname(path)), project.picks(reel=False),
                      key=f"{project.name}/{cut}", root=browse.api_root(project),
-                     nav=browse.menu(project, cut), project=browse.title_of(project), reel=project.reel_id,
+                     nav=browse.menu(project, cut), project=browse.title_of(project), reel=project.reel_id if isinstance(project.reel_id, str) else project.cut,
                      reels=[{"id": r["id"], "label": r["label"]} for r in rs]))
     print(f"[reel] review: {path}")
     return path
