@@ -2198,8 +2198,8 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
     dance = shows + socials or late_dance
     if not dance:
         raise SystemExit("no dance or show moments to cut a reel from (run the score and moments steps)")
-    demos = [r for r in shows if any(k in cat(r) for k in cfg["day_shows"])]
-    anim = [r for r in shows if any(k in cat(r) for k in cfg["night_shows"]) and r not in demos]
+    demos = [r for r in shows if keyhit(cfg["day_shows"], r["unit"]["id"], cat(r))]
+    anim = [r for r in shows if keyhit(cfg["night_shows"], r["unit"]["id"], cat(r)) and r not in demos]
     stage = [r for r in shows if r not in demos and r not in anim] or shows or socials
     day_cats = [*(cfg.get("day") or ()), *(cfg.get("day_shows") or ())]
     for r in recs:                                           # daytime footage, for every later pass: it never
@@ -2650,6 +2650,14 @@ def picks_mode(cfg):
     return cfg.get("mode") == "picks"
 
 
+def keyhit(keys, uid, *texts):
+    """Any of these footage keys in these texts: a substring, "=C1985" the clip by id, "!x" not footage matching x."""
+    def one(k):
+        return str(uid).startswith(k[1:]) if k.startswith("=") else any(k in t for t in texts)
+    yes, no = [k for k in keys if not k.startswith("!")], [k[1:] for k in keys if k.startswith("!")]
+    return any(map(one, yes)) and not any(map(one, no))
+
+
 def home_acts(recs, cfg):
     """record id -> the act its footage belongs in, as story() casts it: the late footage (the headliner's set) in
     the climax, its B-roll in the finale; day B-roll and day shows in the arrival; the stage in the shows; the
@@ -2657,11 +2665,8 @@ def home_acts(recs, cfg):
     tag = lambda r: r["unit"].get("tag", "")
     cat = lambda r: r.get("category", "")
 
-    def hit(keys, r, *texts):                                # any key in these texts ("=C1985": the clip by id;
-        def one(k):                                          #  "!x": not footage that matches x)
-            return r["unit"]["id"].startswith(k[1:]) if k.startswith("=") else any(k in t for t in texts)
-        yes, no = [k for k in keys if not k.startswith("!")], [k[1:] for k in keys if k.startswith("!")]
-        return any(map(one, yes)) and not any(map(one, no))
+    def hit(keys, r, *texts):
+        return keyhit(keys, r["unit"]["id"], *texts)
     out = {}
     for r in recs:
         if hit(cfg["late"], r, cat(r), tag(r)):
@@ -3110,8 +3115,8 @@ def transitions(seq, music, cfg, direction=None):
     def daytime(u):                                         # story() marks it; a hand-built or picks-mode cut: by
         if u.get("day") is not None:                        # its tag and category, as story() does
             return bool(u["day"])
-        return any(k in u.get("tag", "") for k in cfg.get("day") or ()) or \
-            any(k in u.get("category", "") for k in [*(cfg.get("day") or ()), *(cfg.get("day_shows") or ())])
+        return keyhit(cfg.get("day") or (), u.get("id", ""), u.get("tag", "")) or \
+            keyhit([*(cfg.get("day") or ()), *(cfg.get("day_shows") or ())], u.get("id", ""), u.get("category", ""))
 
     used, last_fade = {}, -G.CALM_EVERY
     for i in range(1, len(seq)):
