@@ -151,7 +151,9 @@ def measure(project, name, units, gpu):
     t, dg = np.concatenate(T), np.concatenate(D)
     order = np.argsort(t, kind="stable")
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    np.savez_compressed(out, t=t[order], dg=dg[order].astype(np.float32))
+    tmp = out[:-4] + f".{os.getpid()}.tmp.npz"                # (whole or not at all: a reader never sees half of it)
+    np.savez_compressed(tmp, t=t[order], dg=dg[order].astype(np.float32))
+    os.replace(tmp, out)
     return f"{name}: {len(t)} frames"
 
 

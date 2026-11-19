@@ -230,9 +230,15 @@ KISS_ON, KISS_SURE = 0.5, 0.97  # kiss_spans: a frame counts from the first; a r
 KISS_GAP, KISS_PAD = 1.0, 0.5   # ... runs this close (s) are one kiss; this much (s) kept clear either side
 
 
+CLOSE = ["a photo of a couple dancing in a close embrace", "a photo of two people hugging",
+         "a photo of a couple dancing salsa together", "a photo of someone whispering in another person's ear"]
+#          what a kiss is told apart from when it is timed (kiss_scores), on top of NOT_KISS: partner dancing in a
+#          close hold and a hug read as a kiss against those alone
+
+
 def _kiss_model():
-    """score(images) -> the kiss probability of each (SigLIP 2 zero-shot: KISS against NOT_KISS), or None without
-    torch."""
+    """(embed(images) -> their SigLIP 2 embeddings, normalised; score(embeddings) -> the kiss probability of each,
+    zero-shot: KISS against NOT_KISS and CLOSE), or None without torch."""
     try:
         import torch
         from transformers import AutoModel, AutoProcessor
@@ -247,49 +253,57 @@ def _kiss_model():
     mdl = AutoModel.from_pretrained(MODEL).to(dev, dt).eval()
     proc = AutoProcessor.from_pretrained(MODEL)
     with torch.inference_mode():
-        tin = proc(text=KISS + NOT_KISS, return_tensors="pt", padding="max_length", max_length=64).to(dev)
+        tin = proc(text=KISS + NOT_KISS + CLOSE, return_tensors="pt", padding="max_length", max_length=64).to(dev)
         t = mdl.get_text_features(**tin)
-        txt = torch.nn.functional.normalize(getattr(t, "pooler_output", t).float(), dim=-1)
+        txt = torch.nn.functional.normalize(getattr(t, "pooler_output", t).float(), dim=-1).cpu().numpy()
 
-    def score(imgs):
+    def embed(imgs):
         with torch.inference_mode():
             pin = proc(images=imgs, return_tensors="pt").to(dev)
             e = mdl.get_image_features(pixel_values=pin["pixel_values"].to(dt))
-            im = torch.nn.functional.normalize(getattr(e, "pooler_output", e).float(), dim=-1)
-            return (im @ txt.T * 100).softmax(-1)[:, :len(KISS)].sum(-1).cpu().numpy()
-    return score
+            return torch.nn.functional.normalize(getattr(e, "pooler_output", e).float(), dim=-1).cpu().numpy()
+
+    def score(emb):
+        z = np.asarray(emb, np.float32) @ txt.T * 100
+        z = np.exp(z - z.max(1, keepdims=True))
+        return (z[:, :len(KISS)].sum(1) / z.sum(1)).astype(np.float32)
+    return embed, score
 
 
 def kiss_scores(project, units, rate: float = KISS_RATE) -> dict:
-    """{unit id: (t, q)}: the kiss probability of every unit's frames at `rate` a second, in source seconds (cached
-    in scores/<unit>_kiss.npz; resumable). Units with no export file, or everything without torch, are left out."""
+    """{unit id: (t, q)}: the kiss probability of every unit's frames at `rate` a second, in source seconds. The
+    frames' embeddings are cached in scores/<unit>_kiss.npz (resumable; the prompts can change without decoding
+    again). Units with no export file, or everything without torch, are left out."""
     from PIL import Image
 
     from .shake import export_of
-    out, score = {}, None
+    out, model = {}, None
     for u in units:
         f = project.path("scores", u["id"].replace("#", "_") + "_kiss.npz")
+        path = export_of(project, u)
+        if not os.path.exists(f) and not path:
+            continue
+        if model is None:
+            model = _kiss_model()
+            if model is None:
+                return out
         if os.path.exists(f):
             z = np.load(f)
-            out[u["id"]] = (z["t"], z["q"])
-            continue
-        path = export_of(project, u)
-        if not path:
-            continue
-        if score is None:
-            score = _kiss_model()
-            if score is None:
-                return out
-        w = 512
-        raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{u['t0'] - u.get('export_t0', 0.0):.3f}", "-t",
-                              f"{u['t1'] - u['t0']:.3f}", "-i", path, "-vf", f"fps={rate},scale={w}:288", "-f",
-                              "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
-        fr = np.frombuffer(raw, np.uint8)[: len(raw) // (w * 288 * 3) * w * 288 * 3].reshape(-1, 288, w, 3)
-        q = [x for k in range(0, len(fr), 32) for x in score([Image.fromarray(a) for a in fr[k:k + 32]])]
-        t = u["t0"] + (np.arange(len(fr)) + 0.5) / rate
-        os.makedirs(os.path.dirname(f), exist_ok=True)
-        np.savez(f, t=t, q=np.array(q, np.float32))
-        out[u["id"]] = (t, np.array(q, np.float32))
+            t, emb = z["t"], z["emb"]
+        else:
+            w = 512
+            raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{u['t0'] - u.get('export_t0', 0.0):.3f}", "-t",
+                                  f"{u['t1'] - u['t0']:.3f}", "-i", path, "-vf", f"fps={rate},scale={w}:288", "-f",
+                                  "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
+            fr = np.frombuffer(raw, np.uint8)[: len(raw) // (w * 288 * 3) * w * 288 * 3].reshape(-1, 288, w, 3)
+            if not len(fr):
+                continue
+            emb = np.concatenate([model[0]([Image.fromarray(a) for a in fr[k:k + 32]])
+                                  for k in range(0, len(fr), 32)]).astype(np.float16)
+            t = u["t0"] + (np.arange(len(fr)) + 0.5) / rate
+            os.makedirs(os.path.dirname(f), exist_ok=True)
+            np.savez(f, t=t, emb=emb)
+        out[u["id"]] = (t, model[1](emb))
     return out
 
 

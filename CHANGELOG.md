@@ -30,7 +30,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   energy, shot by shot. Without the `motion` step the score step's 10 fps subject motion stands in; without
   `beat_texture` (an older music.json) the drive and the kick do.
 - **`"no_kissing": true`** (reel.json, or a cut's own): no kiss plays in the reel. `people.kiss_spans` times every
-  kiss (SigLIP 2 at 3 frames a second, runs with a frame at 0.97 or more, half a second clear either side) into
+  kiss (SigLIP 2 at 3 frames a second, told apart from a close dance hold, a hug and a whisper as well; runs with
+  a frame at 0.97 or more, half a second clear either side; the frames' embeddings are cached) into
   `kisses.json`; each is banned footage for the reel, and an editor's pick that plays more than 0.15 s of one is
   left out and named in the plan log. The planner times the kisses itself when the people step hasn't.
 
