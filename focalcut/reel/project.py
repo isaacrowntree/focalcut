@@ -243,8 +243,9 @@ class Project:
 
     @property
     def reel_id(self) -> str:
-        """This reel's name in picks.json's per-selection "only" lists: the cut, or "main" for the project's reels."""
-        return self.cut or "main"
+        """This reel's name in picks.json's per-selection "only" lists: the cut, or "main" for the project's reels --
+        or the reel a cut takes its picks from (reel.json cut "picks_as": "short": an Instagram cut of the 90 s)."""
+        return self.config.get("picks_as") or self.cut or "main"
 
     def picks(self, rejects=True, reel=True) -> dict:
         """The editor's picks: focalcut/reel/picks.json, with reel.json's "picks" merged over it, and its "reject"
@@ -262,6 +263,12 @@ class Project:
                 if isinstance(e, dict) and not k.startswith("_") and (raw[k] or {}).get("add") and \
                         not e.get("add") and k not in named:      # nothing of it (not the planner's choice either)
                     out[k] = {**e, "ban": [*e.get("ban", []), "all"]}
+        for k, spans in (self.config.get("drop_picks") or {}).items() if reel else ():   # a cut leaving picks out
+            e = dict(out.get(k) or {})                       # (reel.json cut "drop_picks": {clip: [in-out, ...]}:
+            drop = {_span_key(x) for x in spans}             #  the Instagram cut without the kisses), and their
+            e["add"] = [a for a in e.get("add") or [] if _span_key(a) not in drop]   # footage banned for it
+            e["ban"] = [*e.get("ban", []), *spans]
+            out[k] = e
         for k, spans in (self.config.get("reject") or {}).items() if rejects else ():
             e = dict(out.get(k) or {})
             e["ban"] = [*e.get("ban", []), *spans]

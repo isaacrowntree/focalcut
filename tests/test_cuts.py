@@ -130,3 +130,18 @@ def test_a_clip_picked_only_for_other_reels_gives_this_one_nothing(tmp_path):
     assert Project(folder, "short").picks()["C1-01_couple"]["ban"] == ["all"]
     assert "ban" not in Project(folder).picks()["C1-01_couple"]
     assert "ban" not in Project(folder, "short").picks()["C3"]          # (the reel's named opening: kept)
+
+
+def test_a_cut_takes_another_reels_picks_and_drops_some(tmp_path):
+    import json
+
+    from focalcut.reel.project import Project
+    d = tmp_path / "focalcut" / "reel"
+    d.mkdir(parents=True)
+    (d / "reel.json").write_text(json.dumps({"cuts": {"short": {}, "insta": {
+        "picks_as": "short", "drop_picks": {"C1": ["0:05.00-0:06.00"]}}}}))
+    (d / "picks.json").write_text(json.dumps({"C1": {"add": ["0:01.00-0:02.00", "0:05.00-0:06.00", "0:09.00-0:10.00"],
+                                                     "only": {"0:09.00-0:10.00": ["main"]}}}))
+    short, insta = Project(str(tmp_path), "short").picks()["C1"], Project(str(tmp_path), "insta").picks()["C1"]
+    assert short["add"] == ["0:01.00-0:02.00", "0:05.00-0:06.00"]
+    assert insta["add"] == ["0:01.00-0:02.00"] and "0:05.00-0:06.00" in insta["ban"]
