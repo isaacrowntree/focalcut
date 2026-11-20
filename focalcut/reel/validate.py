@@ -27,6 +27,8 @@ The rules (RULES; reel.json plan.<fmt>.validate overrides, false turns the pass 
   partner   a couple's partner is not out of the strip or cut by the frame's edge for "partner" of the shot
   halved    nobody the subject's size has their head on the strip's edge for "halved" of the shot (groups aside)
   headcut   the subject's head is not cut by the camera's own frame top for "headcut" of the shot
+            (hands at work, and a DJ's strip on the decks -- Isaac: "part of the DJ's head cut off is fine" -- pass
+            "headcut" and the head-on-edge part of "out"; anyone else halved at the edge still fails "halved")
   far       a couple fills the strip: the taller of them at least "close" of its height
   shake     the camera's shake over the strip's width under the reel's high mark
   banned    none of the editor's banned stretches; day footage only by day
@@ -203,14 +205,20 @@ def measure(project, unit, a, L, crop, fmt, every=False):
         out["rows"] = rows
     if not cand:
         return out
-    if cw < 0.9:                                             # a strip: whoever it holds, nearest its middle
+    from . import plan as PL
+    deck = PL.is_dj(unit) and cw < 0.9                     # a DJ's strip is on the decks: its subject is the DJ
+    k = LD.choose(trs, a, L, dj=True)[0] if deck else -1   # at them, wherever their head sits in it
+    if deck and k >= 0 and rows[k] and rows[k]["seen"] >= 0.3:
+        sub = rows[k]
+    elif cw < 0.9:                                           # a strip: whoever it holds, nearest its middle
         sub = max(cand, key=lambda r: (round(r["seen"] * (1 - min(r["off"], 0.5)) * (0.5 + 0.5 * r["size"]), 4), -r["i"]))
     else:                                                    # the whole frame: the shot's own subject (lead.choose)
         k = LD.choose(trs, a, L)[0]
         sub = rows[k] if k >= 0 and rows[k] and rows[k]["seen"] >= 0.3 else \
             max(cand, key=lambda r: (round(r["seen"] * r["size"], 4), -r["i"]))
-    out["sub"] = sub
-    peers = [r for r in live if r is not sub and r["size"] >= LD.PEER * sub["size"]]
+    out["sub"] = dict(sub, deck=deck)
+    sub = out["sub"]
+    peers = [r for r in live if r["i"] != sub["i"] and r["size"] >= LD.PEER * sub["size"]]
     out["group"] = sum(r["seen"] >= 0.5 or r["edge"] >= 0.5 for r in peers) >= 2
     out["halved"] = max((r["edge"] for r in peers), default=0.0) if cw < 0.9 else 0.0
     # their partner: the biggest other person their size in the frame for a good part of the shot (in the strip or
@@ -237,7 +245,8 @@ def check(m, unit, R, fmt="portrait"):
     sub = m["sub"]
     if sub is None:
         return [("nobody", 0.0)] if kind in ("couple", "player") else []
-    if sub["seen"] < R["seen"] or sub["edge"] >= R["edge"]:   # gone from the strip, or their head on its edge
+    deck = sub.get("deck", False)                            # a DJ's strip on the decks: their head may sit on
+    if sub["seen"] < R["seen"] or (sub["edge"] >= R["edge"] and not deck):   # its edge (gone from it still fails)
         why.append(("out", min(sub["seen"], 1 - sub["edge"])))
     if sub["sharp"] is not None and sub["sharp"] < (R["sharp"] if kind == "player" else R["sharp_floor"]):
         why.append(("soft", sub["sharp"]))
@@ -256,7 +265,7 @@ def check(m, unit, R, fmt="portrait"):
             why.append(("partner", gone))
     if m["halved"] > R["halved"] and not m["group"]:
         why.append(("halved", m["halved"]))
-    if sub["cut"] > R["headcut"] and not sub["hands"]:
+    if sub["cut"] > R["headcut"] and not sub["hands"] and not deck:
         why.append(("headcut", sub["cut"]))
     if kind == "couple" and fmt == "portrait":
         tall = max(sub["h"], mate["h"] if mate else 0.0) * m["z"]

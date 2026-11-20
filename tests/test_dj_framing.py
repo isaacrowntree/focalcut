@@ -61,22 +61,23 @@ def test_a_dj_unit_is_known_by_a_whole_word_of_its_tag_id_or_category():
     assert not PL.is_dj(dict(id="C6_crowd-night", tag="crowd-night", category="broll"))
 
 
-def test_decks_beside_the_dj_get_the_strip_with_their_head_on_its_far_side():
-    """The decks out to the DJ's side: their head a quarter of the strip in from its far edge, whole, and the rest
-    of the strip hands and gear."""
+def test_decks_beside_the_dj_are_the_focal_point_with_the_near_side_of_their_face_kept():
+    """The decks out to the DJ's side: the strip goes to the hands and the gear past them (Isaac: "part of the DJ's
+    head cut off is fine"), as far as keeps their eyes and nose inside its edge -- never the whole head gone."""
     d = scene([[dj(0.35, reach=0.2)] for _ in range(8)])
     plain = LD.strip(d, None, None, 0.0, 1.4, CW, 1.0)
     out = LD.strip(d, None, None, 0.0, 1.4, CW, 1.0, dj=True)
     assert out["on"] == "decks" and plain["on"] != "decks"
-    left_edge = out["x"] - CW / 2
-    assert np.all(np.abs((0.35 - left_edge) / CW - LD.HEAD_SIDE) < 0.02)     # the head 25% in from the far side
     hw = 0.5 * float(np.median(out["lead"]["hs"])) * LD.ASPECT * 0.8
-    assert np.all(0.35 - hw > left_edge + 0.01)                               # never cut
+    left_edge = out["x"] - CW / 2
+    assert np.all(0.35 - left_edge >= LD.FACE_IN * hw)                        # the face's near side in
+    assert np.all(0.35 - left_edge < hw + 0.01)                               # ... and no more of the head than that
     tips = 0.35 + 0.2 + LD.FINGERS * 0.04                                     # the right hand's fingers on the gear
-    assert np.all(out["x"] + CW / 2 > tips + 0.01)                            # the hands and the gear past them in it
+    assert np.all(out["x"] + CW / 2 > tips + 0.06)                            # the hands and plenty of gear past them
+    assert np.all(np.abs(out["x"] - out["x"][0]) < 1e-9)                      # one offset, steady
     # the other way round: decks on the DJ's left
     left = LD.strip(scene([[dj(0.65, reach=-0.2)] for _ in range(8)]), None, None, 0.0, 1.4, CW, 1.0, dj=True)
-    assert np.all(np.abs((left["x"] + CW / 2 - 0.65) / CW - LD.HEAD_SIDE) < 0.02)
+    assert np.all(left["x"] + CW / 2 - 0.65 >= LD.FACE_IN * hw) and np.all(left["x"] + CW / 2 - 0.65 < hw + 0.01)
 
 
 def test_decks_in_front_of_the_dj_keep_their_head_near_the_middle():
@@ -133,7 +134,7 @@ def test_a_dj_shot_is_never_zoomed_in_and_frames_the_decks_in_portrait(tmp_path)
     c = PL.reframe(pr, u, 1.0, 1.4, "portrait")
     assert c["z"] == 1.0 and c["h"] == 1.0 and c["on"] == "decks"
     xs = np.array(c["path"])[:, 1]
-    assert xs.mean() > 0.45 and xs.mean() - c["w"] / 2 < 0.38
+    assert xs.mean() > 0.5 and xs.mean() - c["w"] / 2 < 0.4                  # on the decks, the face's near side in
     other = dict(u, id="C7_band-test", tag="band-test")                       # the same footage as a band's: zoomed
     assert PL.reframe(pr, other, 1.0, 1.4, "portrait").get("on") != "decks"
     # the validator measures it as it plays: the DJ in the strip, nothing broken
@@ -141,6 +142,21 @@ def test_a_dj_shot_is_never_zoomed_in_and_frames_the_decks_in_portrait(tmp_path)
     m = VA.measure(pr, u, 1.0, 1.4, c, "portrait")
     assert m["sub"]["seen"] >= 0.9 and not [w for w in VA.check(m, u, VA.RULES) if w[0] in ("out", "headcut", "halved")]
     assert shot["crop"]["w"] < 0.5
+
+
+def test_the_validator_lets_a_djs_head_sit_on_the_strips_edge_but_not_someone_else_halved():
+    from .test_validate import person
+    from .test_validate import shot as measured
+    band = dict(id="C1_band", tag="band", role="transition", category="broll")
+    deck = dict(id="C2_dj-x", tag="dj-x", role="transition", category="broll")
+    edge = measured(person(edge=0.8, cut=0.8))
+    assert {w[0] for w in VA.check(edge, band, VA.RULES)} >= {"out", "headcut"}
+    on_decks = measured(person(edge=0.8, cut=0.8, deck=True))
+    assert not {w[0] for w in VA.check(on_decks, deck, VA.RULES)} & {"out", "headcut"}
+    gone = measured(person(seen=0.2, deck=True))                              # off the strip altogether: still out
+    assert "out" in {w[0] for w in VA.check(gone, deck, VA.RULES)}
+    halved = dict(on_decks, halved=0.9)                                       # the other DJ cut in half: still fails
+    assert "halved" in {w[0] for w in VA.check(halved, deck, VA.RULES)}
 
 
 def test_a_dj_shot_the_editor_framed_stays_as_they_framed_it(tmp_path):
