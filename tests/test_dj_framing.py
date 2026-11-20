@@ -61,27 +61,37 @@ def test_a_dj_unit_is_known_by_a_whole_word_of_its_tag_id_or_category():
     assert not PL.is_dj(dict(id="C6_crowd-night", tag="crowd-night", category="broll"))
 
 
-def test_a_djs_strip_takes_in_the_decks_past_their_hands_with_their_head_in_it():
-    d = scene([[dj(0.4, reach=0.12)] for _ in range(8)])
+def test_decks_beside_the_dj_get_the_strip_with_their_head_on_its_far_side():
+    """The decks out to the DJ's side: their head a quarter of the strip in from its far edge, whole, and the rest
+    of the strip hands and gear."""
+    d = scene([[dj(0.35, reach=0.2)] for _ in range(8)])
     plain = LD.strip(d, None, None, 0.0, 1.4, CW, 1.0)
     out = LD.strip(d, None, None, 0.0, 1.4, CW, 1.0, dj=True)
     assert out["on"] == "decks" and plain["on"] != "decks"
-    tips = 0.4 + 0.12 + LD.FINGERS * 0.02                         # the right hand's fingers on the gear
-    assert out["x"].mean() > plain["x"].mean() + 0.08                # toward the decks, not on the body
-    assert out["x"].mean() - CW / 2 < 0.4 - 0.02                     # the head inside the strip, clear of its edge
-    assert out["x"].mean() + CW / 2 > tips + 0.05                    # the hands and the gear past them in it
+    left_edge = out["x"] - CW / 2
+    assert np.all(np.abs((0.35 - left_edge) / CW - LD.HEAD_SIDE) < 0.02)     # the head 25% in from the far side
+    hw = 0.5 * float(np.median(out["lead"]["hs"])) * LD.ASPECT * 0.8
+    assert np.all(0.35 - hw > left_edge + 0.01)                               # never cut
+    tips = 0.35 + 0.2 + LD.FINGERS * 0.04                                     # the right hand's fingers on the gear
+    assert np.all(out["x"] + CW / 2 > tips + 0.01)                            # the hands and the gear past them in it
     # the other way round: decks on the DJ's left
-    left = LD.strip(scene([[dj(0.6, reach=-0.12)] for _ in range(8)]), None, None, 0.0, 1.4, CW, 1.0, dj=True)
-    assert left["x"].mean() < 0.6 - 0.08 and left["x"].mean() + CW / 2 > 0.6 + 0.02
+    left = LD.strip(scene([[dj(0.65, reach=-0.2)] for _ in range(8)]), None, None, 0.0, 1.4, CW, 1.0, dj=True)
+    assert np.all(np.abs((left["x"] + CW / 2 - 0.65) / CW - LD.HEAD_SIDE) < 0.02)
 
 
-def test_a_dj_facing_the_camera_over_the_decks_is_centred_and_arms_up_dont_swing_the_strip():
+def test_decks_in_front_of_the_dj_keep_their_head_near_the_middle():
+    """Facing the camera over the decks (hands a little to one side): the strip leans only a little, the decks
+    across its full-height bottom."""
     front = LD.strip(scene([[dj(0.5)] for _ in range(8)]), None, None, 0.0, 1.4, CW, 1.0, dj=True)
     assert front["on"] == "decks" and abs(front["x"].mean() - 0.5) < 0.02
-    # hands on the decks to the right, then both arms in the air on the drop: one offset for the shot
-    frames = [[dj(0.4, reach=0.12)] for _ in range(5)] + [[dj(0.4, up=True)] for _ in range(5)]
+    lean = LD.strip(scene([[dj(0.5, reach=0.06)] for _ in range(8)]), None, None, 0.0, 1.4, CW, 1.0, dj=True)
+    assert 0.5 < lean["x"].mean() <= 0.5 + LD.BELOW * CW + 1e-3
+
+
+def test_arms_up_on_a_drop_dont_swing_a_djs_strip():
+    frames = [[dj(0.35, reach=0.2)] for _ in range(5)] + [[dj(0.35, up=True)] for _ in range(5)]
     out = LD.strip(scene(frames), None, None, 0.0, 1.8, CW, 1.0, dj=True)
-    assert np.ptp(out["x"]) < 0.02 and out["x"].mean() > 0.45
+    assert np.ptp(out["x"]) < 0.02 and out["x"].mean() > 0.4
 
 
 def test_the_dj_is_the_one_at_the_decks_not_a_bigger_hype_man_beside_them():
@@ -118,7 +128,7 @@ def dj_project(tmp_path, frames, picks=None):
 
 
 def test_a_dj_shot_is_never_zoomed_in_and_frames_the_decks_in_portrait(tmp_path):
-    frames = [[dj(0.4, reach=0.12, top=0.35, h=0.65)] for _ in range(20)]     # small in frame: a zoom would come
+    frames = [[dj(0.4, reach=0.2, top=0.35, h=0.65)] for _ in range(20)]      # small in frame: a zoom would come
     pr, u = dj_project(tmp_path, frames)
     c = PL.reframe(pr, u, 1.0, 1.4, "portrait")
     assert c["z"] == 1.0 and c["h"] == 1.0 and c["on"] == "decks"
@@ -134,7 +144,7 @@ def test_a_dj_shot_is_never_zoomed_in_and_frames_the_decks_in_portrait(tmp_path)
 
 
 def test_a_dj_shot_the_editor_framed_stays_as_they_framed_it(tmp_path):
-    frames = [[dj(0.4, reach=0.12, top=0.35, h=0.65)] for _ in range(20)]
+    frames = [[dj(0.4, reach=0.2, top=0.35, h=0.65)] for _ in range(20)]
     pr, u = dj_project(tmp_path, frames, picks={"C7_dj-test": {"portrait": [["0:01.50", 0.3, 0.5]]}})
     c = PL.reframe(pr, u, 1.0, 1.4, "portrait")
     assert c.get("on") != "decks" and c.get("focus")                   # his focal point, on the derived crop

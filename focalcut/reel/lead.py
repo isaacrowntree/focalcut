@@ -50,6 +50,9 @@ HEAD_IN = 0.3            # the subject's head stays within this share of the str
 FINGERS = 0.6            # hands at work: the fingertips are this far past the wrist, in forearm lengths
 CHEST = 0.4              # a DJ's hands are down at the gear below this share of the way from their head to their torso
 DECKS = 0.5              # a DJ's strip goes this much further than their hands (of their reach from the body): the gear
+HEAD_SIDE = 0.25         # ... decks beside the DJ: their head this share of the strip's width in from its far side
+BESIDE = (0.14, 0.18)    # ... their hands this far (frame widths) from their body: decks beside them (a ramp)
+BELOW = 0.15             # ... decks in front of them: the strip leans toward the hands at most this (of its width)
 WORKING = 0.6            # ... the subject of a DJ shot is the one at the decks: this weight on the share of it they are
 SMOOTH = 0.12            # glide(): seconds of smoothing on the strip's path (the detector's jitter, not the move)
 RATE = 0.1               # the path's sample spacing (s)
@@ -523,24 +526,29 @@ def _clear(trs, k, f, at, x, cw, lo=None, hi=None):
 
 
 def _decks(trs, k, f, at, ts, head, torso, hw, cw, ch):
-    """A DJ shot's strip (aim's dj case): the DJ and the decks they're working -- not their head and body alone. The
-    strip's centre rides their body (head and torso) and sits past their hands, toward the gear (DECKS beyond their
-    reach, taken over the frames their hands are down on the decks, so arms thrown up on a drop don't swing it: one
-    offset for the shot), as far as keeping their head inside it allows (within HEAD_IN of its middle, a head's
-    width clear of its edge: never a face cut by the strip, nor the "out" rule's head on the edge). Hands either side of the body (facing the camera over the decks):
-    centred on them, the decks below in the full-height strip. Never through someone their size beside them
-    (_clear). Height: their head a fifth of the way down, the rest hands and gear (in a full-height strip, all of
-    it)."""
+    """A DJ shot's strip (aim's dj case): the DJ and the decks they're working -- not their head and body alone. How
+    far their hands reach from their body (taken over the frames their hands are down on the decks, so arms thrown
+    up on a drop don't swing it: one offset for the shot, carried on their head) says where the gear is:
+      beside them (reach past BESIDE): their head goes to the strip's far side, HEAD_SIDE of its width in from that
+        edge (a head's width and a margin clear of it, never cut), and the rest of the strip is hands and decks;
+      in front of / below them (a DJ facing the camera over the decks): the strip leans toward the hands by at
+        most BELOW of its width, the head kept, the decks across its bottom (the strip is full height);
+      in between: a blend of the two.
+    Never through someone their size beside them (_clear, within those bounds). Height: their head a fifth of the
+    way down, the rest hands and gear (in a full-height strip, all of it)."""
     me = trs[k]
     body = 0.5 * head[:, 0] + 0.5 * torso[:, 0]
     down, tips = working(me)
-    off = 0.0
+    reach = 0.0
     if down.any():
-        reach = tips[down, 0] - (0.5 * me["head"][down, 0] + 0.5 * me["torso"][down, 0])
-        off = float(np.median(reach)) * (1 + DECKS)
-    room = np.clip(cw / 2 - 2 * hw - 0.01, 0.0, HEAD_IN * cw)   # the head (and a head's width round it) well in
+        reach = float(np.median(tips[down, 0] - (0.5 * me["head"][down, 0] + 0.5 * me["torso"][down, 0])))
+    room = np.clip(cw / 2 - hw - 0.012, 0.0, (0.5 - HEAD_SIDE) * cw)     # the head HEAD_SIDE in, whole
+    below = np.clip(body + (1 + DECKS) * reach, head[:, 0] - np.minimum(room, BELOW * cw),
+                    head[:, 0] + np.minimum(room, BELOW * cw))
+    side = head[:, 0] + np.sign(reach) * room
+    w = float(np.clip((abs(reach) - BESIDE[0]) / (BESIDE[1] - BESIDE[0]), 0.0, 1.0))
     lo, hi = head[:, 0] - room, head[:, 0] + room
-    x = _clear(trs, k, f, at, np.clip(body + off, lo, hi), cw, lo, hi)
+    x = _clear(trs, k, f, at, (1 - w) * below + w * side, cw, lo, hi)
     y = head[:, 1] + (0.5 - 0.2) * ch
     return ts, x, y, "decks"
 
