@@ -324,7 +324,7 @@ the subject effects in `fx/subject.py` (`aura`, `neon`, `spotlight`, …).
     move): their torso, head still in the strip. Hands at work with no head in frame (a DJ's hands on the mixer):
     the fingertips, carried on past the wrists along the forearms.
   - **Frame the focal point of the moment, not every body part** (Isaac: "Part of framing is being cool with
-    showing the focal point of the view not biting off bits"). A DJ shot (`lead.is_dj`: "dj", "djs", "deejay" or
+    showing the focal point of the view not biting off bits"). A DJ shot (`plan.is_dj`: "dj", "djs", "deejay" or
     "decks" as a whole word in the unit's tag, id or category) is about the DJ *and their decks*: "show more of
     their turntables than just their bodies". It is never zoomed past z=1, so decks below the DJ stay in along
     the strip's bottom. When the deck work is the action -- hands down on the gear for most of the shot, the
