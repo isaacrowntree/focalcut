@@ -323,6 +323,19 @@ the subject effects in `fx/subject.py` (`aura`, `neon`, `spotlight`, …).
     in, weighted to the nearer one, the subject still in the middle part. Someone along the floor (a worm, a floor
     move): their torso, head still in the strip. Hands at work with no head in frame (a DJ's hands on the mixer):
     the fingertips, carried on past the wrists along the forearms.
+  - **Frame the focal point of the moment, not every body part** (Isaac: "Part of framing is being cool with
+    showing the focal point of the view not biting off bits"). A DJ shot (`lead.is_dj`: "dj", "djs", "deejay" or
+    "decks" as a whole word in the unit's tag, id or category) is about the DJ *and their decks*: "show more of
+    their turntables than just their bodies". It is never zoomed past z=1, so decks below the DJ stay in along
+    the strip's bottom. When the deck work is the action -- hands down on the gear for most of the shot, the
+    decks a real part of the frame (not a sliver at its bottom), nobody hyping with arms up, the strip not mostly
+    empty background -- the strip is centred on the hands and the mixer and the near deck, and the DJ's head may
+    sit on its edge or be partly cut (eyes and nose kept in where they fit); the validator lets that head pass
+    ("out"/"headcut") on such strips only, while anyone else halved at the edge still fails. On a hype moment
+    (arms up, jumping, two DJs playing to the crowd) the people are the focal point and are framed as any shot.
+    One offset for the whole shot, so arms thrown up on a drop don't swing it. The planner ranks hands-on-decks
+    moments of DJ footage up (to 1.25x) and arms-up or deck-less ones down (to 0.75x): a nudge, so a big hype
+    moment can still win. The editor's focal points and follow clicks are never moved.
   - `lead.glide`: the path, a point every 0.1 s, smoothed over 0.12 s only (it was 0.3 s on a face scanned twice
     a second, which is what let a quick head leave the strip).
   - The crop says what it is on and why (`on`: person / pair / floor / hands, `why`), which the focus editor shows.

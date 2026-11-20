@@ -9,6 +9,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **DJ shots show the decks** (`lead.py`, `validate.py`, `plan.py`). In portrait a DJ shot is never zoomed past
+  z=1; when the deck work is the action (hands down on the gear, decks a real part of the frame, nobody hyping,
+  the strip not mostly empty) the strip centres on the hands, mixer and near deck and the DJ's head may sit on
+  its edge or be partly cut -- the focal point of the moment, not every body part -- and the validator lets that
+  head pass on those strips only. Hype moments frame the people. Hands-on-decks moments rank up, arms-up or
+  deck-less ones down. Editor focal points untouched; portrait bench unchanged. Tests: `tests/test_dj_framing.py`.
+- **A band or DJ clip plays at most twice** in a reel (`validate` `player_max` 2, was 4); the editor's own picks
+  of it always stay.
+- **Story mode chooses the footage on the music's stops and entries** (`plan.motion_cast`).
 - **No shot shorter than the eye can read** (`plan.<fmt>` `"min_shot"`, seconds; default 0: off, so earlier
   edits plan as they did). Fiesta del Sol's Instagram cut at 131 BPM had 36 of 80 shots one beat long (0.46 s):
   quick cuts nobody can see. With `"min_shot": 0.9` every shot plays at least that long, in whole beats
