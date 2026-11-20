@@ -206,7 +206,7 @@ def measure(project, unit, a, L, crop, fmt, every=False):
     if not cand:
         return out
     from . import plan as PL
-    deck = PL.is_dj(unit) and cw < 0.9                     # a DJ's strip is on the decks: its subject is the DJ
+    deck = PL.is_dj(unit) and cw < 0.9 and c.get("on") == "decks"   # a DJ's strip on the decks: its subject is the DJ
     k = LD.choose(trs, a, L, dj=True)[0] if deck else -1   # at them, wherever their head sits in it
     if deck and k >= 0 and rows[k] and rows[k]["seen"] >= 0.3:
         sub = rows[k]

@@ -89,16 +89,32 @@ def test_decks_in_front_of_the_dj_keep_their_head_near_the_middle():
     assert 0.5 < lean["x"].mean() <= 0.5 + LD.BELOW * CW + 1e-3
 
 
-def test_arms_up_on_a_drop_dont_swing_a_djs_strip():
-    frames = [[dj(0.35, reach=0.2)] for _ in range(5)] + [[dj(0.35, up=True)] for _ in range(5)]
+def test_a_moment_of_arms_up_doesnt_swing_a_djs_strip():
+    frames = [[dj(0.35, reach=0.2)] for _ in range(8)] + [[dj(0.35, up=True)] for _ in range(2)]
     out = LD.strip(scene(frames), None, None, 0.0, 1.8, CW, 1.0, dj=True)
-    assert np.ptp(out["x"]) < 0.02 and out["x"].mean() > 0.4
+    assert out["on"] == "decks" and np.ptp(out["x"]) < 0.02 and out["x"].mean() > 0.4
 
 
-def test_the_dj_is_the_one_at_the_decks_not_a_bigger_hype_man_beside_them():
-    frames = [[dj(0.3, reach=0.1), dj(0.75, up=True, top=0.05, h=0.95, w=0.18)] for _ in range(8)]
-    out = LD.strip(scene(frames), None, None, 0.0, 1.4, CW, 1.0, dj=True)
-    assert out["on"] == "decks" and abs(out["lead"]["head"][:, 0].mean() - 0.3) < 0.02
+def test_a_hype_moment_frames_the_people_not_the_gear():
+    """Arms in the air for much of the shot, or a fellow performer hyping beside them: the people are the focal
+    point (Isaac: "show the focal point of the view") -- framed as any shot, at full height."""
+    up = [[dj(0.35, reach=0.2)] for _ in range(5)] + [[dj(0.35, up=True)] for _ in range(5)]
+    out = LD.strip(scene(up), None, None, 0.0, 1.8, CW, 1.0, dj=True)
+    assert out["on"] == "person" and abs(out["x"].mean() - 0.35) < 0.05
+    pair = [[dj(0.42, reach=-0.2), dj(0.58, up=True)] for _ in range(8)]   # both DJs, one jumping
+    out = LD.strip(scene(pair), None, None, 0.0, 1.4, CW, 1.0, dj=True)
+    assert out["on"] in ("pair", "person") and abs(out["lead"]["head"][:, 0].mean() - 0.42) < 0.02   # (the DJ at
+    assert out["x"].mean() - CW / 2 < 0.42 - 0.03 and out["x"].mean() + CW / 2 > 0.58 + 0.03          #  the decks)
+
+
+def test_gear_at_the_frames_bottom_edge_or_an_empty_strip_frames_the_people():
+    low = [[dj(0.35, reach=0.2, top=0.45, h=0.6)] for _ in range(8)]    # hands down at the frame's bottom edge
+    assert LD.strip(scene(low), None, None, 0.0, 1.4, CW, 1.0, dj=True)["on"] == "person"
+    far = [[dj(0.35, reach=0.2, top=0.1, h=0.5, w=0.06)] for _ in range(8)]   # small, far off: the strip on the
+    trs = LD.tracks(scene(far), None, -0.3, 1.7)                          # gear side would be mostly background
+    at = np.arange(0, 1.4 + 1e-6, LD.RATE)
+    assert LD._fill(trs, at, np.full(len(at), 0.84), CW, (np.full(len(at), 0.45), 1.0, 0.4)) < LD.FILL_MIN
+    assert LD._fill(trs, at, np.full(len(at), 0.45), CW, (np.full(len(at), 0.45), 1.0, 0.4)) > LD.FILL_MIN
 
 
 def test_hands_on_the_decks_rank_over_arms_up():

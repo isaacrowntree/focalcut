@@ -50,6 +50,12 @@ HEAD_IN = 0.3            # the subject's head stays within this share of the str
 FINGERS = 0.6            # hands at work: the fingertips are this far past the wrist, in forearm lengths
 CHEST = 0.4              # a DJ's hands are down at the gear below this share of the way from their head to their torso
 DECKS = 0.5              # a DJ's strip goes this much further than their hands (of their reach from the body): the gear
+AT_DECKS = 0.6           # ... the deck framing only when their hands are on the gear this share of the shot,
+LOW_HANDS = 0.8          # ... the gear not down at the frame's bottom edge (their hands above this, of its height),
+HYPE = 0.3               # ... nobody in it (them or a performer their size) with arms in the air this share of it,
+FILL_MIN = 0.5           # ... the strip at least this much people and gear (not empty background) ...
+FILL_GIVE = 0.15         # ... and no more than this emptier than the people framing; else the people, as any shot
+GEAR = 0.25              # _fill: how far the decks run from the fingers (frame widths)
 FACE_IN = 0.5            # ... decks beside the DJ: the strip goes to them as far as keeps their eyes and nose this
                          #     much of a head's width inside its edge (part of the head may go)
 BESIDE = (0.14, 0.18)    # ... their hands this far (frame widths) from their body: decks beside them (a ramp)
@@ -477,8 +483,18 @@ def aim(trs, k, f, t0, length, cw, ch, solo=False, dj=False):
         x = np.interp(at, me["t"], tips[:, 0])
         y = np.interp(at, me["t"], tips[:, 1])
         return ts, x, y, "hands"
-    if dj:
-        return _decks(trs, k, f, at, ts, head, torso, hw, cw, ch)
+    people = _people(trs, k, f, at, ts, head, torso, box, hw, cw, ch, solo)
+    if dj:                                                    # the decks, when the deck work is the action
+        deck = _decks(trs, k, f, at, ts, head, torso, hw, cw, ch)
+        if deck is not None and _fill(trs, at, deck[1], cw, deck[4]) >= max(FILL_MIN, _fill(
+                trs, at, people[1], cw, deck[4]) - FILL_GIVE):
+            return deck[:4]
+    return people
+
+
+def _people(trs, k, f, at, ts, head, torso, box, hw, cw, ch, solo):
+    """aim's person / pair / floor cases (see aim)."""
+    me = trs[k]
     if lying(me):                                             # the move reads from the torso: the body's middle,
         x = 0.5 * torso[:, 0] + 0.5 * (box[:, 0] + box[:, 2]) / 2     # the head still inside the strip
         x = np.clip(x, head[:, 0] - (cw / 2 - hw - 0.01), head[:, 0] + (cw / 2 - hw - 0.01))
@@ -543,9 +559,18 @@ def _decks(trs, k, f, at, ts, head, torso, hw, cw, ch):
     me = trs[k]
     body = 0.5 * head[:, 0] + 0.5 * torso[:, 0]
     down, tips = working(me)
-    reach = 0.0
-    if down.any():
-        reach = float(np.median(tips[down, 0] - (0.5 * me["head"][down, 0] + 0.5 * me["torso"][down, 0])))
+    m = (me["t"] >= at[0] - 0.1) & (me["t"] <= at[-1] + 0.1)
+    if not m.any() or down[m].mean() < AT_DECKS or not down.any():
+        return None                                           # their hands mostly not on the gear
+    if float(np.median(tips[down & m, 1] if (down & m).any() else tips[down, 1])) > LOW_HANDS:
+        return None                                           # the gear at the frame's bottom edge: a sliver
+    for i, o in enumerate(trs):                               # a hype moment: arms in the air, theirs or a fellow
+        if i != k and (f["size"][i] < PEER * f["size"][k] or f["seen"][i] < 0.3):   # performer's -- the people
+            continue                                          # are the shot, not the gear
+        mo = (o["t"] >= at[0] - 0.1) & (o["t"] <= at[-1] + 0.1)
+        if mo.any() and arms_up(o)[mo].mean() >= HYPE:
+            return None
+    reach = float(np.median(tips[down, 0] - (0.5 * me["head"][down, 0] + 0.5 * me["torso"][down, 0])))
     room = np.maximum(cw / 2 - FACE_IN * hw - 0.005, 0.0)      # the face's near side in: eyes and nose
     keep = np.minimum(room, BELOW * cw)                        # decks in front: the head kept near the middle
     off = body + (1 + DECKS) * reach                          # the working area, past the hands
@@ -555,7 +580,38 @@ def _decks(trs, k, f, at, ts, head, torso, hw, cw, ch):
     lo, hi = head[:, 0] - room, head[:, 0] + room
     x = _clear(trs, k, f, at, (1 - w) * below + w * side, cw, lo, hi)
     y = head[:, 1] + (0.5 - 0.2) * ch
-    return ts, x, y, "decks"
+    gx = np.interp(at, me["t"][down], tips[down, 0])
+    gy = float(np.median(tips[down, 1]))
+    gear = (gx, np.sign(reach) if w > 0 else 0.0, gy)         # where the gear is: from the fingers on, below them
+    return ts, x, y, "decks", gear
+
+
+def arms_up(tr):
+    """Per pose frame: a hand (wrist seen) above the head -- arms in the air on a drop, a jump, hyping the crowd."""
+    w = tr["arms"][:, 2:]
+    return ((w[:, :, 2] > KP) & (w[:, :, 1] < tr["head"][:, 1][:, None])).any(1)
+
+
+def _fill(trs, at, x, cw, gear, n=12):
+    """How much of a strip (centres x at times at, full height) is people or gear rather than empty background:
+    0..1, the share of a grid over it inside someone's box or the decks (gear: x of the fingers per time, the side
+    the decks run to (-1, 1, 0 in front), the hands' height -- the gear from just above them down, GEAR wide)."""
+    gx, side, gy = gear
+    cols = (np.arange(n) + 0.5) / n - 0.5
+    rows = (np.arange(n) + 0.5) / n
+    hit = np.zeros((len(at), n, n), bool)
+    xs = x[:, None] + cols[None, :] * cw                       # (T, n) columns
+    for o in trs:
+        b = _at(o, at, "box")
+        live = (at >= o["t"][0] - 0.1) & (at <= o["t"][-1] + 0.1)
+        inx = (xs >= b[:, 0:1]) & (xs <= b[:, 2:3]) & live[:, None]
+        iny = (rows[None, :] >= b[:, 1:2]) & (rows[None, :] <= b[:, 3:4])
+        hit |= inx[:, None, :] & iny[:, :, None]
+    lo = np.where(side < 0, gx - GEAR, gx - (GEAR / 2 if side == 0 else 0.03))
+    hi = np.where(side > 0, gx + GEAR, gx + (GEAR / 2 if side == 0 else 0.03))
+    gin = (xs >= lo[:, None]) & (xs <= hi[:, None])
+    hit |= gin[:, None, :] & (rows >= gy - 0.05)[None, :, None]
+    return float(hit.mean())
 
 
 def glide(ts, v, lo, hi):
