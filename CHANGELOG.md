@@ -9,6 +9,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **No shot shorter than the eye can read** (`plan.<fmt>` `"min_shot"`, seconds; default 0: off, so earlier
+  edits plan as they did). Fiesta del Sol's Instagram cut at 131 BPM had 36 of 80 shots one beat long (0.46 s):
+  quick cuts nobody can see. With `"min_shot": 0.9` every shot plays at least that long, in whole beats
+  (`least_beats`: 2 beats at 131 BPM), handled where the short shots come from: the 8-beat phrase patterns with a
+  shorter shot are not used (none left -- the quick phrases -- their short shots join a neighbour inside the
+  phrase, so it still sums to 8: `regroup`; the climax's slots and the arrival's dancing rhythm likewise); quick cuts
+  of the editor's picks are that long each, fewer of them for the same beats; an editor's pick is never fitted,
+  settled or trimmed under it, and one whose own in-out can't fill it leaves its slot (named in the plan log) --
+  never sped up, never played past its out-point; and when the picks overfill the reel, the weakest go rather than
+  play a beat each. Last, after the music has moved the cuts, `plan.hold_min` holds any shot still short: a pick,
+  the logo, the opening, a title, a band insert grows from a neighbour where its footage has room; any other short
+  shot (a quick cut, a planner's shot, an effect shot) joins a neighbour -- the planner's own shot first, the cuts
+  on the beat grid, the reel's length unchanged. Snap-window halving and people splits keep both halves at least
+  that long.
+
 - **The picture's movement follows the song's** (`reel/music.py` `movement`, `reel/motion.py`, `reel/sync.py`,
   `plan.stage_holds` / `motion_order` / `follow_motion`; on by default, `plan.<fmt>` `"follow_motion": false` turns
   it off). The music is read for its movement, beat by beat: a **stop** (everything pauses or closes down: the

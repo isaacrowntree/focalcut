@@ -35,6 +35,7 @@ Cut points sit on the frame nearest each beat counted from the reel's start, so 
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import functools
 import itertools
@@ -69,6 +70,10 @@ PHRASES = {
     "build": [[2, 2, 1, 1, 1, 1]],
     "calm": [[4, 4], [8], [5, 3], [6, 2], [3, 5]],     # where the music has no rhythm section: long, flowing shots
 }
+# no shot on screen shorter than reel.json plan.<fmt> "min_shot" seconds (0, the default: no floor): as whole beats,
+# LEAST -- set for one plan's run by at_least() (build, story, pick_story and place), 1 beat outside it
+LEAST = 1
+LEAST_BEAT = None        # ... and the song's real beat it is counted in (picks measured in pick_beat's longer one)
 LONG = ("pattern", "travel", "spin", "trick", "dip", "style")    # moves that need time to play out
 SIZE = {"landscape": (1920, 1080), "portrait": (1080, 1920)}
 MOVES = ("spin", "dip", "trick", "pattern", "shake")
@@ -104,6 +109,9 @@ _COMMON = dict(
     # set isn't cut with daytime shows; None: every show (portrait: every dance unit)
     climax_from=None,
     land_hold=1.0,                               # beats of the dancer at rest a shot keeps after a move lands
+    # seconds: no shot plays shorter on screen (whole beats: least_beats; quick phrases, quick cuts and the picks
+    # held to it at the source, place() joins any still short to a neighbour); 0: off, a shot may be one beat
+    min_shot=0,
 )
 CFG = {
     "landscape": dict(_COMMON, heroes=4, night_pace="medium"),
@@ -118,6 +126,48 @@ def config(project, fmt):
     cfg.setdefault("mode", project.config.get("mode"))      # "picks": the reel is cut from the editor's picks
     cfg.setdefault("stabilise", project.config.get("stabilise"))   # off: shaky footage is avoided, never warped
     return cfg
+
+
+def least_beats(cfg, beat):
+    """The fewest whole beats a shot plays so it is on screen at least reel.json plan.<fmt> "min_shot" seconds
+    (cfg "min_shot"; 0 or unset: 1 beat, no floor)."""
+    m = float((cfg or {}).get("min_shot") or 0)
+    return max(1, math.ceil(m / beat - 1e-6)) if m > 0 and beat else 1
+
+
+@contextlib.contextmanager
+def at_least(cfg, beat):
+    """LEAST for the passes run inside: no shot under cfg "min_shot" seconds (least_beats). Nests; restores on exit."""
+    global LEAST, LEAST_BEAT
+    was = LEAST, LEAST_BEAT
+    LEAST, LEAST_BEAT = max(LEAST, least_beats(cfg, beat)), LEAST_BEAT or beat
+    try:
+        yield LEAST
+    finally:
+        LEAST, LEAST_BEAT = was
+
+
+def fills_least(span, beat=None):
+    """Whether a pick's own in-out (span) plays LEAST beats of the song's real beat (pick_beats)."""
+    return pick_beats(span, LEAST_BEAT or beat) >= LEAST
+
+
+def regroup(lengths, least=None):
+    """Shot lengths (beats) with none under least (default LEAST): the first of the shortest joins its shorter
+    neighbour (the later one on a tie) until none is short -- the same beats in fewer, longer shots; a lone short
+    length stays. Non-numbers (a climax's "H" slot) are walls: nothing joins across them."""
+    least = LEAST if least is None else least
+    L = list(lengths)
+    num = lambda i: isinstance(L[i], (int, np.integer))
+    while True:
+        short = [i for i in range(len(L)) if num(i) and L[i] < least
+                 and any(0 <= j < len(L) and num(j) for j in (i - 1, i + 1))]
+        if not short:
+            return L
+        i = min(short, key=lambda i: (L[i], i))
+        j = min((j for j in (i - 1, i + 1) if 0 <= j < len(L) and num(j)), key=lambda j: (L[j], -j))
+        L[min(i, j)] = L[i] + L[j]
+        del L[max(i, j)]
 
 
 def look_of(cfg):
@@ -281,7 +331,7 @@ def fit(shots, budget, base):
     i = 0
     while used > budget and plain:
         s = plain[i % len(plain)]
-        if s["beats"] > 1 and (s["beats"] > base or all(p["beats"] <= base for p in plain)):
+        if s["beats"] > LEAST and (s["beats"] > base or all(p["beats"] <= base for p in plain)):
             s["beats"] -= 1; used -= 1
         i += 1
         if i > 10 * len(plain):
@@ -332,11 +382,16 @@ def rhythm(budget, pace, energy, build=False, hold_every=4, feel=None):
             pool = PHRASES["hold"]
         else:
             pool = PHRASES["fast" if (pace == "fast" or e > 1.1 * med) and pace != "slow" else "medium"]
+        if LEAST > 1:                                        # min_shot: no pattern with a shot under it; none
+            ok = [p for p in pool if min(p) >= LEAST]        # left (the quick ones), their short shots joined, and
+            pool = ok or [list(q) for q in dict.fromkeys(    # the quickest medium phrases for variety (no run of
+                [tuple(regroup(p)) for p in pool]            # one length)
+                + [tuple(p) for p in PHRASES["medium"] if min(p) >= LEAST and len(p) >= 3])]
         options = [p for p in pool if p != last] or pool
         last = options[(k * 7 + int(10 * e)) % len(options)]  # varied, but the same plan every run
         out += last
     out += {0: [], 1: [1], 2: [2], 3: [2, 1], 4: [2, 2], 5: [2, 1, 2], 6: [2, 2, 2], 7: [2, 1, 2, 2]}[rest]
-    return out
+    return regroup(out)
 
 
 def phrase_energy(music, a, n):
@@ -691,6 +746,95 @@ def absorb(seq, s, n, beat, at=None):
         spread(seq, near, short)
 
 
+KEEP_SHORT = ("logo", "logo_image", "open", "ending", "close", "title", "band", "reaction", "person", "featured")
+
+
+def can_play(x, n, beat):
+    """Whether shot x has the footage to play n beats: an editor's pick (or a quick cut of one) inside its own in-out
+    (pick_beats: PICK_OVER of a beat to spare), the ending as configured (it plays on past its stretch), a
+    planner's shot inside its unit."""
+    if x.get("ending"):
+        return True
+    if x.get("span"):
+        return pick_beats(x.get("whole") or x["span"], beat) >= n
+    u = x["unit"]
+    return "t1" not in u or (u["t1"] - u["t0"]) >= n * beat - 1e-6
+
+
+def merge_out(seq, k, beat):
+    """Shot k goes and its beats join a neighbour that can play them (can_play) -- the planner's own shot before an
+    editor's pick, its own act before the next, the one before it on a tie -- else the nearest such shot of its act.
+    The grid stays: every other cut moves by whole beats or not at all. Returns the shot that took the beats (None:
+    nothing could, and k stays)."""
+    x, n = seq[k], seq[k]["beats"]
+    def key(j):
+        y = seq[j]
+        return (y["act"] != x["act"], bool(y.get("span") or y.get("add")), abs(j - k), j > k)
+    near = [j for j in (k - 1, k + 1) if 0 <= j < len(seq) and can_play(seq[j], seq[j]["beats"] + n, beat)]
+    if not near:
+        near = [j for j in range(len(seq)) if j != k and seq[j]["act"] == x["act"]
+                and can_play(seq[j], seq[j]["beats"] + n, beat)]
+    if not near:
+        return None
+    y = seq[min(near, key=key)]
+    _resize(y, y["beats"] + n, beat)
+    del seq[k]
+    return y
+
+
+def unplay(seq, i, beat=None):
+    """An editor's pick too short for min_shot (LEAST beats, inside its own in-out) leaves its slot: its beats go to
+    a neighbour (merge_out), or -- none can take them -- just out (the act's grid is evened out later)."""
+    s = seq[i]
+    print(f"[reel] min_shot: the pick {s['unit']['id']} {s['span'][0]:.2f}-{s['span'][1]:.2f} is shorter than "
+          f"{LEAST} beats: left out of its slot rather than sped up")
+    if not beat or merge_out(seq, i, beat) is None:
+        del seq[i]
+
+
+def hold_min(seq, beat, least=None):
+    """No shot under least beats (default LEAST; reel.json plan.<fmt> "min_shot"), the last word on lengths before
+    place() times the shots. A short shot that matters (an editor's pick that is not a quick cut, the logo, the
+    opening, the ending, a title, a band insert, a reaction, a person) grows when its footage has room and a
+    neighbour can give the beats and stay at least least (the planner's own shot first, the longer first); any other
+    short shot -- a quick cut, a planner's shot, an effect shot -- goes, its beats joining a neighbour (merge_out:
+    the planner's own shot first). Cuts stay on the beat grid and the total stays. Returns (grown, merged)."""
+    least = LEAST if least is None else least
+    grown = merged = 0
+    if least <= 1:
+        return grown, merged
+    stuck = set()
+    while True:
+        short = [k for k, x in enumerate(seq) if x["beats"] < least and id(x) not in stuck]
+        if not short or len(seq) < 2:
+            break
+        k = min(short, key=lambda k: (seq[k]["beats"], k))
+        x = seq[k]
+        d = least - x["beats"]
+        keeper = (x.get("span") and not x.get("reuse")) or x.get("add") or any(x.get(f) for f in KEEP_SHORT)
+        fixed = any(x.get(f) for f in ("ending", "logo", "open", "close"))   # (these never go)
+        if keeper and can_play(x, least, beat):
+            give = lambda j, k=k, d=d: (0 <= j < len(seq) and j != k and seq[j]["beats"] - d >= least
+                              and not any(seq[j].get(f) for f in ("ending", "logo", "open", "close")))
+            donors = [j for j in (k - 1, k + 1) if give(j)] or \
+                ([j for j in range(len(seq)) if seq[j]["act"] == x["act"] and give(j)] if fixed else [])
+            if donors:
+                j = min(donors, key=lambda j: (seq[j]["act"] != x["act"], bool(seq[j].get("span") or seq[j].get("add")),
+                                               abs(j - k), -seq[j]["beats"], j > k))
+                _resize(seq[j], seq[j]["beats"] - d, beat)
+                _resize(x, least, beat)
+                grown += 1
+                continue
+        if fixed or merge_out(seq, k, beat) is None:
+            stuck.add(id(x))
+        else:
+            merged += 1
+    for x in seq:                                            # a pick held longer: still inside its own in-out
+        if x.get("whole") and x["span"][0] + x["beats"] * beat > x["whole"][1] + PICK_OVER * beat:
+            _resize(x, x["beats"], beat)
+    return grown, merged
+
+
 def fit_pick(seq, i, beat, floor=1):
     """The editor's selection plays as long as they chose (to the nearest beat): its shot gives spare beats to the
     plain shot nearest it, and takes the beats it needs from the weakest plain shots in its act -- condensing them to
@@ -705,6 +849,12 @@ def fit_pick(seq, i, beat, floor=1):
         n /= PICK_PACE.get(s["unit"]["role"], PICK_PACE["dance"])
         s["fx"], s["effect"] = ["fit"], "fit"
     want = max(1, min(PICK_BEATS, round(n / beat)))
+    if want < LEAST:                                         # min_shot: at least LEAST beats of its own in-out
+        w = s.get("whole") or s["span"]                      # -- or, too short for that, out of this slot (never
+        if not fills_least(w, beat):                         # sped up, never past its out-point)
+            unplay(seq, i, beat)
+            return
+        want = LEAST
     while s["beats"] != want:
         i = next(k for k, x in enumerate(seq) if x is s)
         near = sorted((j for j in range(len(seq)) if j != i and seq[j]["act"] == s["act"] and plain(seq[j])),
@@ -763,10 +913,12 @@ def settle_picks(seq, beat, budget, real):
             continue
         for s in picks:
             s["beats"] = max(1, min(PICK_BEATS, round((s["span"][1] - s["span"][0]) / beat)))
+            if s["beats"] < LEAST and fills_least(s.get("whole") or s["span"], real):
+                s["beats"] = LEAST                           # (min_shot; one too short goes later: hold_min)
         over = sum(s["beats"] for s in mine) - room
         spare = sorted((s for s in mine if plain(s) and not s.get("span")), key=lambda s: s.get("rank", 0))
         for s in spare:
-            while over > 0 and s["beats"] > 1:
+            while over > 0 and s["beats"] > LEAST:
                 s["beats"] -= 1; over -= 1
         for s in spare:
             if over <= 0:
@@ -777,7 +929,7 @@ def settle_picks(seq, beat, budget, real):
                 seq.remove(s)
         while over > 0:
             s = max(picks, key=lambda s: s["beats"])
-            if s["beats"] <= 1:
+            if s["beats"] <= LEAST:
                 break
             s["beats"] -= 1; over -= 1
         keep = [s for s in spare if s in seq]
@@ -953,10 +1105,10 @@ def finale_reuse(seq, beat, close=None):
     left = room - (close["beats"] if close else 0) - sum(s["beats"] for s in keep)
     while left < 0 and keep:                                 # (the picks first, as long as they can stay)
         s = max(keep, key=lambda s: s["beats"])
-        if s["beats"] > 1:
+        if s["beats"] > LEAST:
             s["beats"] -= 1; left += 1
-        else:
-            keep.remove(s); left += 1
+        else:                                                # (min_shot: it goes rather than play under it)
+            keep.remove(s); left += s["beats"]
     seq[at:at] = keep + ([close] if close else [])
     if left > 0:
         quick_cuts(seq, left, "finale", beat, at + min(1, len(keep)), size=2)
@@ -976,7 +1128,10 @@ def quick_cuts(seq, n, act, beat, at=None, size=1, hold=True, avoid=()):
     act, and the day's own picks first in the day (DAY_ACTS); crowd and B-roll picks first, never the same clip twice
     in a row; never the closing shot's footage (the ending or close, and avoid: one taken out of seq to move it,
     ENDING_GAP either side: it is seen once, at the end, even where another pick holds the same moment). A cut is
-    plain footage: no logo, title, effect or ending from the pick it comes from."""
+    plain footage: no logo, title, effect or ending from the pick it comes from. min_shot (LEAST): each cut is at
+    least LEAST beats -- fewer cuts for the same beats; a remainder under it goes to the last cut where its footage
+    has room, else to the shots round them (hold), never to a cut of its own."""
+    size = max(size, LEAST)
     picks = [s for s in seq if s.get("span") and not s.get("reuse") and not s.get("close") and not s.get("ending")]
     if not n or not picks:
         return
@@ -1008,7 +1163,7 @@ def quick_cuts(seq, n, act, beat, at=None, size=1, hold=True, avoid=()):
             return
         at = idx[len(idx) // 2] + 1 if len(idx) > 1 else idx[0]
     out, last = [], seq[at - 1]["unit"]["clip"] if at else None
-    while sum(c["beats"] for c in out) < n and srcs:
+    while n - sum(c["beats"] for c in out) >= LEAST and srcs:
         k = next((k for k, (s, _) in enumerate(srcs) if s["unit"]["clip"] != last), 0)
         s, sp = srcs.pop(k)
         c = {key: v for key, v in s.items() if key not in QUICK_DROP}
@@ -1016,6 +1171,9 @@ def quick_cuts(seq, n, act, beat, at=None, size=1, hold=True, avoid=()):
                  beats=min(size, n - sum(c["beats"] for c in out)), act=act, fx=[], effect=None, reuse=True)
         out.append(c)
         last = s["unit"]["clip"]
+    rem = n - sum(c["beats"] for c in out)                   # (min_shot: a remainder under LEAST)
+    if out and 0 < rem < LEAST and out[-1]["span"][1] - out[-1]["span"][0] >= 0.8 * beat * (out[-1]["beats"] + rem):
+        out[-1]["beats"] += rem
     seq[at:at] = out
     left = n - sum(c["beats"] for c in out)                   # fewer sources than beats: the cuts and the plain
     if out and left and hold:                                 # shots round them share the rest, none piling up
@@ -1095,6 +1253,8 @@ def balance_picks(seq, beat, budget):
     for x in seq:
         if x.get("span") and not x.get("ending") and not x.get("open"):
             x["beats"] = max(1, min(PICK_BEATS, round((x["span"][1] - x["span"][0]) / beat)))
+            if x["beats"] < LEAST and fills_least(x.get("whole") or x["span"], beat):
+                x["beats"] = LEAST                           # (min_shot; one too short goes later: hold_min)
     keep = ("ending", "open", "logo", "span")
     order = [a for a in ACT_NAMES if a != "teaser"]
     used = lambda a: sum(x["beats"] for x in seq if x["act"] == a)
@@ -1118,7 +1278,8 @@ def balance_picks(seq, beat, budget):
                 last["act"] = b
                 continue
             other = sorted((x for x in mine if not any(x.get(k) for k in keep)), key=lambda x: x.get("rank", 0))
-            x = next((x for x in other if x["beats"] > 2), None) or next((x for x in other if x["beats"] == 2), None)
+            x = next((x for x in other if x["beats"] > max(2, LEAST)), None) or \
+                next((x for x in other if x["beats"] == 2 and LEAST < 2), None)
             if x is not None:
                 x["beats"] -= 1
                 continue
@@ -1231,12 +1392,13 @@ def split_for(seq, cover, count, shows, items, act, clip, role="dance", skip=())
     def ok(i):
         x = seq[i]
         need = 3 if x["act"] == "climax" else 4                    # both halves keep 2 beats (climax: 1 for the insert)
+        need = max(need, 2 * LEAST)                                 # (min_shot: both keep LEAST at least)
         if (x["beats"] < need or x["fx"] or x.get("ending") or x.get("logo") or x.get("band") or x.get("reaction")
                 or x.get("span") or x.get("featured")
                 or not 0 < i < len(seq) - 1 or clip in (x["unit"]["clip"], seq[i + 1]["unit"]["clip"])
                 or (role == "transition" and "transition" in (x["unit"]["role"], seq[i + 1]["unit"]["role"]))):
             return False                                         # (no B-roll beside B-roll)
-        short = dict(x, beats=x["beats"] - (2 if x["beats"] >= 4 else 1))
+        short = dict(x, beats=x["beats"] - max(2 if x["beats"] >= 4 else 1, LEAST))
         return all(count[c] > 1 or shows(short, items[c]) for c in cover[i])
     idx = [i for i in range(len(seq)) if seq[i]["act"] == act and ok(i)] or \
         [i for i in range(len(seq)) if seq[i]["act"] not in ("teaser", "finale", *skip) and ok(i)]
@@ -1354,7 +1516,7 @@ def cover_people(P, seq, recs, home, people, fmt, beat, climax_from=None, allowe
             if i is None:
                 continue
             old = seq[i]
-            give = 2 if old["beats"] >= 4 else 1
+            give = max(2 if old["beats"] >= 4 else 1, LEAST)
             count[cover[i]] -= 1
             old["beats"] -= give
             cover[i] = [k for k, it in enumerate(items) if shows(old, it)]
@@ -2178,7 +2340,13 @@ def set_titles(P, seq, recs, sets):
 
 def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, rate=None):
     """The shots, act by act, with their beats summing to video_beats. direction(unit, t) -> (dx_in, dx_out) says
-    which way a moment travels (flow.Flow); without it, cuts match on the kind of move only."""
+    which way a moment travels (flow.Flow); without it, cuts match on the kind of move only. cfg "min_shot": no
+    shot under it, from the phrases' lengths on (at_least)."""
+    with at_least(cfg, music.get("beat")):
+        return _story(fmt, cfg, music, moments, video_beats, total_beats, direction, rate)
+
+
+def _story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, rate=None):
     from .flow import still
     direction = direction or still
     recs = [r for r in moments if r["moments"] and (fmt == "portrait" or r["orient"] == "landscape")]
@@ -2252,7 +2420,7 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
         ar = weave(ar, seq[-1], direction=direction)
         lb, ld = itertools.cycle([4, 3, 5, 4, 3, 5, 4]), itertools.cycle([2, 3, 1, 2, 1, 3, 2, 2, 1, 3, 2, 1])
         for s in ar:                                         # held B-roll, the dancing in an uneven rhythm between
-            s["beats"] = next(lb) if s["unit"]["role"] == "transition" else next(ld)
+            s["beats"] = next(lb) if s["unit"]["role"] == "transition" else max(next(ld), LEAST)
     else:
         ar = cover(P, broll or dance, max(budget["arrival"] // 4, 1), 4, "arrival", cap=3)
     seq += fit(ar, budget["arrival"], 2)
@@ -2308,6 +2476,7 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
     while left > 0:                                          # what's left: 2, 1, 1, ... not a run of single beats
         x = min((2, 1, 1)[k % 3], left)
         slots.append(x); left -= x; k += 1
+    slots = regroup(slots)                                   # (min_shot: no slot under it)
     slots.append("B")
     pool = after_dark(dance if fmt == "portrait" else shows or dance)
     if cfg.get("climax_from"):
@@ -2496,7 +2665,7 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
     i = 0
     while over != 0 and i < 50 * len(spare):
         s = spare[i % len(spare)]
-        if over > 0 and s["beats"] > 1:
+        if over > 0 and s["beats"] > LEAST:
             s["beats"] -= 1; over -= 1
         elif over < 0:
             s["beats"] += 1; over += 1
@@ -2511,9 +2680,16 @@ def story(fmt, cfg, music, moments, video_beats, total_beats, direction=None, ra
             seq.remove(s)
     while over > 0:
         s = max((s for s in seq if s.get("span")), key=lambda s: s["beats"], default=None)
-        if s is None or s["beats"] <= 1:
+        if s is None or s["beats"] <= LEAST:
             break
         s["beats"] -= 1; over -= 1
+    while over > 0 and LEAST > 1:                            # min_shot: every pick at its least -- the weakest go
+        s = min((s for s in seq[1:-1] if s.get("span") and not any(s.get(f) for f in ("open", "ending", "close", "logo"))),
+                key=lambda s: (not s.get("reuse"), s.get("rank", 0)), default=None)   # (a quick cut first)
+        if s is None:
+            break
+        over -= s["beats"]
+        seq.remove(s)
     if over < 0:                                             # (a dropped shot took more than was over)
         max((s for s in seq if s.get("span")), key=lambda s: s["beats"], default=seq[-1])["beats"] -= over
     if cfg.get("pick_hold"):                                 # picks cut to pieces: no long filler between them, and
@@ -2801,6 +2977,12 @@ def pick_beats(span, beat):
 
 
 def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
+    """The reel cut from the editor's picks (_pick_story), no shot under cfg "min_shot" (at_least)."""
+    with at_least(cfg, music.get("beat")):
+        return _pick_story(project, fmt, cfg, music, moments, video_beats, total_beats)
+
+
+def _pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
     """The reel cut from the editor's picks (reel.json "mode": "picks"): what they chose, as they chose it.
 
       - every pick plays once, whole (to the nearest beat), in the story's order (card_shuffle); nothing is replayed,
@@ -2904,6 +3086,11 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
         return out
     first, lead_out = named(cfg.get("open_with"), "open_with"), named(cfg.get("end_with"), "end_with")
     pinned = {id(m) for _, m in first + lead_out}
+    short = [x for x in picks if want(x[1]) < LEAST]         # min_shot: a pick whose own in-out can't fill it is
+    picks[:] = [x for x in picks if want(x[1]) >= LEAST]     # left out, never sped up
+    if short:
+        print(f"[reel] {fmt}: min_shot: {len(short)} picks shorter than {LEAST} beats left out: "
+              + ", ".join(f"{r['unit']['id']} {m['span'][0]:.2f}-{m['span'][1]:.2f}" for r, m in short))
 
     # lengths: every pick whole; over the room, the B-roll picks give a beat each first, then the people (the least
     # starred first among each, the longest first), then picks go -- B-roll before people
@@ -2913,10 +3100,10 @@ def pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
     stars = lambda m: 9 if id(m) in pinned else m.get("stars") or 3
     broll = {id(m): r["role"] == "transition" and id(m) not in pinned for r, m in every}
     scenery = {id(m): broll[id(m)] and not people_broll(r["unit"]) for r, m in every}   # (a DJ, a singer: a person --
-    floor = lambda m: min(want(m), PICK_FLOOR_BROLL.get(fmt, PICK_FLOOR) if scenery[id(m)] else PICK_FLOOR)   # kept)
+    floor = lambda m: min(want(m), max(LEAST, PICK_FLOOR_BROLL.get(fmt, PICK_FLOOR) if scenery[id(m)] else PICK_FLOOR))
     asked = sum(beats.values())
     over = asked - room
-    dropped = []
+    dropped = list(short)
     q = {}                                                   # how clearly each pick is seen, among its own kind:
     if over > 0:                                             # 0 (the least) .. 1, on the scrub's windows
         wins = load_windows(project, "landscape") or load_windows(project, fmt) or {}
@@ -4326,7 +4513,12 @@ def clear_of_bans(t, L, u):
 def build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=None, assess_shots=True):
     """The plan for one format: shots with beat-locked record positions and source in-points. picks: the editor's
     overrides (apply_picks); None reads them from the project. assess_shots: rank moments on how they play in this
-    format (framing, face, shake) first."""
+    format (framing, face, shake) first. reel.json plan.<fmt> "min_shot": no shot under it (at_least)."""
+    with at_least(config(project, fmt), music.get("beat") or float(np.median(np.diff(music["beats"])))):
+        return _build(project, fmt, music, moments, stinger_len, direction, picks, assess_shots)
+
+
+def _build(project, fmt, music, moments, stinger_len=0.0, direction=None, picks=None, assess_shots=True):
     if project is not None and getattr(project, "config", {}).get("no_kissing"):   # no kiss plays in this reel
         if not os.path.exists(project.path("kisses.json")):  # (where each starts and ends: timed now when the
             from .people import kiss_spans as time_kisses  # people step hasn't)
@@ -5714,7 +5906,7 @@ def snap_windows(project, fmt, shots, moments, cfg, W=None, split=True):
             continue
         stuck.append(f"#{i} {u['id']}@{a:.1f}")
         stuck_at.append(s)
-    halves = [s for s in stuck_at if split and s["beats"] >= SPLIT_BEATS and not s["fx"] and not s.get("velocity")
+    halves = [s for s in stuck_at if split and s["beats"] >= max(SPLIT_BEATS, 2 * LEAST) and not s["fx"] and not s.get("velocity")
               and "rec_in" in s and "frames" in s]                 # (placed shots only)
     if halves:
         for s in halves:
@@ -5801,7 +5993,7 @@ def lands(project, seq, beat, hold):
         def spare(j, s=s):
             d = seq[j]
             edge = (j > 0 and seq[j - 1]["act"] != d["act"]) or (j + 1 < len(seq) and seq[j + 1]["act"] != d["act"])
-            keep = max(need if d.get("land") is not None else 1, 2 if edge else 1)
+            keep = max(need if d.get("land") is not None else 1, 2 if edge else 1, LEAST)
             return (d["act"] == s["act"] and not d["fx"] and not any(d.get(f) for f in ("ending", "logo", "span"))
                     and d["beats"] - 1 >= keep)
         while s["beats"] < need:
@@ -5831,7 +6023,7 @@ def _bounds(seq, beat=None):
         else:
             room = int((u["t1"] - u["t0"]) / beat) if beat and "t1" in u else 10 ** 6
             a, b = min(n, 2), max(n, min(n + MU.SUSTAIN_MAX, room))
-        lo.append(a); hi.append(b)
+        lo.append(max(a, min(n, LEAST))); hi.append(b)          # (min_shot: never under LEAST)
     return lo, hi
 
 
@@ -5913,6 +6105,13 @@ def real_speed_close(seq):
 
 
 def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, acts=None, song=None):
+    """_place, no shot under cfg "min_shot" seconds (at_least: hold_min, after the music has moved the cuts)."""
+    cfg = cfg or config(project, fmt)
+    with at_least(cfg, music.get("beat") or float(np.median(np.diff(music["beats"])))):
+        return _place(project, fmt, seq, music, cfg, direction, stinger_len, acts, song)
+
+
+def _place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, acts=None, song=None):
     """Turn a sequence of shots (beats, act, fx; from story() or built by hand with shot()) into a plan that render,
     xml_export and review can use: record positions locked to the beat grid, velocity edits slowed on the dancer's
     landing on a strong beat, the crop that follows the subject, shake (stabilised where needed) and the
@@ -5951,6 +6150,11 @@ def place(project, fmt, seq, music, cfg=None, direction=None, stinger_len=0.0, a
     real_speed_close(seq)
     lands(project, seq, beat, hold)
     hold_through(seq, F["holds" if cfg.get("follow_motion", True) else "sustain"], beat)
+    if LEAST > 1:                                            # min_shot: the last word on lengths
+        grown, merged = hold_min(seq, beat)
+        if grown or merged:
+            print(f"[reel] {fmt}: min_shot {cfg.get('min_shot')} s ({LEAST} beats): {grown} short shots held longer, "
+                  f"{merged} joined to a neighbour")
     rec = 0
     for s in seq:
         L = T(rec + s["beats"]) - T(rec)

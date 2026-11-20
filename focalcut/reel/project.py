@@ -84,6 +84,14 @@ reel.json keys (all optional except song):
                                          (kisses.json: where each starts and ends) is banned footage for it, and
                                          an editor's pick that plays one is left out, named in the plan log
     follow_motion      false (in plan.<fmt>): the picture's movement is not matched to the song's (sync.py)
+    min_shot           seconds (in plan.<fmt>; a cut's "plan" may set its own): no shot plays shorter than this on
+                                         screen, in whole beats (0.9 s at 131 BPM: 2 beats). The phrase patterns
+                                         with a shorter shot are not used (their quick shots joined), quick cuts
+                                         are that long each (fewer of them), an editor's pick is never cut under
+                                         it -- one whose own in-out can't fill it leaves its slot, never sped up
+                                         or played past its out-point -- and place() joins any shot still short to
+                                         a neighbour (the planner's own first), the cuts on the beat grid. Default
+                                         0: off
     use                ["<profile>", ...]  profiles applied in order, then this level's own keys: at the top level
                                          for the main reel, inside a cut for that cut. "footage" and "ban" add up
                                          across profiles, "plan" merges per format, any other key: the last wins
