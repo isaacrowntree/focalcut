@@ -42,6 +42,7 @@ import itertools
 import json
 import math
 import os
+import re
 from collections import Counter
 
 import numpy as np
@@ -279,6 +280,36 @@ def people_broll(u):
         return False
     words = f"{u.get('tag', '')} {u.get('id', '')}".lower()
     return any(k in words for k in PERFORMERS + tuple(MEMBERS))
+
+
+DJ_WORDS = ("dj", "djs", "deejay", "decks")   # is_dj(): a word of a unit's tag, id or category that says DJ
+DJ_BIAS = 0.25           # a DJ moment ranks up to this much up (hands on the decks) or down (arms up, no decks)
+
+
+def is_dj(u):
+    """Is this footage of a DJ (a set at the decks): a word of its tag, id or category is one of DJ_WORDS --
+    "dj-klp-day", "C2033_dj", category "dj" -- as a whole word (never "djembe" or an "adj" inside another word)."""
+    words = re.split(r"[^a-z0-9]+", f"{u.get('tag') or ''} {u.get('id') or ''} {u.get('category') or ''}".lower())
+    return any(w in DJ_WORDS for w in words)
+
+
+def dj_rank(project, u, t0, length):
+    """A DJ moment's rank factor, 1 -/+ DJ_BIAS: up where the DJ's hands are down on the decks (working the mixer,
+    the gear in frame), down where they're not (arms up, the DJ alone with the decks out of frame) -- lead.decks.
+    1.0 for footage that isn't a DJ's or has no pose scores. A bias, not a rule: a hype moment on a drop still
+    plays when the rest of it is strong."""
+    if not is_dj(u):
+        return 1.0
+    d, yf = _scores(project, u)
+    if d is None:
+        return 1.0
+    key = ("dj", u["score"], round(t0, 2), round(length, 2))   # (a part is tried every 0.1 s along a pick)
+    if key not in _DJ_SEEN:
+        _DJ_SEEN[key] = 1.0 + DJ_BIAS * (2.0 * LD.decks(d, yf, t0, length) - 1.0)
+    return _DJ_SEEN[key]
+
+
+_DJ_SEEN = {}
 
 
 def framable(r, fmt):
@@ -1734,6 +1765,8 @@ def pick_pieces(project, recs, fmt, beat, hold, budget, share=None, ending=None,
                 (k := (t >= x) & (t <= y)).any() else 0.0
             if scrub is not None:
                 win = lambda x, y, uid=u["id"]: scrubbed(uid, x, y)
+            if is_dj(u):                                     # a DJ: the parts with their hands on the decks first
+                win = lambda x, y, w0=win, u=u: w0(x, y) * dj_rank(project, u, x, y - x)
             if b - a <= w + 0.5 * beat:
                 wins = [(win(a, b), a, b)]
             else:                                            # every hold-beat window, best first, none overlapping
@@ -2877,10 +2910,11 @@ PART_STEADY = 1.25       # best_part: stretches of a trimmed pick shaking this m
                          # over (the camera's shake decides first, then the subject's clarity)
 
 
-def best_part(wins, a, b, length, shake=None):
+def best_part(wins, a, b, length, shake=None, bias=None):
     """Where a pick a..b trimmed to length seconds plays from: its steadiest stretches (shake: shake.series' (t, j),
     the camera's own shake, the same in every format) and of those the clearest on the scrub's windows (the editor
-    chose the stretch, the planner the best of it), the editor's own in-point when nothing tells them apart."""
+    chose the stretch, the planner the best of it), the editor's own in-point when nothing tells them apart.
+    bias(x, length): a factor on each part's score (a DJ's hands on the decks: dj_rank)."""
     if b - a <= length + 0.05:
         return a
     xs = np.arange(a, b - length + 1e-6, 0.1)
@@ -2891,9 +2925,9 @@ def best_part(wins, a, b, length, shake=None):
             xs, js = xs[keep], js[keep]
             if not wins:
                 return a if xs[0] == a else float(xs[int(np.argmin(js))])
-    if not wins:
+    if not wins and bias is None:
         return a
-    sc = [_part_score(wins, x, x + length) for x in xs]
+    sc = [(_part_score(wins, x, x + length) if wins else 1.0) * (bias(x, length) if bias else 1.0) for x in xs]
     return float(xs[int(np.argmax(sc))]) if max(sc) > sc[0] + 1e-6 or xs[0] != a else a
 
 
@@ -3222,7 +3256,8 @@ def _pick_story(project, fmt, cfg, music, moments, video_beats, total_beats):
         if s is None:                                        # a pick: whole, or its clearest part at its length
             n = beats[id(m)]
             if n < want(m):
-                a = best_part(wins.get(r["unit"]["id"]), *m["span"], n * beat, shake.series(project, r["unit"]["score"]))
+                a = best_part(wins.get(r["unit"]["id"]), *m["span"], n * beat, shake.series(project, r["unit"]["score"]),
+                              bias=(lambda x, L, u=r["unit"]: dj_rank(project, u, x, L)) if is_dj(r["unit"]) else None)
                 m = dict(m, whole=m["span"], span=[round(a, 3), round(min(m["span"][1], a + n * beat), 3)],
                          t=round(a + n * beat / 2, 2))
             s = P.take(r, m, beats=n, act="night")
@@ -3452,10 +3487,15 @@ def reframe(project, unit, t0, length, fmt, focus=True, pick=None):
     the source fills the frame as it is and there is nothing to follow. The editor's focal points for this format
     (picks "<fmt>", set in the source browser) take over the centre where there are any (focus=False: as derived).
     pick: the shot is one the editor chose (None: when it plays one of their in-out picks) -- a portrait strip
-    goes to the faces first (face_first)."""
+    goes to the faces first (face_first). A DJ's footage (is_dj) is framed on the DJ and their decks at the
+    source's full height, never zoomed in -- unless the editor framed the shot (a focal point or follow click near
+    it): then their framing stands as before."""
     picks = project.picks()
     pick = in_pick(picks, unit, t0, length) if pick is None else pick
-    c = _reframe(project, unit, t0, length, fmt, pick=fmt == "portrait" and pick)
+    keys = [k[0] for k in focus_keys(picks, unit, fmt) + (follow_keys(picks, unit) if fmt == "portrait" else [])]
+    theirs = any(t0 - FOCUS_REACH <= k <= t0 + length + FOCUS_REACH for k in keys)
+    c = _reframe(project, unit, t0, length, fmt, pick=fmt == "portrait" and pick,
+                 dj=is_dj(unit) and not theirs)                # (one the editor framed: as they framed it)
     if fmt == "portrait" and (picks.get(unit["id"]) or {}).get("follow"):   # the editor's chosen person
         d, yf = _scores(project, unit)
         c = follow_override(c, yf, follow_keys(picks, unit), t0, length, d)
@@ -3602,9 +3642,11 @@ def _cached(path, load, also=()):
     return hit[1]
 
 
-def _reframe(project, unit, t0, length, fmt, pick=False):
+def _reframe(project, unit, t0, length, fmt, pick=False, dj=False):
     """The derived crop (no focal points or follow clicks). pick: the shot is one of the editor's picks -- a narrow
-    strip goes to the faces first (face_first)."""
+    strip goes to the faces first (face_first). dj: a DJ shot -- the strip on the DJ and the decks they're working
+    (lead.strip dj), never zoomed past the source's full height (Isaac: "show more of their turntables than just
+    their bodies"): no face track, no lift, no zoom off a neighbour."""
     W, H = SIZE[fmt]
     stem = project.path("scores", unit["score"])
     d = _cached(stem + ".npz", FR.load, (stem + "_focus.npz", stem + "_subject.npz"))
@@ -3646,7 +3688,7 @@ def _reframe(project, unit, t0, length, fmt, pick=False):
     ok = ~np.isnan(union[:, 0])
     if not ok.any():
         return centre
-    zz = float(np.median(z[ok])) if person else 1.0         # one zoom for the whole shot
+    zz = float(np.median(z[ok])) if person and not dj else 1.0   # one zoom for the whole shot (a DJ: none)
     cw, ch = cw0 / zz, ch0 / zz
     sx = (union[ok, 0] + union[ok, 2]) / 2
     sy = union[ok, 1] + 0.45 * (union[ok, 3] - union[ok, 1])
@@ -3660,8 +3702,9 @@ def _reframe(project, unit, t0, length, fmt, pick=False):
     pan = one == FR.PAN                                     # a group panned (reel.json "group": "pan")
     if narrow and person and not pan:                       # never through someone the subject's size beside them
         zz, sx = clean_centre(d, pt[sel][ok], union[ok], sx, zz, cw0, ch0)
+        zz = 1.0 if dj else zz
         cw, ch = cw0 / zz, ch0 / zz
-    if narrow:                                              # a subject sitting low in the strip (a band under a
+    if narrow and not dj:                                   # a subject sitting low in the strip (a band under a
         zz = lift(union[ok], zz, cw0, ch0, FR.zmax(src_w, src_h, W, H))   # tall rig): zoom so the crop moves down
         cw, ch = cw0 / zz, ch0 / zz
     if narrow and not pan:                                  # look room: a profile gets space ahead of their gaze
@@ -3674,7 +3717,7 @@ def _reframe(project, unit, t0, length, fmt, pick=False):
     # (the gaze shift is smoothed again on its own over ~1 s inside gaze(): a head turn doesn't whip the strip)
     y = np.clip(smooth(sy, 10), ch / 2, 1 - ch / 2)
     ft = None
-    if narrow and person and not pan and "yf" in d:          # the strip off the face it should be on: follow the face
+    if narrow and person and not pan and not dj and "yf" in d:   # the strip off the face it should be on: follow the face
         main = _cached(project.path("scores", f'persons_{unit["id"].replace("#", "-")}.npz'), lambda f: dict(np.load(f)))
         ft = None
         if pick and R["pick_faces"]:                         # an editor's pick: on the faces they picked it for
@@ -3692,11 +3735,12 @@ def _reframe(project, unit, t0, length, fmt, pick=False):
         # one person for the whole shot, kept in the strip while they move (lead.py): the body tracker's strip says
         # who the shot opens on; who is dancing, nearest and in focus says who it is about
         ld = LD.strip(d, d.get("yf"), _cached(stem + "_shake.npz", lambda f: dict(np.load(f))), t0, length, cw, ch,
-                      body=(grid, x))
+                      body=(grid, x), dj=dj)
         if ld is not None:
             x, y = np.interp(grid, ld["t"], ld["x"]), np.interp(grid, ld["t"], ld["y"])
             me = ld["lead"]                                   # the stats below are about them
-            union = LD._at(me, pt[sel], "box")
+            union = LD._at(me, pt[sel], "box") if ld["on"] != "decks" else LD.at_work(me, pt[sel])   # (a DJ: head
+            #                                                   to hands on the decks)
             near = np.abs(me["t"][None, :] - pt[sel][:, None]).argmin(1)
             face = me["face"][near] & (np.abs(me["t"][near] - pt[sel]) <= 0.3)
             touch = None
@@ -4389,8 +4433,9 @@ def assess(project, recs, fmt, cfg):
             z = np.load(bf)                       # where a player is on screen and in focus (cover_people keeps to it)
             r["band_ok"] = (z["t"], (z["p"] >= role.BAND_P) & (z["sharp"] >= role.BAND_SHARP))
         yf = "|yf" if os.path.exists(project.path("scores", f"faces_{u['id']}.npz")) else ""   # (face scan: re-assess)
+        dj = is_dj(u)
         for m in r["moments"]:
-            k = f"{fmt}|{u['id']}|{m['t']}{yf}|c4"
+            k = f"{fmt}|{u['id']}|{m['t']}{yf}|c4" + ("|dj" if dj else "")   # (a DJ's strip: on the decks)
             if k not in cache:
                 c = reframe(project, u, m["t"] - 0.8, 2.4, fmt) or {}
                 cache[k] = [c.get("present", 1.0), c.get("inside", 1.0), c.get("face", 0.0), c.get("w", 1.0),
@@ -4405,6 +4450,9 @@ def assess(project, recs, fmt, cfg):
             j = j / max(cw, 0.2) if j is not None else None
             m["jitter"] = round(j, 5) if j is not None else None
             sc = m.get(key, m["score"])
+            if dj:                                           # hands on the decks over arms up / the DJ alone
+                m["decks"] = round(dj_rank(project, u, m["t"] - 0.8, 2.4), 3)
+                sc *= m["decks"]
             why = unusable(st, r["role"]) if fmt == "portrait" and not m.get("pick") else None
             if why:                                          # any footage, band and stage too: no subject plays here
                 sc *= R["rank"]

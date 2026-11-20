@@ -14,7 +14,8 @@ choose()   the shot's subject -- one person for the whole shot, never handed ove
 aim()      where the strip's centre goes at every pose frame: the subject's head and body both in it; someone
            dancing right with them shares the strip when both fit (weighted to the nearer one) and is otherwise left
            out whole, never cut in half; someone lying down (a floor move) is framed on their torso; hands at work
-           with no head in frame (a DJ's hands on the mixer) are framed where the fingers meet the gear.
+           with no head in frame (a DJ's hands on the mixer) are framed where the fingers meet the gear; a DJ
+           (dj=True: the footage is of a DJ) is framed on the decks they're working with their head in the strip.
 glide()    that centre as a path the renderer follows: carried between pose frames by the camera's own motion (so
            a pan doesn't leave the subject behind) and smoothed only enough to take out the detector's jitter.
 
@@ -47,6 +48,9 @@ LEAN = 0.75              # a spine this far off upright (0 standing .. 1 flat) i
 LYING = 1.25             # a body this many times wider than tall (in pixels) is lying down: frame the torso
 HEAD_IN = 0.3            # the subject's head stays within this share of the strip's width of its centre
 FINGERS = 0.6            # hands at work: the fingertips are this far past the wrist, in forearm lengths
+CHEST = 0.4              # a DJ's hands are down at the gear below this share of the way from their head to their torso
+DECKS = 0.5              # a DJ's strip goes this much further than their hands (of their reach from the body): the gear
+WORKING = 0.6            # ... the subject of a DJ shot is the one at the decks: this weight on the share of it they are
 SMOOTH = 0.12            # glide(): seconds of smoothing on the strip's path (the detector's jitter, not the move)
 RATE = 0.1               # the path's sample spacing (s)
 
@@ -296,15 +300,18 @@ def features(trs, t0, length, cam=None, strip=None):
     return f
 
 
-def choose(trs, t0, length, cam=None, weights=None, strip=None):
+def choose(trs, t0, length, cam=None, weights=None, strip=None, dj=False):
     """The shot's subject: (index, margin over the next, features) -- the best-scoring track (WEIGHTS over
     features), or the person the body tracker's strip opens on unless the best beats them by KEEP; -1 with nobody.
-    One person for the whole shot."""
+    One person for the whole shot. dj: a DJ shot -- the one working the decks counts for more (WORKING)."""
     f = features(trs, t0, length, cam, strip)
     if not trs:
         return -1, 0.0, f
     w = weights or WEIGHTS
     score = sum(w[k] * f[k] for k in w)
+    if dj:
+        f["work"] = np.array([at_decks(trs, i, t0, length) for i in range(len(trs))])
+        score = score + WORKING * f["work"] * f["size"]       # (the DJ, not a punter's hand in the foreground)
     score = np.where(f["seen"] > 0, score, -1.0)
     order = np.argsort(-score)
     total = sum(abs(v) for v in w.values())
@@ -318,7 +325,7 @@ def choose(trs, t0, length, cam=None, weights=None, strip=None):
                             & (f["act"] + 0.2 >= f["act"][k]), score, -9.0)   # (a dancer in fog stays the subject)
             if pool.max() > -9.0:                             # (only a nearer, softer one gives way: the foreground
                 k = int(np.argmax(pool))                      #  out of the focus plane, the one behind it in focus)
-    if strip is not None and f["opener"].max() >= 0.5:        # the shot keeps the person it opens on, unless
+    if strip is not None and not dj and f["opener"].max() >= 0.5:   # the shot keeps the person it opens on, unless
         op = int(np.argmax(f["opener"] + 0.5 * f["held"] + 0.5 * f["mid"] + 1e-3 * score))   # someone is clearly
         # more its subject; of two in the strip as it opens, the one at its middle (SSMC's opening: the instructor,
         # not the dancer behind him at the strip's edge)
@@ -373,6 +380,61 @@ def hands(tr):
     return np.clip(pt, 0, 1)
 
 
+def working(tr):
+    """A DJ at the decks, per pose frame: (down (n,) -- a hand (wrist and elbow seen) is down at the gear: below the
+    chest (CHEST), inside the frame -- and where its fingers are (n, 2), nan where no hand is down). Arms in the air
+    on a drop, or hands out of the frame's bottom, are not working the decks."""
+    arms = tr["arms"]                                         # (n, 4, 3): elbows l r, wrists l r
+    hy, ty = tr["head"][:, 1], tr["torso"][:, 1]
+    chest = hy + CHEST * np.maximum(ty - hy, 0.0)
+    wy = arms[:, 2:, 1]
+    down = (arms[:, 2:, 2] > KP) & (arms[:, :2, 2] > 0.2) & (wy >= chest[:, None]) & (wy <= 0.97)
+    tips = arms[:, 2:, :2] + FINGERS * (arms[:, 2:, :2] - arms[:, :2, :2])
+    w = down.astype(float)
+    pt = (tips * w[..., None]).sum(1) / np.maximum(w.sum(1), 1e-6)[:, None]
+    pt[~down.any(1)] = np.nan
+    return down.any(1), pt
+
+
+def at_work(tr, times):
+    """What a DJ shot is of, as a box (n, 4) at these times: their head (a head's width either side) across to their
+    hands on the decks, their box's top and bottom -- the side of them turned away from the gear (a shoulder, a
+    back) is not the shot, so a strip that cuts it still holds them whole."""
+    box, head, hs = _at(tr, times, "box"), _at(tr, times, "head"), _at(tr, times, "hs")
+    hw = 0.5 * hs * ASPECT * 0.8
+    lo, hi = head[:, 0] - hw, head[:, 0] + hw
+    down, tips = working(tr)
+    if down.any():
+        tx = np.interp(times, tr["t"][down], tips[down, 0])
+        lo, hi = np.minimum(lo, tx), np.maximum(hi, tx)
+    return np.c_[np.maximum(lo, box[:, 0]), box[:, 1], np.minimum(hi, box[:, 2]), box[:, 3]]
+
+
+def at_decks(trs, k, t0, length):
+    """The share of a stretch the DJ (track k) has their hands down on the decks (working): 0..1, frames they're
+    missing from count as not working."""
+    if k < 0:
+        return 0.0
+    tr = trs[k]
+    m = (tr["t"] >= t0 - 1e-6) & (tr["t"] <= t0 + length + 1e-6)
+    if not m.any():
+        return 0.0
+    if hands(tr) is not None:                                 # only hands in the picture: that is the decks
+        return min(1.0, m.sum() / max(1.0, length / 0.2 + 1))
+    return float(working(tr)[0][m].sum() / max(m.sum(), length / 0.2 + 1, 1))
+
+
+def decks(d, yf, t0, length):
+    """How much of a DJ stretch is the DJ working the decks (at_decks of the shot's subject, chosen as a DJ shot's
+    is): 0..1, 0 with nobody tracked. The planner ranks a DJ's moments by it -- hands on the mixer over arms-up or
+    the DJ alone with the gear out of frame (a bias, not a rule: a drop with arms in the air still plays)."""
+    trs = tracks(d, yf, t0 - 0.3, t0 + length + 0.3)
+    if not trs:
+        return 0.0
+    k = choose(trs, t0, length, dj=True)[0]
+    return at_decks(trs, k, t0, length)
+
+
 def companion(trs, k, f, cw):
     """Who shares the strip with the subject: someone their size (PEER) right with them -- heads within TOGETHER of
     the strip's width for most of the frames both are seen, seen for most of the subject's time, not half hidden --
@@ -397,10 +459,10 @@ def companion(trs, k, f, cw):
     return best
 
 
-def aim(trs, k, f, t0, length, cw, ch, solo=False):
+def aim(trs, k, f, t0, length, cw, ch, solo=False, dj=False):
     """Where the strip's centre goes, at RATE through the shot: (times from the shot's start, x, y, what) -- what is
-    "person", "pair", "floor" or "hands" (see the module's notes). solo: this person alone, whoever is with them
-    (the editor's own choice of person)."""
+    "person", "pair", "floor", "hands" or "decks" (see the module's notes). solo: this person alone, whoever is with
+    them (the editor's own choice of person). dj: a DJ shot -- framed on the decks (_decks)."""
     me = trs[k]
     ts = np.arange(0, length + 1e-6, RATE)
     at = t0 + ts
@@ -411,6 +473,8 @@ def aim(trs, k, f, t0, length, cw, ch, solo=False):
         x = np.interp(at, me["t"], tips[:, 0])
         y = np.interp(at, me["t"], tips[:, 1])
         return ts, x, y, "hands"
+    if dj:
+        return _decks(trs, k, f, at, ts, head, torso, hw, cw, ch)
     if lying(me):                                             # the move reads from the torso: the body's middle,
         x = 0.5 * torso[:, 0] + 0.5 * (box[:, 0] + box[:, 2]) / 2     # the head still inside the strip
         x = np.clip(x, head[:, 0] - (cw / 2 - hw - 0.01), head[:, 0] + (cw / 2 - hw - 0.01))
@@ -434,20 +498,51 @@ def aim(trs, k, f, t0, length, cw, ch, solo=False):
             hy = np.minimum(head[:, 1], oh[:, 1])
             return ts, x, hy + (0.5 - 0.32) * ch, "pair"
     # alone: slide (the head staying inside its part of the strip) off anyone whose head the strip's edge would cut
-    others = [o for i, o in enumerate(trs) if i != k and f["size"][i] >= PEER * f["size"][k] and f["seen"][i] >= 0.3]
-    if others:
-        best, bc = 0.0, None
-        for off in np.linspace(-0.5, 0.5, 11) * HEAD_IN * cw:
-            cost = 0.6 * abs(off) / cw
-            for o in others:
-                live = (at >= o["t"][0] - 0.1) & (at <= o["t"][-1] + 0.1)
-                oh, ow = _at(o, at, "head")[:, 0], 0.5 * _at(o, at, "hs") * ASPECT * 0.8
-                edge = np.minimum(np.abs(oh - (x + off - cw / 2)), np.abs(oh - (x + off + cw / 2)))
-                cost += float((live & (edge < ow)).mean())
-            if bc is None or cost < bc - 1e-9:
-                best, bc = off, cost
-        x = x + best
+    x = _clear(trs, k, f, at, x, cw)
     return ts, x, head[:, 1] + (0.5 - 0.32) * ch, what
+
+
+def _clear(trs, k, f, at, x, cw, lo=None, hi=None):
+    """The strip slid (up to half of HEAD_IN of its width, the less the better) off anyone the subject's size whose
+    head its edge would cut; lo / hi: where its centre may go (the subject's head kept in it)."""
+    others = [o for i, o in enumerate(trs) if i != k and f["size"][i] >= PEER * f["size"][k] and f["seen"][i] >= 0.3]
+    if not others:
+        return x
+    best, bc = x, None
+    for off in np.linspace(-0.5, 0.5, 11) * HEAD_IN * cw:
+        y = x + off if lo is None else np.clip(x + off, lo, hi)
+        cost = 0.6 * float(np.abs(y - x).mean()) / cw
+        for o in others:
+            live = (at >= o["t"][0] - 0.1) & (at <= o["t"][-1] + 0.1)
+            oh, ow = _at(o, at, "head")[:, 0], 0.5 * _at(o, at, "hs") * ASPECT * 0.8
+            edge = np.minimum(np.abs(oh - (y - cw / 2)), np.abs(oh - (y + cw / 2)))
+            cost += float((live & (edge < ow)).mean())
+        if bc is None or cost < bc - 1e-9:
+            best, bc = y, cost
+    return best
+
+
+def _decks(trs, k, f, at, ts, head, torso, hw, cw, ch):
+    """A DJ shot's strip (aim's dj case): the DJ and the decks they're working -- not their head and body alone. The
+    strip's centre rides their body (head and torso) and sits past their hands, toward the gear (DECKS beyond their
+    reach, taken over the frames their hands are down on the decks, so arms thrown up on a drop don't swing it: one
+    offset for the shot), as far as keeping their head inside it allows (within HEAD_IN of its middle, a head's
+    width clear of its edge: never a face cut by the strip, nor the "out" rule's head on the edge). Hands either side of the body (facing the camera over the decks):
+    centred on them, the decks below in the full-height strip. Never through someone their size beside them
+    (_clear). Height: their head a fifth of the way down, the rest hands and gear (in a full-height strip, all of
+    it)."""
+    me = trs[k]
+    body = 0.5 * head[:, 0] + 0.5 * torso[:, 0]
+    down, tips = working(me)
+    off = 0.0
+    if down.any():
+        reach = tips[down, 0] - (0.5 * me["head"][down, 0] + 0.5 * me["torso"][down, 0])
+        off = float(np.median(reach)) * (1 + DECKS)
+    room = np.clip(cw / 2 - 2 * hw - 0.01, 0.0, HEAD_IN * cw)   # the head (and a head's width round it) well in
+    lo, hi = head[:, 0] - room, head[:, 0] + room
+    x = _clear(trs, k, f, at, np.clip(body + off, lo, hi), cw, lo, hi)
+    y = head[:, 1] + (0.5 - 0.2) * ch
+    return ts, x, y, "decks"
 
 
 def glide(ts, v, lo, hi):
@@ -464,20 +559,21 @@ WHY = dict(size="nearest the lens", act="the one dancing", bounce="jumping", fac
            front="in front", opener="the shot opens on them", opens="there from the start", held="the tracker's own", alone="right up front", dom="the biggest and busiest")
 
 
-def strip(d, yf, shake, t0, length, cw, ch, body=None):
+def strip(d, yf, shake, t0, length, cw, ch, body=None, dj=False):
     """The portrait strip of a shot, on its subject: dict(x, y on t (seconds from the shot's start, every RATE), on:
     "person" | "pair" | "floor" | "hands", why: a few words on why this person, lead: their track, mate: the
     companion's or None, cut: the share of the shot their head is cut off by the frame's own top, halved: the share
     someone their size has their head on the strip's edge, margin), or None
-    when there is nobody to follow. body: the body tracker's strip (times, centres) -- who the shot opens on."""
+    when there is nobody to follow. body: the body tracker's strip (times, centres) -- who the shot opens on. dj: a DJ
+    shot -- on the one at the decks, framed with them (on: "decks", or "hands" with no head in the picture)."""
     trs = tracks(d, yf, t0 - 0.3, t0 + length + 0.3)
     if not trs:
         return None
     cam = camera(shake, t0, t0 + length)
-    k, margin, f = choose(trs, t0, length, cam, strip=None if body is None else (body[0], body[1], cw))
+    k, margin, f = choose(trs, t0, length, cam, strip=None if body is None else (body[0], body[1], cw), dj=dj)
     if k < 0 or f["seen"][k] < 0.3:
         return None
-    ts, x, y, what = aim(trs, k, f, t0, length, cw, ch)
+    ts, x, y, what = aim(trs, k, f, t0, length, cw, ch, dj=dj)
     x, y = glide(ts, x, cw / 2, 1 - cw / 2), glide(ts, y, ch / 2, 1 - ch / 2)
     me = trs[k]
     m = (me["t"] >= t0) & (me["t"] <= t0 + length)
