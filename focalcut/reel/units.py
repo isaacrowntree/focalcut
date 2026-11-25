@@ -25,6 +25,16 @@ def probe(path: str):
     return float(j["format"]["duration"]), w, h
 
 
+def whole_clip(project: Project, name: str) -> str:
+    """The camera clip an export of a whole clip is named after: the name itself when a camera file (or a configured
+    source) has it -- DJI_20261121101242_0018_D -- else what comes before its first "_" (C2020_crowd -> C2020)."""
+    if name in project.config.get("sources", {}):
+        return name
+    stems = {os.path.splitext(f)[0] for d in ["", *project.config.get("source_dirs", [])]
+             if os.path.isdir(os.path.join(project.folder, d)) for f in os.listdir(os.path.join(project.folder, d))}
+    return name if name in stems else name.split("_")[0]
+
+
 def build(project: Project) -> list[dict]:
     lib = json.load(open(project.library)) if os.path.exists(project.library) else {"clips": [], "broll": []}
     segs = {}
@@ -55,7 +65,7 @@ def build(project: Project) -> list[dict]:
                 parts += [(c, span[0], span[1]) if len(clips) == 1 else (c, 0, None) for c in clips]
                 desc = b.get("desc", "")
             else:                                          # a whole clip
-                parts.append((name.split("_")[0] if name not in project.config.get("sources", {}) else name, 0, None))
+                parts.append((whole_clip(project, name), 0, None))
             for i, (clip, a, b) in enumerate(parts):
                 ex0 = float(a or 0)                        # where the export file starts in the source (for picks)
                 src = project.source_for(clip)

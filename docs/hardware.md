@@ -12,9 +12,10 @@ and found at run time (`focalcut/reel/hw.py`).
 | NVIDIA GPU | encodes every shot (NVENC); SAM 3, BiRefNet and the other models; the MilkDrop layer and the overlay's composite (torch) |
 
 Plain shots render several at once (`render.DECODERS`, or `FOCALCUT_DECODERS="qsv=6,cpu=3"`); a stabilised shot
-first has its camera shake measured on the CPU (`FOCALCUT_STAB_JOBS` at once, one per core by default); effect
-shots, which run their own GPU models, go one at a time beside them; the MilkDrop layer renders beside all of
-those. Where a render's time goes, stage by stage, is in [Rendering](render.md).
+first has its camera shake measured on the CPU (`FOCALCUT_STAB_JOBS` at once, one per core by default); a shot
+whose only effect is a speed curve streams through it in one of the same slots, three at once
+(`FOCALCUT_FX_JOBS`); the other effect shots, which run their own GPU models, go one at a time beside them; the
+MilkDrop layer renders beside all of those. Where a render's time goes, stage by stage, is in [Rendering](render.md).
 
 **NVENC sessions.** A consumer NVIDIA driver allows 12 encode sessions at once across every program (measured:
 the 13th fails with "OpenEncodeSessionEx failed"). Every shot being rendered holds one, so the defaults add up to
@@ -65,6 +66,46 @@ whatever slot they take, and their cost is vidstab, not the decode.
    1080p50, 130 Mb/s at 4K50; PSNR about 45.7 dB against the scaled source, and a lower `-cq` changes nothing
    without a `-maxrate`), and each further generation costs about 0.6 dB.
 
+## Decoding for the analysis steps
+
+Scoring, the shake measurement and the reference pass read frames at a reduced rate and size, so they can take
+whichever decoder reads the file fastest (`hw.readers`), and they read a source's **proxy** when reel.json has
+one (`"proxies"`: a 1080p H.264 copy that starts on the same frame):
+
+| 60 s of footage to 640 px, 10 fps | wall | CPU time |
+|---|---|---|
+| 4K 10-bit 4:2:2 HEVC camera file, CPU (five threads) | 47 s | 217 s |
+| the same file on the Intel iGPU (Quick Sync, the Windows ffmpeg) | 17 s | none here |
+| its 1080p H.264 proxy, CPU | 2.9 s | 30 s |
+| its 1080p H.264 proxy, NVDEC | 4.0 s | 2.2 s |
+
+- **A proxy on NVDEC** leaves the CPU to the workers. One stream takes all of the decoder: a minute of 1080p50
+  decodes in 4 s alone and three at once take 11 s, so splitting a file into pieces to decode side by side gains
+  nothing; what several workers gain is their own CPU work.
+- **Frames are thinned on the GPU, scaled on the CPU.** `fps=` runs before `hwdownload`, so only the frames kept
+  are copied to memory; the scale to analysis size is swscale's. NVDEC + download + swscale gives exactly the
+  pixels of a CPU decode of the same file. `scale_cuda` does not: it has no anti-aliasing, and a 1080p frame
+  scaled to 640 px on the GPU measured twice the Laplacian variance (560 against 267), which scoring would read
+  as sharpness.
+- **Every frame is decoded on every decoder.** The CPU path used to skip non-reference frames (`-skip_frame
+  noref`, 20% faster); `fps=10` then picked frames 20 to 40 ms off their time on 50p camera files, and the uneven
+  steps read as 15 to 20% less subject motion (and a camera-motion series that correlates 0.92 with the evenly
+  sampled one). So scores made now differ from scores made before by that much on such files, on any decoder;
+  against an evenly sampled decode of the camera file, a proxy's scores agree (camera motion r = 1.000, sharpness
+  r = 0.999 and about 10% higher: a 1080p picture scaled to 640 px is a little crisper than a 4K one). Scores
+  already on disk are kept: a source is scored once.
+- **Scoring** with one worker runs at about 3.5x real time from a proxy (the models and the optical flow are
+  what is left; 1.4x from the camera file on the CPU), and two workers at about 7x between them. A third adds
+  nothing (7.1x) and takes the card to 10.3 GB of its 12.
+- **A rotated file** (a phone's) stays on the CPU, where ffmpeg turns it upright.
+- `FOCALCUT_ANALYSIS_CPU=1` keeps all of it on the CPU.
+
+What is still read from the camera files, on purpose: the exposure measurement (`exposure.grab`: three frames a
+shot, 10-bit, cached in exposure.json) and the night lift's face window (`window._grab`). Both decide how a shot
+is graded. On the proxies here they came out within half a per cent (the proxies keep the super-whites) and
+would save about 20 s of a cold render, but a proxy that clips above 235, or a face seen in 28% of the samples
+instead of 31%, would change a shot's grade, so they stay on the originals.
+
 ### VA-API in WSL (for the formats it does support)
 
 WSL has no `/dev/dri` until the `vgem` module is loaded, and Mesa's VA-API driver also needs `GALLIUM_DRIVER=d3d12`
@@ -89,9 +130,6 @@ the fix are covered.
 
 ## Other notes
 
-- **Scoring decodes every 4K frame on the CPU** (about 1.6x real time); it skips non-reference frames and
-  deblocking, about 20% faster and fine for analysis. reel.json `proxies` can point it at 1080p H.264 copies that
-  NVDEC decodes (see the recipe).
 - **Two scoring workers on a 12 GB GPU.** More overflows VRAM; on WSL that pages to system RAM and everything slows
   to a crawl.
 - **Cap SAM 3 in crowds:** the masks module tracks at most 6 confident people at 960 px.

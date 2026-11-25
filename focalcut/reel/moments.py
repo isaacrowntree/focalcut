@@ -45,14 +45,11 @@ _SOFT0 = dict(SOFT)
 
 def configure(cfg):
     """Set the soft-focus floors from a project's config (reel.json "soft_frame" / "soft_focus" / "soft_cam"; a profile
-    can set them). Every caller of clip_series then uses them."""
+    can set them), and the shoot's events (events.py, reel.json "events"). Every caller of clip_series then uses them."""
     for k in SOFT:
         SOFT[k] = float((cfg or {}).get(f"soft_{k}", _SOFT0[k]))
-
-L_SHO, R_SHO, L_HIP, R_HIP = 5, 6, 11, 12
-NOSE, L_EYE, R_EYE = 0, 1, 2
-L_WRI, R_WRI, L_ANK, R_ANK = 9, 10, 15, 16
-
+    from . import events
+    events.configure(cfg)
 
 
 def clarity(luma, contrast, ring):
@@ -64,6 +61,11 @@ def clarity(luma, contrast, ring):
     apart = np.clip((np.abs(ring - luma) - 15) / 30, 0, 1)
     sil = np.clip((ring - luma - 35) / 50, 0, 1) * np.clip((ring - 70) / 50, 0, 1)
     return np.clip(np.maximum(exposed * (0.1 + 0.9 * np.maximum(detail, apart)), sil), 0.1, 1)
+
+
+L_SHO, R_SHO, L_HIP, R_HIP = 5, 6, 11, 12
+NOSE, L_EYE, R_EYE = 0, 1, 2
+L_WRI, R_WRI, L_ANK, R_ANK = 9, 10, 15, 16
 
 
 def iou(a, b):
@@ -268,6 +270,7 @@ def clip_series(path):
     top = np.nanmax(np.where(~np.isnan(d["boxes"][..., 0]), d["focus"], np.nan), axis=1)
     measured = d["sharp"][d["sharp"] > 0]                       # (10 Hz series, measured at 5 Hz: zeros between)
     return dict(t=pt_, parts=parts, quality=quality, steady=steady, framing=frm, activity=act,
+                raw=dict(boxes=d["boxes"], ah=d["ah"], aw=d["aw"], t10=t10, subj=d["subj"]),
                 face=np.clip((face_sem - 0.5) / 0.4, 0, 1), sub_focus=sub_sharp, soft=soft(sharp, top, cam, float(np.median(measured)) if len(measured) else 0.0))
 
 
@@ -335,6 +338,18 @@ def unit_moments(u, S):
                                    quality=round(float(S["quality"][i]), 2),
                                    activity=round(float(S["activity"][i]), 2) if "activity" in S else 1.0,
                                    parts={k: round(float(S["parts"][k][i]), 2) for k in W}))
+    from . import events
+    for ev in events.find(u, S, S.get("audio")):            # the shoot's own events (reel.json "events"): each a moment
+        i = int(np.argmin(np.abs(t - ev["t"])))
+        res["moments"] = [x for x in res["moments"] if abs(x["t"] - ev["t"]) >= GAP]
+        sc = round(0.5 + 0.5 * ev["strength"], 3)
+        res["moments"].append(dict(t=ev["t"], start=ev["start"], event=ev["name"], score=sc, kind=ev["name"],
+                                   score_l=sc, score_p=sc, by=ev["by"],
+                                   frame_l=round(float(S["framing"]["landscape"][i]), 2),
+                                   frame_p=round(float(S["framing"]["portrait"][i]), 2),
+                                   quality=round(float(S["quality"][i]), 2), activity=1.0,
+                                   parts={k: round(float(S["parts"][k][i]), 2) for k in W}))
+    res["moments"].sort(key=lambda x: x["t"])
     top = sorted((x["score"] for x in res["moments"]), reverse=True)[:5]
     res["interest"] = round(float(np.sum(top)), 3)
     return res
@@ -350,7 +365,10 @@ def run(project) -> list[dict]:
             missing.add(u["score"]); continue
         if p not in cache:
             cache[p] = clip_series(p)
-        r = unit_moments(u, cache[p]); r["unit"] = u; res.append(r)
+        S = cache[p]
+        if S is not None:                                    # its sound, for events heard (export or camera file)
+            S["audio"] = project.decode_from(u["source"], 0.0)[0]
+        r = unit_moments(u, S); r["unit"] = u; res.append(r)
     project.dump("moments.json", res)
     kinds = {}
     for r in res:

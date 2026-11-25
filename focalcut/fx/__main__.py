@@ -53,9 +53,24 @@ def main(argv=None):
         a.add_argument("--peak", type=float); a.add_argument("--beat", type=float, default=0.604)
         a.add_argument("--cap", type=float, default=1.5); a.add_argument("--closeup", action="store_true")
         a.add_argument("-o", "--out")
+    sp = sub.add_parser("spatial", help="a still photo as a spatial scene (iOS-style depth parallax)")
+    sp.add_argument("input"); sp.add_argument("--out", required=True)
+    sp.add_argument("--size", default="1920x1080", help="WxH of the clip (e.g. 1080x1920 for portrait)")
+    sp.add_argument("--seconds", type=float, default=6.0); sp.add_argument("--fps", type=int, default=50)
+    sp.add_argument("--layers", help="folder for the photo's layers (default <out>.layers)")
+    sp.add_argument("--push", type=float, default=None); sp.add_argument("--sway", type=float, default=None)
+    sp.add_argument("--left", action="store_true", help="drift to the left instead of the right")
     lb = sub.add_parser("lookbook"); lb.add_argument("folder")
     lb.add_argument("--fmt", default="landscape"); lb.add_argument("--library", default="glitch"); lb.add_argument("--width", type=int, default=960)
     a = ap.parse_args(argv)
+    if a.cmd == "spatial":                    # (layers need torch -- the reel's ML venv -- once per photo)
+        from . import spatial
+        folder = spatial.layers(a.input, a.layers or a.out + ".layers")
+        W, H = map(int, a.size.lower().split("x"))
+        kw = {k: v for k, v in (("push", a.push), ("sway", a.sway)) if v is not None}
+        spatial.render(folder, a.out, W, H, a.seconds, a.fps, direction=-1.0 if a.left else 1.0, **kw)
+        print(a.out)
+        return
     if a.cmd == "lookbook":
         from ..reel.project import Project
         from .lookbook import run

@@ -281,6 +281,27 @@ def cmd_reel_run(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reel_reference(a: argparse.Namespace) -> int:
+    """Learn an edit from a finished film (reference.json + look LUTs) for reel.json "mode": "reference"."""
+    from .reel import reference
+    from .reel.project import Project
+    pr = Project(a.folder)
+    ref = reference.rematch(pr, looks_too=a.relook, strength=a.look) if a.rematch else \
+        reference.run(pr, os.path.abspath(a.video), strength=a.look)
+    for line in reference.summary(ref):
+        print("[reel]", line)
+    cfg = pr.config
+    cfg["reference"] = ref["video"]
+    cfg.setdefault("mode", "reference")
+    if ref.get("luts"):
+        per = {p: v["cube"] for k, v in ref["luts"].items() if ":" in k for p in v["match"] if v.get("cube")}
+        lut = {**per, **{p: v["cube"] for k, v in ref["luts"].items() if ":" not in k for p in v["match"]
+                         if v.get("cube")}}                     # (a clip's own LUT first: the first match wins)
+        cfg["lut"] = lut if (a.relook or not a.rematch) else cfg.get("lut", lut)
+    print(pr.save_config())
+    return 0
+
+
 def cmd_fx(a: argparse.Namespace) -> int:
     from .fx.__main__ import main as fx_main
     fx_main(a.args)
@@ -303,7 +324,7 @@ def main(argv=None) -> int:
     ri.set_defaults(func=cmd_reel_init)
     rr = rsub.add_parser("run", help="run the pipeline (or chosen steps)")
     rr.add_argument("folder")
-    rr.add_argument("--steps", help="comma list of steps: units,score,shake,motion,focus,subject,semantic,moments,faces,expression,people,persons,role,windows,music,plan,render,xml,review "
+    rr.add_argument("--steps", help="comma list of steps: units,score,shake,moves,dust,motion,focus,subject,semantic,moments,faces,expression,people,persons,role,windows,music,plan,render,xml,review "
                     "(default: all)")
     rr.add_argument("--formats", help="comma list (default: landscape,portrait, or the cut's formats)")
     rr.add_argument("--cut", help='one of reel.json\'s "cuts": another reel from the same footage, e.g. night')
@@ -312,6 +333,16 @@ def main(argv=None) -> int:
     rr.add_argument("--clean", action="store_true", help="render the same cut clean, to <name>_clean.mp4: the footage on the same "
                     "cut points with the music -- no effects, speed changes, transitions, lift, logos, overlay or stinger")
     rr.set_defaults(func=cmd_reel_run)
+    rf = rsub.add_parser("reference", help="learn an edit from a finished film: its cuts, shot types, split screens, "
+                                           "title, end card and colour, matched to this project's footage")
+    rf.add_argument("folder")
+    rf.add_argument("video", help="the finished film to follow (e.g. last year's)")
+    rf.add_argument("--rematch", action="store_true", help="only match the reference to the footage again (stored "
+                    "embeddings): after changing the export, the clock offsets or the order rule")
+    rf.add_argument("--relook", action="store_true", help="with --rematch: rebuild the camera LUTs too")
+    rf.add_argument("--look", type=float, default=0.5, help="how far the look LUTs move the footage to the film's "
+                    "colour, 0..1 (0: no LUTs)")
+    rf.set_defaults(func=cmd_reel_reference)
     rv = rsub.add_parser("serve", help="serve the review pages of one or more projects; they save picks.json as you "
                                        "make picks")
     rv.add_argument("folder", nargs="*", help="project folders; each is served under /p/<slug>/")

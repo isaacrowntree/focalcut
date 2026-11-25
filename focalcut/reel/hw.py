@@ -163,3 +163,43 @@ def ffmpeg(src: str, qsv: bool):
     if surface:
         return exe, ["-hwaccel", "qsv", "-hwaccel_output_format", "qsv", "-async_depth", "1"], winpath, f"hwdownload,format={surface},"
     return "ffmpeg", [], (lambda p: p), ""
+
+
+# what NVDEC hands back for the formats it decodes (4:2:0 only before Blackwell: see docs/hardware.md)
+NVDEC_SURFACE = {"yuv420p": "nv12", "yuvj420p": "nv12", "yuv420p10le": "p010le"}
+
+
+def readers(src: str, gpu: bool = True) -> list[tuple]:
+    """Ways to decode src for an analysis pass (frames at a reduced rate and size), fastest first, each as
+    (kind, executable, decode arguments, path converter, download filter): "cuda" -- NVDEC, for the 4:2:0 H.264 /
+    HEVC a proxy or a phone, drone or 8-bit camera file is (a minute of 1080p50 in 4 s, no CPU to speak of);
+    "qsv" -- the Windows build on the Intel iGPU, for what NVDEC can't (Sony's 10-bit 4:2:2: 3.5x real time against
+    1.4x on five CPU threads, the same pixels); "cpu" -- always there, last. A caller tries them in order and
+    moves on when one gives no frames (an unsupported profile fails at once).
+
+    The download filter copies a frame from the GPU to memory. Put the filter that drops frames (fps=, select=)
+    BEFORE it, so only the frames kept are copied, and scale AFTER it, on the CPU: scale_cuda has no anti-aliasing
+    (a 1080p frame scaled to 640 px on the GPU measured twice the Laplacian variance of swscale's -- it would
+    read as sharpness), while NVDEC + download + swscale gives exactly the CPU decode's pixels."""
+    out = []
+    if gpu and not os.environ.get("FOCALCUT_ANALYSIS_CPU"):
+        surface = NVDEC_SURFACE.get(pix_fmt(src))
+        if surface and nvdec():
+            out.append(("cuda", "ffmpeg", ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"], (lambda p: p),
+                        f"hwdownload,format={surface},"))
+        exe, dec, P, pre = ffmpeg(src, True)
+        if dec:
+            out.append(("qsv", exe, dec, P, pre))
+    out.append(("cpu", "ffmpeg", [], (lambda p: p), ""))
+    return out
+
+
+@functools.cache
+def nvdec() -> bool:
+    """Does this ffmpeg decode on an NVIDIA GPU (checked once: the cuda hwaccel can be initialised)?"""
+    try:
+        subprocess.run(["ffmpeg", "-v", "error", "-init_hw_device", "cuda=hw", "-f", "lavfi", "-i", "nullsrc", "-t",
+                        "0.04", "-f", "null", "-"], check=True, capture_output=True, timeout=30)
+        return True
+    except (subprocess.SubprocessError, OSError):
+        return False

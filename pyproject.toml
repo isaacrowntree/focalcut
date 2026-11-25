@@ -81,6 +81,8 @@ addopts = "-q"
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# one-off measurement scripts kept beside the research they produced; Claude Code's worktrees
+extend-exclude = ["docs/research/scripts", ".claude"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]

@@ -4,7 +4,8 @@ Corners are tracked frame to frame (Lucas-Kanade) and a RANSAC similarity fit gi
 dancers are the outliers). Shake is what is left of that motion after a ~0.1 s smooth -- a pan, a follow or a slow
 sway drops out; a wobble doesn't -- as an RMS over 1 s, in frame widths per frame (`hf`). Measured on what the
 reel will actually use: each unit's own stretch, from its export file when there is one (H.264 decodes on the GPU
-far faster than the cameras' 10-bit 4:2:2 HEVC), else from the source or its proxy.
+far faster than the cameras' 10-bit 4:2:2 HEVC), else from the source or its proxy, on the fastest decoder that
+reads it (hw.readers: NVDEC, Quick Sync for 4:2:2 camera files, the CPU).
 
 Typical values (hf): stage tripods 0.0003-0.001; handheld social floor 0.001-0.006; a talking head shot handheld
 from the audience or a hand-stabilised master 0.002-0.02. A 9:16 strip cut from a 16:9 frame shows the shake three
@@ -15,9 +16,8 @@ Writes <reel>/scores/<name>_shake.npz (t, hf, mv: raw dx/dy per frame). Resumabl
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 
@@ -29,15 +29,27 @@ def motion(path, ts, dur, gpu=False, rate=RATE):
     sw, sh = map(int, subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                                                "stream=width,height", "-of", "csv=p=0", path]).decode().split(",")[:2])
     w, h = SIDE, SIDE * sh // sw // 2 * 2
-    r = subprocess.run(["ffmpeg", "-v", "error", *(["-hwaccel", "cuda"] if gpu else ["-threads", "4"]),
-                        "-ss", f"{ts:.3f}", "-t", f"{dur:.3f}", "-i", path,
-                        "-an", "-vf", f"fps={rate},scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
-                       capture_output=True)
-    if r.returncode and gpu:                        # no CUDA decoder for this file: the CPU then
-        return motion(path, ts, dur, rate=rate)
-    raw = r.stdout
-    g = np.frombuffer(raw, np.uint8)[: len(raw) // (w * h) * w * h].reshape(-1, h, w)
-    return frames_motion(g)
+    return frames_motion(grey_frames(path, ts, dur, w, h, rate, gpu))
+
+
+def grey_frames(path, ts, dur, w, h, rate, gpu=True):
+    """A stretch of a file as grey frames (n, h, w) at rate, from the first of hw.readers that decodes it: the frames
+    stay on the GPU until fps= has dropped the ones not wanted (half of a 50p file), then are copied down and scaled
+    on the CPU -- the pixels a CPU decode gives (scale_cuda has no anti-aliasing), a sixth quicker than copying
+    every frame down, with a fifth of the CPU time of a CPU decode. One NVDEC stream already takes all the decoder
+    there is (a minute of 1080p50 in 4 s alone, three at once in 11 s), so a long unit is not split into pieces:
+    that would add seeks and nothing else."""
+    from . import hw
+    raw = b""
+    for kind, exe, dec, P, download in hw.readers(path, gpu):
+        r = subprocess.run([exe, "-v", "error", *dec, *(["-threads", "4"] if kind == "cpu" else []),
+                            "-ss", f"{ts:.3f}", "-t", f"{dur:.3f}", "-i", P(path), "-an",
+                            "-vf", f"fps={rate},{download}scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                           capture_output=True)
+        raw = r.stdout
+        if not r.returncode and len(raw) >= w * h:  # (a decoder that can't read this file gives nothing: the next)
+            break
+    return np.frombuffer(raw, np.uint8)[: len(raw) // (w * h) * w * h].reshape(-1, h, w)
 
 
 def frames_motion(g):
@@ -93,7 +105,7 @@ def measure(project, name, units, gpu):
             m = motion(f, u["t0"] - u.get("export_t0", 0.0), u["t1"] - u["t0"], gpu=gpu)
         else:
             src, ts = project.decode_from(u["source"], u["t0"])
-            m = motion(src, ts, u["t1"] - u["t0"])
+            m = motion(src, ts, u["t1"] - u["t0"], gpu=gpu)
         if len(m) < 2:
             continue                                          # nothing decoded: leave the stretch unmeasured
         t.append(u["t0"] + np.arange(len(m)) / RATE); mv.append(m); j.append(hf(m))
@@ -126,12 +138,15 @@ def jitter(project, unit, a, b):
 
 
 def run(project, workers: int = 3) -> None:
-    by = {}
+    import fnmatch
+    by, pats = {}, project.config.get("shake_in")              # reel.json "shake_in": only these clips / categories
     for u in project.load("units.json"):
+        if pats and not any(fnmatch.fnmatch(u["clip"], p) or u["category"] == p for p in pats):
+            continue
         by.setdefault(u["score"], []).append(u)
-    gpu = bool(shutil.which("nvidia-smi")) and not os.environ.get("FOCALCUT_SHAKE_CPU")
+    gpu = not os.environ.get("FOCALCUT_SHAKE_CPU")             # (hw.readers finds what this machine decodes on)
     with ProcessPoolExecutor(max(1, workers)) as ex:
         futs = [ex.submit(measure, project, k, us, gpu) for k, us in sorted(by.items(), key=lambda kv: -sum(
             u["t1"] - u["t0"] for u in kv[1]))]
-        for f in futs:
+        for f in as_completed(futs):               # each source as it is done (the longest were started first)
             print("[reel] shake", f.result(), flush=True)

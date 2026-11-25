@@ -1001,7 +1001,8 @@ def test_a_steadied_shot_uses_its_steadied_crop_after_rotation_and_changes_the_c
     f = render.shot_filter(s, "portrait", pr)
     assert "vidstab" not in f and f.index("transpose") < f.index("crop=") and "iw*0.485" in f and "ih*0.97" in f
     assert "iw*0.5:" in render.shot_filter(dict(s, stab=False), "portrait", pr)
-    assert render.key(s, 0.6) != render.key(dict(s, stab=False), 0.6) != render.key(dict(s, stab=False), 0.5)
+    assert render.key(s, 0.6) != render.key(dict(s, stab=False), 0.6)
+    assert render.key(dict(s, stab=False), 0.6) == render.key(dict(s, stab=False), 0.5)   # (no effect: no beat in it)
 
 
 def test_ending_never_starts_before_its_clip_and_band_inserts_never_touch_broll(tmp_path):

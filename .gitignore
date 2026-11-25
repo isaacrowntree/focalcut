@@ -16,3 +16,6 @@ focalcut/sheets/
 .pytest_cache/
 .ruff_cache/
 target/
+
+# Claude Code worktrees and settings
+.claude/

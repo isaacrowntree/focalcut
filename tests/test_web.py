@@ -250,3 +250,55 @@ def test_the_pages_in_a_browser(tmp_path):
     assert json.load(open(pr.path("picks.json"))) == PICKS                      # every step was undone
     short = Project(pr.folder, "short").picks()["C1"]                           # ... and the planner reads it per reel
     assert short["add"] == ["0:10.00-0:12.00"] and short["open"] == "0:10.00-0:12.00"
+
+
+NOTES = r"""
+const vm = require("vm"), fs = require("fs");
+const ctx = vm.createContext({ D: { reels: [{ id: "main", label: "Main" }] }, console });
+vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), ctx);
+const run = (code) => vm.runInContext(code, ctx);
+const out = {};
+run(`P = {}; addSel("C1", 20, 25, "all"); putNote("C1", 20, 25, " the hug after "); moveSel("C1", 20, 25, 30, 36); tidy()`);
+out.moved = run(`JSON.parse(JSON.stringify(P.C1))`);
+out.read = run(`noteOf("C1", 30, 36)`);
+run(`setGuide("C1", "both"); setClipNote("C1", "use the wide end too")`);
+out.guided = run(`[guideOf("C1"), clipNote("C1")]`);
+run(`removeSel("C1", 30, 36, "all"); setGuide("C1", ""); setClipNote("C1", " "); tidy()`);
+out.after = run(`JSON.parse(JSON.stringify(P))`);
+console.log(JSON.stringify(out));
+"""
+
+
+def test_pick_notes_and_clip_guidance_under_node(tmp_path):
+    """A note on a pick goes with the pick when it moves and goes when it goes; a clip's guidance ("both": the
+    planner may use its own moments of the clip too) and its note are set and cleared."""
+    if not NODE:
+        pytest.skip("no node")
+    script = tmp_path / "notes.js"
+    script.write_text(NOTES)
+    r = subprocess.run([NODE, str(script), os.path.join(webui.WEB, "picks.js")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["moved"]["notes"] == {"0:30.00-0:36.00": "the hug after"} and out["read"] == "the hug after"
+    assert out["guided"] == ["both", "use the wide end too"]
+    assert out["after"].get("C1", {}) == {}
+
+
+def test_a_clips_guidance_decides_what_the_planner_takes_from_it():
+    """apply_picks: "mine" -- the picks and nothing else of the clip; "both" -- the clip's own moments stay too, even
+    when the project keeps only picks; "focalcut" -- the picks set aside, the bans kept."""
+    from focalcut.reel.plan import apply_picks
+
+    def recs():
+        return [dict(id="C1", unit=dict(id="C1", t0=0.0, t1=60.0),
+                     moments=[dict(t=5.0, score=0.5), dict(t=40.0, score=0.6)])]
+    base = {"add": ["0:20.00-0:24.00"], "ban": ["0:38.00-0:42.00"]}
+    r = recs()
+    apply_picks(r, {"C1": dict(base, guide="mine")}, only=False)
+    assert [m["t"] for m in r[0]["moments"]] == [22.0] and r[0]["unit"]["picks_only"]
+    r = recs()
+    apply_picks(r, {"C1": dict(base, guide="both")}, only=True)
+    assert sorted(m["t"] for m in r[0]["moments"]) == [5.0, 22.0]
+    r = recs()
+    apply_picks(r, {"C1": dict(base, guide="focalcut")}, only=True)
+    assert [m["t"] for m in r[0]["moments"]] == [5.0] and [38.0, 42.0] in r[0]["unit"]["bans"]

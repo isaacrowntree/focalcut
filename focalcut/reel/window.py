@@ -6,7 +6,8 @@ is lifted (toward "target", never more than "stops" of exposure, nothing for a f
 that is lost in black: a silhouette is meant to be one). Each face then has a soft window: an ellipse from the top
 of the head to the chest, feathered wide, and a gentler one over the body below it (shoulders to hips), following
 the face from sample to sample. Inside it a shadow lift raises the face and its colour together (Cb/Cr scale with the lift, so skin keeps its colour instead of going grey);
-outside it the room stays exactly as shot, so the night stays dark.
+outside it the room stays exactly as shot, so the night stays dark. Inside it a luma qualifier (key()) keeps the lift to
+the face's own levels and below: bright water or sky around a dark face by day is left as shot, with no halo.
 
 The window is a small greyscale video (y4m, MASK_W wide) composited by the shot's own ffmpeg pass (render.shot_filter:
 split, lutyuv, alphamerge, overlay), so it costs a few seconds per shot and nothing at all for shots it leaves
@@ -26,7 +27,7 @@ import numpy as np
 
 from . import hw
 
-VERSION = 4
+VERSION = 7
 SAMPLE_FPS = 10            # analysis frames per second of source
 GRID = 640                 # analysis size: the crop's long side, in pixels
 MASK_W = 160               # the window video's long side (soft: it is scaled up with the shot)
@@ -44,6 +45,10 @@ TOE = (0.02, 0.10)         # the lift fades in over these levels: black and the 
 # the window around a face of width w, height h centred (cx, cy): an ellipse centred DROP * h below the face, with
 # semi-axes RX * w and RY * h, full strength inside CORE of its radius and gone at its edge
 DROP, RX, RY, CORE = 0.6, 1.5, 1.9, 0.45
+# the luma qualifier inside the window: full lift up to KNEE times the face's level (KNEE_MIN..KNEE_MAX), fading to
+# none over the narrowest span (from KNEE_SPAN) that keeps the curve rising at least SLOPE_MIN -- the bright sea, sky
+# or white shirt around a dark face inside its window stays as shot (no halo), the face and its shadows take the lift
+KNEE, KNEE_MIN, KNEE_MAX, KNEE_SPAN, SLOPE_MIN = 1.4, 0.18, 0.40, 0.16, 0.35
 # and below it the body, from the shoulders to the hips, lifted BODY as much as the face (a little: the face leads)
 BODY_DROP, BODY_RX, BODY_RY, BODY_CORE, BODY = 4.0, 2.1, 3.2, 0.35, 0.55
 
@@ -81,6 +86,25 @@ def amount(level, target=TARGET, stops=STOPS, sat=0.0):
     a = min(A_MAX, (want - level) / max(level * (1 - level) ** 2 * toe(level), 1e-6))
     keep = min(max((SAT[1] - sat) / (SAT[1] - SAT[0]), 0.0), 1.0)
     return round(a, 4), round(1 + CHROMA * keep * (lifted(level, a) / level - 1), 4)
+
+
+def knee(level, a=A_MAX):
+    """(k0, k1) legal-range luma: the qualifier's full lift below k0, none above k1, for a face at level lifted with
+    strength a; k1 as low as it can be while the lifted curve keeps rising (never a tone inversion)."""
+    k0 = min(max(KNEE * (level or 0.0), KNEE_MIN), KNEE_MAX)
+    ys = np.linspace(0.0, 1.0, 1001)
+    for span in np.arange(KNEE_SPAN, 0.6, 0.02):
+        kn = (k0, k0 + span)
+        f = np.array([y + key(y, kn) * (lifted(y, a) - y) for y in ys])
+        if (np.diff(f) / np.diff(ys)).min() >= SLOPE_MIN:
+            break
+    return round(k0, 4), round(k0 + float(span), 4)
+
+
+def key(y, kn):
+    """The qualifier at level y: 1 below kn[0], 0 above kn[1], smooth between."""
+    e = min(max((y - kn[0]) / (kn[1] - kn[0]), 0.0), 1.0)
+    return 1.0 - e * e * (3 - 2 * e)
 
 
 def curve(a, k):
@@ -200,8 +224,11 @@ def prepare(project, s, fmt, dur, crop_chain):
                                   sort_keys=True).encode()).hexdigest()[:12]
     meta_f, mask_f = os.path.join(d, name + ".json"), os.path.join(d, name + ".y4m")
     if os.path.exists(meta_f):
-        meta = json.load(open(meta_f))
-        if not meta.get("a") or os.path.exists(mask_f):
+        try:
+            meta = json.load(open(meta_f))
+        except ValueError:                                     # (a run killed mid-write: made again)
+            meta = None
+        if meta is not None and (not meta.get("a") or os.path.exists(mask_f)):
             return (mask_f, meta["a"], meta["k"], meta) if meta.get("a") else None
     frames, src = _grab(project, s, fmt, dur, crop_chain)
     meta = {"a": 0.0, "k": 1.0, "level": None, "seen": 0.0}
@@ -214,7 +241,7 @@ def prepare(project, s, fmt, dur, crop_chain):
         meta.update(seen=round(seen, 2), level=round(level, 3) if level is not None else None, sat=round(sat, 3))
         if seen >= SEEN:
             a, k = amount(level, cfg["target"], cfg["stops"], sat)
-            meta.update(a=a, k=k)
+            meta.update(a=a, k=k, knee=list(knee(level, a)))
         if meta["a"]:
             h, w = frames.shape[1:3]
             sc = MASK_W / max(w, h)
@@ -230,15 +257,26 @@ def prepare(project, s, fmt, dur, crop_chain):
             i1 = np.clip(i0 + 1, 0, len(keys) - 1)
             fr = np.clip(ts - np.floor(ts), 0, 1)[:, None, None]
             _write_y4m(mask_f, (1 - fr) * keys[i0] + fr * keys[i1], fps)
-    with open(meta_f, "w") as f:
+    with open(meta_f + ".part", "w") as f:
         json.dump(meta, f)
+    os.replace(meta_f + ".part", meta_f)
     return (mask_f, meta["a"], meta["k"], meta) if meta["a"] else None
 
 
-def graph(a, k, mask_in, tag="w"):
+def graph(a, k, mask_in, tag="w", kn=None):
     """Filter-graph text that takes the cropped picture (before it, a chain; after it, the rest of the chain) and lifts
-    it through the window from the input labelled mask_in."""
+    it through the window from the input labelled mask_in -- the window times the luma qualifier kn (knee()), read
+    from the picture itself, so only pixels at the face's levels and below take the lift."""
     y, c = curve(a, k)
-    return (f"format=yuv422p10le,split[{tag}b][{tag}l];[{tag}l]lutyuv=y={y}:u={c}:v={c}[{tag}x];"
-            f"[{mask_in}]format=gray[{tag}m0];[{tag}m0][{tag}x]scale2ref=w=rw:h=rh:flags=bicubic[{tag}m][{tag}y];"
-            f"[{tag}y][{tag}m]alphamerge[{tag}a];[{tag}b][{tag}a]overlay=format=yuv422p10:eof_action=repeat,")
+    if not kn:
+        return (f"format=yuv422p10le,split[{tag}b][{tag}l];[{tag}l]lutyuv=y={y}:u={c}:v={c}[{tag}x];"
+                f"[{mask_in}]format=gray[{tag}m0];[{tag}m0][{tag}x]scale2ref=w=rw:h=rh:flags=bicubic[{tag}m][{tag}y];"
+                f"[{tag}y][{tag}m]alphamerge[{tag}a];[{tag}b][{tag}a]overlay=format=yuv422p10:eof_action=repeat,")
+    k0, k1 = 16 + 219 * kn[0], 219 * (kn[1] - kn[0])
+    e = f"clip((val-{k0:.2f})/{k1:.2f}\\,0\\,1)"
+    q = f"255*(1-{e}*{e}*(3-2*{e}))"
+    return (f"format=yuv422p10le,split=3[{tag}b][{tag}l][{tag}q0];[{tag}l]lutyuv=y={y}:u={c}:v={c}[{tag}x];"
+            f"[{tag}q0]extractplanes=y,format=gray,lut=c0={q}[{tag}q];"
+            f"[{mask_in}]format=gray[{tag}m0];[{tag}m0][{tag}q]scale2ref=w=rw:h=rh:flags=bicubic[{tag}m1][{tag}q1];"
+            f"[{tag}m1][{tag}q1]blend=all_mode=multiply[{tag}m];"
+            f"[{tag}x][{tag}m]alphamerge[{tag}a];[{tag}b][{tag}a]overlay=format=yuv422p10:eof_action=repeat,")

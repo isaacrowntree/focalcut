@@ -5,8 +5,13 @@ main subject box, plus the box's contrast and the brightness of a ring around it
 moments.clarity). Every 2nd frame (5 fps): people (RT-DETR) and their 17-point poses (ViTPose).
 Writes <reel>/scores/<name>.npz. Resumable: sources with an existing npz are skipped.
 
-Decoding 4K 10-bit 4:2:2 HEVC is CPU-bound, so sources are shared across a few worker processes; more than two
-GPU workers on a 12 GB card overflows VRAM (and on WSL pages to system RAM, which is far slower than one worker).
+Each source is read from its proxy when reel.json has one (project.decode_from: a 1080p H.264 copy decodes on
+NVDEC at about 15x real time, where the 4K 10-bit 4:2:2 HEVC camera file takes five CPU threads to reach 1.7x), on
+the fastest decoder that reads it (hw.readers). The frames are scaled on the CPU either way, so a proxy decoded on
+the GPU scores exactly as the same proxy decoded on the CPU would; against the camera file the numbers move a
+little (a 1080p picture scaled to 640 px, not a 4K one: see docs/hardware.md). Sources are shared across a few
+worker processes (WORKERS); each holds the two models, and past its memory a 12 GB card on WSL pages to system
+RAM, which is far slower than one worker.
 """
 from __future__ import annotations
 
@@ -46,30 +51,76 @@ def models():
     return _models
 
 
+class DecodeError(RuntimeError):
+    """A hardware decode that stopped part-way through a file (the worker reads that source again on the CPU)."""
+
+
 def probe(path):
+    return _probe(path)[:3]
+
+
+def _probe(path):
+    """(duration, width, height, rotation): the size as displayed (a phone's rotated clip is its upright size)."""
     j = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                                             "stream=width,height:stream_side_data=rotation:format=duration",
                                             "-of", "json", path]))
     s = j["streams"][0]
     rot = abs(int(next((d.get("rotation", 0) for d in s.get("side_data_list", [])), 0)))
     w, h = (s["height"], s["width"]) if rot in (90, 270) else (s["width"], s["height"])
-    return float(j["format"]["duration"]), w, h
+    return float(j["format"]["duration"]), w, h, rot
 
 
-def frames(path, w, h):
+def source_time(shifts, t):
+    """A proxy's time t in its source's own time: the inverse of Project.decode_from for reel.json's proxy shifts
+    [[at, d], ...] (from source time `at` on, the proxy's time is the source's + d, each shift on top of those
+    before it)."""
+    total, out = 0.0, t
+    for at, d in sorted(shifts or ()):
+        total += d
+        if t - total >= at - 1e-9:
+            out = t - total
+    return out
+
+
+def frame_size(w, h):
+    """The analysis frame for a w x h picture: LONG on its long side, even."""
+    return (LONG, round(LONG * h / w / 2) * 2) if w >= h else (round(LONG * w / h / 2) * 2, LONG)
+
+
+def frames(path, w, h, gpu=True):
+    """path's frames at FPS, RGB, at frame_size(w, h), from the first of hw.readers that decodes it: NVDEC (a
+    proxy), Quick Sync (a 4:2:2 camera file), the CPU. On a GPU the frames are thinned to FPS before they are
+    copied to memory and scaled on the CPU after (hw.readers: why not on the GPU). A rotated file (a phone's) goes
+    to the CPU, where ffmpeg turns it upright. Raises DecodeError when a GPU decode stops part-way."""
     import numpy as np
-    sw, sh = (LONG, round(LONG * h / w / 2) * 2) if w >= h else (round(LONG * w / h / 2) * 2, LONG)
-    # analysis only: skip non-reference frames and deblocking (about 20% faster to decode), no audio
-    p = subprocess.Popen(["ffmpeg", "-v", "error", "-threads", "5", "-skip_frame", "noref", "-skip_loop_filter", "all",
-                          "-i", path, "-an", "-vf", f"fps={FPS},scale={sw}:{sh}",
-                          "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
+
+    from . import hw
+    sw, sh = frame_size(w, h)
     n = sw * sh * 3
-    while True:
-        b = p.stdout.read(n)
-        if len(b) < n:
-            break
-        yield np.frombuffer(b, np.uint8).reshape(sh, sw, 3)
-    p.wait()
+    for kind, exe, dec, P, download in hw.readers(path, gpu and not _probe(path)[3]):
+        # (every frame is decoded, whole, on every decoder, so a source scores the same wherever it is read:
+        # skipping non-reference frames, 20% faster on the CPU, left fps= picking frames 20-40 ms off their time --
+        # uneven steps that Farneback read as 15-20% less subject motion on 50p camera files)
+        cpu = ["-threads", "5"] if kind == "cpu" else []
+        p = subprocess.Popen([exe, "-v", "error", *cpu, *dec, "-i", P(path), "-an",
+                              "-vf", f"fps={FPS},{download}scale={sw}:{sh}",
+                              "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                             stdout=subprocess.PIPE, stderr=None if kind == "cpu" else subprocess.DEVNULL)
+        got = 0
+        try:
+            while True:
+                b = p.stdout.read(n)
+                if len(b) < n:
+                    break
+                got += 1
+                yield np.frombuffer(b, np.uint8).reshape(sh, sw, 3)
+        finally:
+            p.stdout.close()
+            rc = p.wait()
+        if got:
+            if rc and kind != "cpu":
+                raise DecodeError(f"{kind} decode of {os.path.basename(path)} stopped after {got} frames")
+            return
 
 
 def people(batch):
@@ -104,7 +155,9 @@ def people(batch):
     return boxes, kps
 
 
-def score(folder: str, source: str, out_dir: str) -> str:
+def score(folder: str, source: str, out_dir: str, gpu: bool = True, project=None) -> str:
+    """Score one source into out_dir. Decoded from its proxy when the project has one (the times written are the
+    source's own: source_time), its size and length the camera file's."""
     import cv2
     import numpy as np
 
@@ -112,8 +165,16 @@ def score(folder: str, source: str, out_dir: str) -> str:
     out = os.path.join(out_dir, Project.score_name(source) + ".npz")
     if os.path.exists(out):
         return f"{source}: cached"
-    path = os.path.join(folder, source)
-    dur, w, h = probe(path)
+    project = project or Project(folder)
+    path = project.decode_from(source, 0.0)[0]
+    orig = os.path.join(folder, source)
+    dur, w, h = probe(orig if os.path.exists(orig) else path)
+
+    px = (project.config.get("proxies") or {}).get(source) or ()
+    shifts = px[1] if len(px) > 1 else ()
+
+    def at(i):                                     # frame i's time in the source (a proxy may have dropped a join)
+        return source_time(shifts, i / FPS)
     t0 = time.time()
     T, CAM, SUBJ, SHARP, LUMA, AREA, CX, NP = [], [], [], [], [], [], [], []
     CONTR, RING = [], []
@@ -123,7 +184,7 @@ def score(folder: str, source: str, out_dir: str) -> str:
     def flush():
         b, k = people([f for _, f, _ in pending])
         for (fi, f, mag), (boxes, sc), kk in zip(pending, b, k):
-            PT.append(fi / FPS)
+            PT.append(at(fi))
             kp = np.full((MAXP, 17, 3), np.nan, np.float32); kp[:len(kk)] = kk[:MAXP]; KP.append(kp)
             bx = np.full((MAXP, 5), np.nan, np.float32)
             if len(boxes):
@@ -153,13 +214,13 @@ def score(folder: str, source: str, out_dir: str) -> str:
                     SUBJ[fi] = max(float(np.percentile(m, 75)) - CAM[fi], 0)
         pending.clear()
 
-    for i, f in enumerate(frames(path, w, h)):
+    for i, f in enumerate(frames(path, w, h, gpu)):
         g = cv2.cvtColor(cv2.resize(f, (f.shape[1] // 2, f.shape[0] // 2)), cv2.COLOR_RGB2GRAY)
         mag = None
         if prev is not None:
             mag = np.linalg.norm(cv2.calcOpticalFlowFarneback(prev, g, None, 0.5, 3, 15, 3, 5, 1.2, 0), axis=2) * 2
         prev = g
-        T.append(i / FPS); CAM.append(float(np.median(mag)) if mag is not None else 0.0)
+        T.append(at(i)); CAM.append(float(np.median(mag)) if mag is not None else 0.0)
         SUBJ.append(0.0); SHARP.append(0.0); LUMA.append(0.0); AREA.append(0.0); CX.append(0.5); NP.append(0)
         CONTR.append(0.0); RING.append(0.0)
         if i % 2 == 0:                             # people + poses at 5 fps
@@ -169,11 +230,14 @@ def score(folder: str, source: str, out_dir: str) -> str:
     if pending:
         flush()
     os.makedirs(out_dir, exist_ok=True)
-    np.savez_compressed(out, t=np.array(T), cam=np.array(CAM), subj=np.array(SUBJ), sharp=np.array(SHARP),
-                        luma=np.array(LUMA), contrast=np.array(CONTR), ring=np.array(RING), area=np.array(AREA),
-                        cx=np.array(CX), npeople=np.array(NP),
-                        pose_t=np.array(PT), kp=np.array(KP), boxes=np.array(BX), size=np.array([w, h]), dur=dur)
-    return f"{source}: {dur:.0f}s in {time.time() - t0:.0f}s"
+    tmp = f"{out}.{os.getpid()}.part"
+    with open(tmp, "wb") as fh:
+        np.savez_compressed(fh, t=np.array(T), cam=np.array(CAM), subj=np.array(SUBJ), sharp=np.array(SHARP),
+                            luma=np.array(LUMA), contrast=np.array(CONTR), ring=np.array(RING), area=np.array(AREA),
+                            cx=np.array(CX), npeople=np.array(NP),
+                            pose_t=np.array(PT), kp=np.array(KP), boxes=np.array(BX), size=np.array([w, h]), dur=dur)
+    os.replace(tmp, out)                           # (a worker stopped mid-write leaves no half a file to "resume")
+    return f"{source}: {dur:.0f}s in {time.time() - t0:.0f}s" + ("" if path == orig else " (from its proxy)")
 
 
 def shards(sources: list[tuple[str, float]], n: int) -> list[list[str]]:
@@ -185,6 +249,7 @@ def shards(sources: list[tuple[str, float]], n: int) -> list[list[str]]:
 
 
 def run(project, workers: int = 2) -> None:
+    """Score every source the units use that has no scores yet, shared over `workers` processes by length."""
     from .project import Project
     assert isinstance(project, Project)
     units = project.load("units.json")
@@ -204,8 +269,14 @@ def run(project, workers: int = 2) -> None:
 
 if __name__ == "__main__":                        # worker: python -m focalcut.reel.score <folder> <out_dir> <src...>
     folder, out_dir, *names = sys.argv[1:]
+    from .project import Project
+    proj = Project(folder)
     for n in names:
         try:
-            print(score(folder, n, out_dir), flush=True)
+            try:
+                print(score(folder, n, out_dir, project=proj), flush=True)
+            except DecodeError as e:               # the GPU gave up on this file: all of it again on the CPU
+                print(f"{n}: {e}; on the CPU instead", flush=True)
+                print(score(folder, n, out_dir, gpu=False, project=proj), flush=True)
         except Exception as e:                     # keep going; a rerun retries only the missing sources
             print(f"{n}: FAILED {e!r}", flush=True)

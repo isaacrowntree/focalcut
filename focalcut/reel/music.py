@@ -419,6 +419,11 @@ def analyse(song: str, start="auto", start_hint=None, max_len: float = 180.0, ph
         beats = np.clip(librosa.time_to_frames(np.clip(bt, 0, None), sr=sr), 0, len(low) - 1)
         strength = np.array([low[max(f - 1, 0):f + 2].max() for f in beats])
         phase = int(np.argmax([strength[p::4].mean() for p in range(4)]))
+    hint0 = start if isinstance(start, (int, float)) else start_hint
+    if hint0 is not None and float(hint0) < bt[0] - period / 2:   # asked to start before the first beat found (a
+        k = int((bt[0] - max(float(hint0), 0.0)) / period + 1e-6)   # quiet intro with no drums): the grid carries
+        bt = np.concatenate([bt[0] - period * np.arange(k, 0, -1), bt])   # back to it at the song's period
+        phase = (phase + k) % 4
     bars = bt[phase::4]
     rms = librosa.feature.rms(y=y)[0]
     rms_t = librosa.frames_to_time(np.arange(len(rms)), sr=sr)
@@ -714,6 +719,8 @@ def run(project, stinger_len: float = 0.0, overlap: float = 1.2) -> dict:
         return m
     if not cfg.get("song"):
         raise SystemExit("reel.json has no song (run `focalcut reel init <folder> --song SONG`)")
+    if cfg.get("arrange"):                                 # the song re-arranged to the film's shape first (arrange)
+        cfg = dict(cfg, song=arranged(project, cfg["song"], cfg["arrange"]))
     length = float(cfg.get("length", 180))
     max_music = length - (stinger_len - overlap if stinger_len else 0.0)   # the stinger overlaps the music's end
     start = cfg.get("start", "auto")
@@ -727,3 +734,178 @@ def run(project, stinger_len: float = 0.0, overlap: float = 1.2) -> dict:
     project.dump(project.music_file, m)
     print(f"[reel] {m['tempo']:.1f} BPM; music {m['start']:.2f}s -> {m['end']:.2f}s ({m['length']:.1f}s)")
     return m
+
+
+# -- re-arranging a song to a film -----------------------------------------------------------------------------------
+# A stock track rarely has the film's shape: too short, its quiet break in the wrong place. arrange() finds a path
+# through the song's own bars -- playing on, or jumping at a bar line to another bar that sounds the same (a repeat or
+# a cut) -- that runs a given number of bars, starts on its first and ends on its last, and puts its quiet bars where
+# the film wants them (reel.json "arrange": {"bars": n, "quiet": [first_bar, last_bar]} in the film's bars) and
+# nowhere else. Dynamic programming over (bar played, film bar): each jump costs, a short loop costs more, a quiet bar
+# out of place costs a lot, a loud bar inside the quiet window some.
+
+JUMP_SIM = 0.975         # two bars this alike (chroma + timbre, over the bar and its neighbours) can be cut between
+QUIET_DB = -4.5          # a bar this far under the song's loud level is a quiet one
+
+
+def bar_profile(song: str, sr: int = 22050) -> dict:
+    """Per bar of the song (its own grid, carried back to 0 over a drumless intro): start time, level (dB under the
+    loudest bars) and a feature for comparing bars."""
+    import librosa
+    m = analyse(song, start=0.0, max_len=1e9, feel=False)
+    y, _ = librosa.load(song, sr=sr, mono=True)
+    bars = np.asarray(m["bars"], float)
+    bars = bars[bars < len(y) / sr - 0.5]
+    beats = np.asarray(m["beats"], float)
+    fr = librosa.time_to_frames(beats, sr=sr)
+    ch = librosa.util.sync(librosa.feature.chroma_cqt(y=y, sr=sr), fr, aggregate=np.median)
+    mf = librosa.util.sync(librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13), fr)[1:]
+    f = np.vstack([ch / (np.linalg.norm(ch, axis=0) + 1e-9), mf / (np.linalg.norm(mf, axis=0) + 1e-9)]) / np.sqrt(2)
+    bi = [int(np.argmin(np.abs(beats - b))) for b in bars]
+    feat = [f[:, min(i, f.shape[1] - 4):min(i, f.shape[1] - 4) + 4].ravel() for i in bi]
+    rms = np.array([np.sqrt(np.mean(y[int(a * sr):int(b * sr)] ** 2) + 1e-12)
+                    for a, b in zip(bars, list(bars[1:]) + [len(y) / sr], strict=True)])
+    db = 20 * np.log10(rms / np.percentile(rms, 90))
+    return dict(song=song, bars=bars.tolist(), db=db.tolist(), feat=np.array(feat), beat=m["beat"],
+                end=len(y) / sr)
+
+
+def jumps(feat: np.ndarray, sim: float = JUMP_SIM, ctx: int = 2, gap: int = 4) -> dict:
+    """{bar i: [bar j, ...]}: after bar i-1 the song may go on with bar j instead of bar i -- the two alike over ctx
+    bars either side (so the cut is unheard)."""
+    n = len(feat)
+    fn = feat / (np.linalg.norm(feat, axis=1, keepdims=True) + 1e-9)
+    S = fn @ fn.T
+    out = {}
+    for i in range(ctx, n - ctx):
+        for j in range(ctx, n - ctx):
+            if abs(i - j) >= gap and np.mean([S[i + k, j + k] for k in range(-ctx, ctx + 1)]) >= sim:
+                out.setdefault(i, []).append(j)
+    return out
+
+
+def arrange(db, J, n_bars, quiet=None, intro=0, outro=8, jump_cost=1.0, back_cost=2.0, loop_cost=3.0,
+            repeat_cost=4.0, min_run=8, run_cost=6.0, stray_cost=25.0, quiet_db=QUIET_DB, beam=4000):
+    """The path (a list of song bars, one per film bar) -- see the note above; None when no path runs n_bars (a
+    song's repeats come in whole phrases: try n_bars +- 8). A beam search over whole paths, so that it can count how
+    often each bar has played: a bar's third play costs repeat_cost (and each after it twice that), a jump back
+    back_cost (more for a loop under 16 bars), any jump jump_cost (plus run_cost out of a stretch under min_run
+    bars); a quiet bar out of the quiet window stray_cost, a loud one inside it 1.5. intro: the song's opening bars, never jumped into; outro: its last bars, played through."""
+    n = len(db)
+    loud = np.asarray(db) > quiet_db
+    q0, q1 = quiet if quiet else (-1, -1)
+
+    def place(b, t):
+        if b < intro:
+            return 0.0
+        if q0 <= t <= q1:
+            return 0.0 if not loud[b] else 1.5
+        return 0.0 if loud[b] else stray_cost
+
+    def succ(b):
+        out = [(b + 1, 0.0)] if b + 1 < n else []
+        for j in J.get(b + 1, []):
+            if intro <= j < n - outro:
+                back = b + 1 > j
+                out.append((j, jump_cost + (back_cost + (loop_cost if b + 1 - j < 16 else 0.0) if back else 0)))
+        return out
+    nexts = [succ(b) for b in range(n)]
+    reach = np.zeros((n_bars, n), bool)                # reach[k, b]: from bar b, the song's last bar in exactly k
+    reach[0, n - 1] = True                             # more bars
+    for k in range(1, n_bars):
+        for b in range(n):
+            reach[k, b] = any(reach[k - 1, j] for j, _ in nexts[b])
+    if not reach[n_bars - 1, 0]:
+        return None
+    states = [(place(0, 0), [0], np.bincount([0], minlength=n))]
+    for t in range(1, n_bars):
+        left = n_bars - t
+        grown = {}
+        for c0, path, cnt in states:
+            run = 1                                    # bars played since the last jump
+            while run < len(path) and path[-run - 1] == path[-run] - 1:
+                run += 1
+            for j, jc in nexts[path[-1]]:
+                if not reach[left - 1, j]:             # (could not end on the last bar in time from there)
+                    continue
+                if j != path[-1] + 1 and run < min_run:   # (a stretch this short between cuts sounds chopped)
+                    jc += run_cost
+                k = cnt[j]
+                c = c0 + jc + place(j, t) + (repeat_cost * (2 ** (k - 2)) if k >= 2 else 0.0)
+                key = (j, cnt.tobytes())
+                if key not in grown or c < grown[key][0]:
+                    c2 = cnt.copy()
+                    c2[j] += 1
+                    grown[key] = (c, path + [j], c2)
+        states = sorted(grown.values(), key=lambda x: x[0])[:beam]
+    done = [s for s in states if s[1][-1] == n - 1]
+    return min(done, key=lambda x: x[0])[1] if done else None
+
+
+def render_path(song: str, bars: list, path: list, out: str, sr: int = 48000, x: float = 0.04) -> list:
+    """The song played along path (song bars), each cut made at the bar line with a short equal-power crossfade and
+    the joining bar nudged (up to 30 ms) to where its waveform best meets the bar it follows. Returns the cuts
+    [(film time, from song time, to song time)]."""
+    import librosa
+    import soundfile as sf
+    y, _ = librosa.load(song, sr=sr, mono=False)
+    y = y if y.ndim == 2 else np.stack([y, y])
+    mono = y.mean(0)
+    ends = list(bars[1:]) + [y.shape[1] / sr]
+    runs, k = [], 0                                   # contiguous stretches of song bars
+    while k < len(path):
+        j = k
+        while j + 1 < len(path) and path[j + 1] == path[j] + 1:
+            j += 1
+        runs.append([bars[path[k]], ends[path[j]]])
+        k = j + 1
+    n, w = int(0.5 * sr), int(0.03 * sr)
+    for a, b in zip(runs, runs[1:], strict=False):   # the incoming stretch nudged to meet the outgoing one
+        ref = mono[int(a[1] * sr):int(a[1] * sr) + n]
+        best = max(range(-w, w + 1, 8), key=lambda d: float(ref @ mono[int(b[0] * sr) + d:int(b[0] * sr) + d + n])
+                   / (np.linalg.norm(mono[int(b[0] * sr) + d:int(b[0] * sr) + d + n]) + 1e-9))
+        b[0] += best / sr
+    xn = int(x * sr)
+    win = np.sin(np.linspace(0, np.pi / 2, xn))
+    out_y, cuts, at, prev_end = None, [], 0.0, 0.0
+    for a, b in runs:
+        seg = y[:, int(a * sr):min(int(b * sr) + xn, y.shape[1])]
+        if out_y is None:
+            out_y = seg
+        else:
+            cuts.append((round(at, 2), round(prev_end, 2), round(a, 2)))
+            out_y = np.concatenate([out_y[:, :-xn], out_y[:, -xn:] * win[::-1] + seg[:, :xn] * win, seg[:, xn:]], 1)
+        at, prev_end = out_y.shape[1] / sr - xn / sr, b
+    sf.write(out, out_y.T, sr)
+    return cuts
+
+
+def arranged(project, song: str, a: dict) -> str:
+    """reel.json "arrange": {"bars": 141, "quiet": [46, 57], "intro": 11, "outro": 8} -- the song re-arranged to
+    that many bars with its quiet bars inside the window (film bars), written to <reel>/music_arranged.wav (made
+    again only when the song or the settings change). Without "bars" the song's own length is kept."""
+    import hashlib
+    import json
+    src = song if os.path.isabs(song) else os.path.join(project.folder, song)
+    out = project.path("music_arranged.wav")
+    sig = hashlib.md5(json.dumps([src, os.path.getmtime(src), a]).encode()).hexdigest()[:12]
+    meta = project.path("music_arranged.json")
+    if os.path.exists(out) and os.path.exists(meta) and json.load(open(meta)).get("sig") == sig:
+        return out
+    P = bar_profile(src)
+    J = jumps(P["feat"], sim=float(a.get("sim", JUMP_SIM)))
+    want = int(a.get("bars", len(P["db"])))
+    path = None
+    for d in sorted(range(-16, 17), key=abs):              # (repeats come in whole phrases: the nearest length)
+        path = arrange(P["db"], J, want + d, quiet=a.get("quiet"), intro=int(a.get("intro", 0)),
+                       outro=int(a.get("outro", 8)), min_run=int(a.get("min_run", 8)))
+        if path:
+            break
+    if path is None:
+        raise SystemExit(f"arrange: no path through {os.path.basename(src)} near {want} bars")
+    cuts = render_path(src, P["bars"], path, out)
+    runs = [(k, b) for k, b in enumerate(path) if k == 0 or b != path[k - 1] + 1]
+    json.dump(dict(sig=sig, bars=len(path), path=path, cuts=cuts), open(meta, "w"))
+    print(f"[reel] arrange: {os.path.basename(src)} -> {len(path)} bars, {len(cuts)} cuts at "
+          + ", ".join(f"{c[0]:.1f}s" for c in cuts) + f" (stretches from song bars {[b for _, b in runs]})", flush=True)
+    return out

@@ -44,6 +44,24 @@ class Fade(Transition):
         return out
 
 
+@register
+class Dissolve(Transition):
+    """A slow cross-dissolve, every frame at its own time (no frame shown twice in a row while it moves): A plays
+    its real last frames and then rests on its last as it fades; B rests on its first as it comes in and then plays
+    from where it would have -- each moving while it is the stronger -- for a change into a slowed or double-exposed
+    shot."""
+    name = "dissolve"; duration_beats = 2.0
+
+    def apply(self, a, b, ctx):
+        n = len(a) + len(b); out = []
+        for i in range(n):
+            u = ease(i / (n - 1))
+            fa = a[min(i, len(a) - 1)]
+            fb = b[max(0, i - len(a))]
+            out.append(cv2.addWeighted(fa, 1 - u, fb, u, 0))
+        return out
+
+
 def radial_blur(f, k):
     """f smeared outwards from its centre over 8% of its size at k = 1: copies a couple of pixels apart at the
     frame's edge (a handful of copies shows as ghost outlines, more so on a 4K frame), averaged."""

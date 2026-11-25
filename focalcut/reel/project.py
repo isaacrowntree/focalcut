@@ -6,7 +6,7 @@
     <folder>/focalcut/reel/...           every artifact: scores/, thumbs/, units.json, moments.json, music.json,
                                          plan_<fmt>.json, work/, out/
 
-reel.json keys (all optional except song):
+reel.json keys (all optional except song; "recipe" layers a house style under them -- load_recipe):
     song               path to the track
     songs              several tracks instead of song, one per act group: [{"song": path, "bars": n | null,
                                          "pre": 8, "from": seconds, "acts": {"<act>": bars | null}}, ...]
@@ -26,6 +26,17 @@ reel.json keys (all optional except song):
     sources            {"<clip>": "<file in folder>"}  e.g. a stabilised or joined replacement
     rotate             {"<clip>": "<ffmpeg filter>"}   e.g. "transpose=2" for a clip shot sideways
     spans              {"<clip>": [t0, t1]}            usable part of a clip for the reels (t1 may be null: to the end)
+    source_dirs        ["Marcos"]: subfolders holding camera files too (a second shooter's card), searched after the
+                                         folder itself; their exports go in export/ like any other
+    cameras            {"isaac": ["C2*"], "marcos": ["C0*"], "drone": ["DJI_*"]}: which clips each camera shot (by
+                                         clip pattern), for the look (each matched to look_hero) and "clock"
+    shake_max          {"C0*": [0.0012, 0.0045]}: per camera, shake (shake.py hf) under the first plays as shot,
+                                         between the two the shot is steadied (render.steady_crop), over the
+                                         second the stretch is never used; "shake_in" limits the shake step
+                                         to these patterns
+    formats            ["landscape"]: the formats the reel is made in (default both; a cut may set its own)
+    clock              {"C*": -3600}: seconds added to the creation time of clips matching a pattern (a camera set to
+                                         the wrong zone), so footage from several cameras lines up (reference.py)
     proxies            {"<source>": ["<file>", [[at, shift], ...]]}  a smaller file to decode a source from (e.g. the
                                          H.264 export of a DNxHD master, starting on the same frame); from source
                                          time `at` on, the proxy's time is source time + shift (a dropped join)
@@ -50,6 +61,8 @@ reel.json keys (all optional except song):
                                          frame; {"landscape": "4k", "portrait": "1080p"} sets it per format, and a
                                          cut can carry its own. Shots, effects, the overlay, the stinger and the
                                          XML's sequence all follow it (render.py)
+    stabilise_always   clip patterns or categories whose every shot renders steadied (render.steady_crop: the crop
+                       riding against the camera's jitter, 3% tighter; kept only where it measurably steadies)
     stabilise          true: shaky stretches the planner keeps play lightly steadied (render.steady_crop: the
                                          crop rides the camera's jitter, at most 1.2% of the frame, only
                                          where that measurably steadies the shot); "all": sources
@@ -140,6 +153,49 @@ def with_profiles(level: dict, profiles: dict, seen: tuple = ()) -> dict:
     return merge(out, {k: v for k, v in level.items() if k != "use"})
 
 
+RECIPE_DIRS = ("~/.config/focalcut/recipes",)
+
+
+def deep_merge(base: dict, over: dict) -> dict:
+    """over laid on base, dicts merged key by key all the way down (a recipe's settings under a project's)."""
+    out = copy.deepcopy(base)
+    for k, v in over.items():
+        out[k] = deep_merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else copy.deepcopy(v)
+    return out
+
+
+def find_recipe(name: str, folder: str | None = None) -> str:
+    """A recipe's file: a path (~ allowed), else <name>[.json] in $FOCALCUT_RECIPES (dirs, ":"-separated), the
+    project's own focalcut/recipes, or ~/.config/focalcut/recipes."""
+    p = os.path.expanduser(name)
+    if os.path.isfile(p):
+        return p
+    dirs = [*(os.environ.get("FOCALCUT_RECIPES") or "").split(os.pathsep),
+            *([os.path.join(folder, "focalcut", "recipes")] if folder else []), *RECIPE_DIRS]
+    for d in filter(None, dirs):
+        for f in (name, name + ".json"):
+            q = os.path.join(os.path.expanduser(d), f)
+            if os.path.isfile(q):
+                return q
+    raise FileNotFoundError(f'reel.json "recipe": no {name!r} (looked in {", ".join(filter(None, dirs))})')
+
+
+def load_recipe(names, folder: str | None = None, seen: tuple = ()) -> dict:
+    """reel.json "recipe": a name or a list of them -- the house style for a kind of film (its structure, rules and
+    looks: settings, not code), kept with the people who make those films rather than in focalcut. Each is a
+    reel.json-shaped file; a recipe may name its own "recipe" to build on. Later names override earlier ones; the
+    project's reel.json overrides them all."""
+    out = {}
+    for name in [names] if isinstance(names, str) else list(names or []):
+        path = find_recipe(name, folder)
+        if path in seen:
+            raise ValueError(f"recipe {name!r} builds on itself")
+        r = json.load(open(path))
+        out = deep_merge(out, load_recipe(r.pop("recipe", None), folder, seen + (path,)) if r.get("recipe") else {})
+        out = deep_merge(out, {k: v for k, v in r.items() if not k.startswith("_")})
+    return out
+
+
 RESOLUTIONS = {"1080p": 1080, "hd": 1080, "fhd": 1080, "1440p": 1440, "qhd": 1440, "2k": 1440,
                "2160p": 2160, "4k": 2160, "uhd": 2160}
 
@@ -176,10 +232,14 @@ class Project:
         self.library = os.path.join(self.focalcut_dir, "library.json")
         self.config_path = os.path.join(self.reel_dir, "reel.json")
         config = json.load(open(self.config_path)) if os.path.exists(self.config_path) else {}
+        self.recipe = load_recipe(config.get("recipe"), self.folder) if config.get("recipe") else {}
+        if self.recipe:                                          # the house style under the project's own settings
+            config = deep_merge(self.recipe, config)
         self.profiles, self.uses = config.pop("profiles", None) or {}, bool(config.get("use"))
         profiles = self.profiles
         self.config = with_profiles(config, profiles)
-        self.cut, self.footage, self.formats, self.own_music, self.ban = cut, None, None, False, set()
+        self.cut, self.footage, self.own_music, self.ban = cut, None, False, set()
+        self.formats = self.config.get("formats")                # reel.json "formats": the formats it is made in
         self.own_plan = config.get("plan") or {}                 # the "plan" this reel itself wrote (no profile's,
         if cut:                                                  # another reel from the same footage (reel.json "cuts")
             c = (self.config.get("cuts") or {}).get(cut)
@@ -187,7 +247,7 @@ class Project:
                 raise KeyError(f"reel.json has no cut {cut!r} (cuts: {sorted(self.config.get('cuts') or {})})")
             c = with_profiles(c, profiles)
             self.own_plan = ((self.config.get("cuts") or {}).get(cut) or {}).get("plan") or {}   # nor, for a cut,
-            self.footage, self.formats = c.pop("footage", None), c.pop("formats", None)            # the project's)
+            self.footage, self.formats = c.pop("footage", None), c.pop("formats", None) or self.formats   # (the project's)
             self.ban = set(c.pop("ban", ()))
             self.own_music = any(k in c for k in MUSIC_KEYS)
             self.config = merge({k: v for k, v in self.config.items() if k != "cuts"}, c)
@@ -230,10 +290,14 @@ class Project:
         """The file a clip is cut from: a configured replacement, else <clip>.<ext> found in the folder."""
         if clip in self.config.get("sources", {}):
             return self.config["sources"][clip]
-        for f in sorted(os.listdir(self.folder)):
-            stem, ext = os.path.splitext(f)
-            if stem == clip and ext.lower() in VIDEO_EXT:
-                return f
+        for d in ["", *self.config.get("source_dirs", [])]:       # the folder, then reel.json "source_dirs"
+            here = os.path.join(self.folder, d)                    # (a second shooter's card in its own folder)
+            if not os.path.isdir(here):
+                continue
+            for f in sorted(os.listdir(here)):
+                stem, ext = os.path.splitext(f)
+                if stem == clip and ext.lower() in VIDEO_EXT:
+                    return os.path.join(d, f) if d else f
         return clip + ".MP4"
 
     @staticmethod
@@ -392,8 +456,9 @@ class Project:
             raise RuntimeError("save_config on a cut would write its merged settings over reel.json")
         if self.uses:
             raise RuntimeError("save_config would write the profiles reel.json uses into it")
-        with open(self.config_path, "w") as f:
-            json.dump({**self.config, **({"profiles": self.profiles} if self.profiles else {})}, f, indent=1)
+        own = {k: v for k, v in self.config.items() if k not in self.recipe or self.recipe[k] != v or k == "recipe"}
+        with open(self.config_path, "w") as f:                  # (the project's own settings: the recipe stays its own)
+            json.dump({**own, **({"profiles": self.profiles} if self.profiles else {})}, f, indent=1)
         return self.config_path
 
     # json helpers ------------------------------------------------------------------------------

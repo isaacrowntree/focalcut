@@ -331,15 +331,35 @@ function pend() {
 }
 function mysel() {
   const c = C(), ss = sels(c.id);
+  $("cgsel").innerHTML = Object.entries(GUIDES).map(([k, v]) => `<option value="${k}"${guideOf(c.id) == k ? " selected" : ""}>${esc(v)}</option>`).join("");
+  if (document.activeElement !== $("cgnote")) $("cgnote").value = clipNote(c.id);
   $("mysel").innerHTML = ss.length
-    ? `<table><tr><th>#</th><th>in</th><th>out</th><th>length</th><th>stars</th>${RS.length > 1 ? "<th>in the reels</th>" : ""}<th></th></tr>` +
+    ? `<table><tr><th>#</th><th>in</th><th>out</th><th>length</th><th>stars</th><th>note</th>${RS.length > 1 ? "<th>in the reels</th>" : ""}<th></th></tr>` +
       ss.map(([a, b], k) => `<tr class="${k == act ? "act" : ""}${inReel(c.id, a, b, reel) ? "" : " away"}"><td>${k + 1}</td><td>${fmt(a)}</td><td>${fmt(b)}</td><td>${(b - a).toFixed(2)} s</td>
- <td>${starBar(c.id, a, b, `data-k=${k}`)}</td>${RS.length > 1 ? "<td>" + RS.map((r) => `<label class=rk title="in the ${esc(r.label)} reel"><input type=checkbox data-r="${esc(r.id)}" data-k=${k}${inReel(c.id, a, b, r.id) ? " checked" : ""}> ${esc(r.label)}</label>`).join(" ") + "</td>" : ""}
+ <td>${starBar(c.id, a, b, `data-k=${k}`)}</td><td><input type=text class=pnote data-n=${k} value="${esc(noteOf(c.id, a, b))}" placeholder="a note on this pick" style="width:16em"></td>${RS.length > 1 ? "<td>" + RS.map((r) => `<label class=rk title="in the ${esc(r.label)} reel"><input type=checkbox data-r="${esc(r.id)}" data-k=${k}${inReel(c.id, a, b, r.id) ? " checked" : ""}> ${esc(r.label)}</label>`).join(" ") + "</td>" : ""}
  <td><button data-p=${k}>▶ Play</button> <button data-l=${k}>Loop</button> <button data-d=${k} class=danger title="remove this selection${reel == "all" ? "" : " from " + esc(rlab(reel))}">✕</button></td></tr>`).join("") + `</table>`
     : `<p class=mut style="margin:0">No selections in this clip yet.</p>`;
 }
+$("cgsel").onchange = () => {
+  setGuide(C().id, $("cgsel").value);
+  save();
+  toast(`${C().id}: ${GUIDES[$("cgsel").value]} — re-plan to use it`);
+};
+$("cgnote").onchange = () => {
+  setClipNote(C().id, $("cgnote").value);
+  save();
+  toast(`Note saved on ${C().id}`);
+};
 $("mysel").onchange = (ev) => {
-  const i = ev.target, x = sels(C().id)[+i.dataset.k];
+  const i = ev.target;
+  if (i.dataset.n !== undefined) {
+    const x = sels(C().id)[+i.dataset.n];
+    if (!x) return;
+    putNote(C().id, x[0], x[1], i.value);
+    save();
+    return toast(`Note saved on ${fmt(x[0])}–${fmt(x[1])}`);
+  }
+  const x = sels(C().id)[+i.dataset.k];
   if (!i.dataset.r || !x) return;
   if (!setIn(C().id, x[0], x[1], i.dataset.r, i.checked)) {
     toast("A pick is in one reel at least — ✕ removes it", "warn");

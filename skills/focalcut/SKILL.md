@@ -69,6 +69,15 @@ footage for can be given zero bars.
 A different song for a new cut: `music.analyse(song, start_hint=…, max_len=…)` returns the dict `place()` takes.
 Pass `song=` to `place()` and the render and XML use it.
 
+## Cut it like a reference film
+
+When the client supplies a finished film to follow (last year's), use reference mode (`docs/recipes/reference.md`):
+`focalcut reel reference <folder> <film>` learns its cuts, split screens, stutter, title, end card, colour and which
+of the project's categories each shot is like; reel.json `"mode": "reference"` makes the plan step cut on it. Dunks
+(`"immersion": ["baptisms"]`) are found from the poses (one person gone, the others stooping) and the crowd's
+cheer; every camera is colour-matched to the hero camera (`look_hero`) before the film's look; `clock` lines the
+cameras up. Built on the Grace City Church baptisms (2026-11-21).
+
 ## The concepts (each is its own piece of code)
 
 Read `references/concepts.md` for the rule, the reason, the numbers and the code behind each. In brief:

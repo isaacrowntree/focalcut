@@ -4,6 +4,7 @@
 //
 // picks.json, per export file:  {"add": ["1:12.40-1:15.10", "0:41.00"], "ban": ["0:00-0:20", "all"],
 //   "prefer": [...], "more": 2, "open": "<range>", "end": "<range>", "stars": {"<range>": 1-5},
+//   "notes": {"<range>": "why this pick"}, "guide": "mine" | "focalcut" | "both", "note": "for the whole clip",
 //   "portrait": [["m:ss.ss", x, y], ...], "follow": [["m:ss.ss", x, y], ...], "only": {"<key>": ["main", "short"]}}
 
 // --- times -------------------------------------------------------------------------------------------------------
@@ -185,6 +186,43 @@ function putStars(id, a, b, n) {
 }
 // the "add" value as written for a selection, or undefined
 const written = (id, a, b) => ((P[id] || {}).add || []).find((v) => isRange(v) && valEq("add", v, rkey(a, b)));
+// notes: the editor's words on a pick (a clip's "notes": {range: text}) -- they go with it when it moves, and with it
+// when it goes
+function noteOf(id, a, b) {
+  const o = (P[id] || {}).notes;
+  if (!o) return "";
+  for (const k in o) {
+    const [u, v] = span(k);
+    if (near2(u, a) && near2(v, b)) return o[k];
+  }
+  return "";
+}
+function putNote(id, a, b, text) {
+  const e = ent(id), o = {};
+  for (const k in e.notes || {}) {
+    const [u, v] = span(k);
+    if (!(near2(u, a) && near2(v, b))) o[k] = e.notes[k];
+  }
+  if (text && text.trim()) o[rkey(a, b)] = text.trim();
+  if (Object.keys(o).length) e.notes = o;
+  else delete e.notes;
+}
+// a clip's guidance for the planner: "mine" (only the editor's picks from it), "focalcut" (the planner's own
+// choice, the picks set aside, bans kept), "both" (the picks and the planner's around them), none (the project's
+// "only_picks" decides), and a note on it
+const GUIDES = { "": "As the project is set", both: "My picks + focalcut's", mine: "Only my picks", focalcut: "focalcut's choice" };
+const guideOf = (id) => (P[id] || {}).guide || "";
+function setGuide(id, g) {
+  const e = ent(id);
+  if (!g) delete e.guide;
+  else e.guide = g;
+}
+const clipNote = (id) => (P[id] || {}).note || "";
+function setClipNote(id, text) {
+  const e = ent(id);
+  if (text && text.trim()) e.note = text.trim();
+  else delete e.note;
+}
 function sortAdds(e) {
   const pts = (e.add || []).filter((v) => !isRange(v)), rs = (e.add || []).filter(isRange);
   e.add = [...pts, ...rs.sort((x, y) => span(x)[0] - span(y)[0])];
@@ -204,7 +242,7 @@ function moveSel(id, a, b, a2, b2) {
   if (!e || old === undefined || b2 - a2 < 0.1) return false;
   const key = rkey(a2, b2);
   if (valEq("add", old, key)) return false;
-  const tags = tagsOf(id, "add", old), st = starsOf(id, a, b), dup = written(id, a2, b2);
+  const tags = tagsOf(id, "add", old), st = starsOf(id, a, b), nt = noteOf(id, a, b), dup = written(id, a2, b2);
   for (const f of ["open", "end"])
     if (same(e[f], a, b)) {
       const t = tagsOf(id, f, e[f]);
@@ -220,6 +258,10 @@ function moveSel(id, a, b, a2, b2) {
     setTags(id, "add", key, tags);
   }
   if (st) putStars(id, a2, b2, st);
+  if (nt) {
+    putNote(id, a, b, "");
+    putNote(id, a2, b2, nt);
+  }
   sortAdds(e);
   return true;
 }
@@ -295,6 +337,14 @@ function tidy() {
         if (!ss.some(([a, b]) => near2(a, u) && near2(b, v))) delete e.stars[q];
       }
       if (!Object.keys(e.stars).length) delete e.stars;
+    }
+    if (e.notes) {
+      const ss = (e.add || []).map(span);
+      for (const q in e.notes) {
+        const [u, v] = span(q);
+        if (!ss.some(([a, b]) => near2(a, u) && near2(b, v))) delete e.notes[q];
+      }
+      if (!Object.keys(e.notes).length) delete e.notes;
     }
     for (const f of ["ban", "prefer", "add", "portrait", "follow"]) if (e[f] && !e[f].length) delete e[f];
     if (e.more === 0) delete e.more;

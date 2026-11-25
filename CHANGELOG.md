@@ -9,6 +9,70 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A Premiere package to hand on** (`masters.py`, `xml_export.package`; reel.json `"xml_package": true`,
+  `"premiere_dir"`, `"masters"`): one folder to upload as it is. `footage/` holds whole-clip editing masters
+  (the camera's LUT and finish, vid.stab two-pass where a clip shook -- its correction capped so the zoom that hides
+  it stays near 1.1x -- a constant frame rate, H.264 at a set bitrate, the camera's sound kept), `effects/` the baked
+  shots, `captions/` the captions as PNGs, `audio/` the song and the ambience bed as the film mixed it, `film/` the
+  finished films, and a README. The XML lays plain shots on V1 from the masters at their in-points, effect shots
+  baked, captions on V2 with cross dissolves (snapped to a cut they overhang by a few frames), the song on A1 with
+  Audio Levels keyframes tracing the film's envelope and ducking, each cheer on A2 from its master with fades, the
+  ambience on A3 -- stereo in Premiere's own layout (linked channel pairs, `premiereTrackType="Stereo"`), files at
+  their real frame rate, gains capped at +12 dB (the README says what needs more), written indented with Windows
+  line endings.
+- **Captions** (reel.json `"captions": [{"at", "to", "text"}]`, `cards.caption`, `render.add_captions`): documentary
+  lower-thirds faded in and out over the finished film; `"burn_captions": false` keeps the film clean and the
+  captions in the Premiere package only.
+- **Spatial photos** (`fx/spatial.py`, `focalcut fx spatial`; a `photo` slot): a still made 3D like iOS's spatial
+  wallpaper -- the people facing the camera matted (SAM 3, pymatting foreground), the background behind them filled
+  by big-LaMa, an orbit about the subject's depth; the photo's own colour kept (its ICC profile honoured). A
+  `photo_grid` slot plays several as a staggered grid.
+- **An ambience bed** (reel.json `"ambience": {"source", "from", "to", "lufs"}`): a stretch of a camera's own sound
+  looped under the whole film, levelled.
+- **Delivery copies** (reel.json `"deliver"`, `render.deliver`): e.g. 1080p at 30 fps for a projector, frame rate
+  changed by blending neighbours.
+
+- **A song re-arranged to the film** (`music.arrange`, `bar_profile`, `jumps`, `render_path`; reel.json `"arrange":
+  {"bars": n, "quiet": [first, last], "intro": n, "outro": n}`): a beam search through the song's own bars -- playing
+  on, or cutting at a bar line to a bar that sounds the same -- to the film's length, its quiet break inside the
+  window (film bars) and nowhere else, no bar thrice, no chopped stretches; cuts crossfaded and nudged to meet. The
+  music step writes `music_arranged.wav`. A drumless intro is kept: the beat grid carries back to the song's start
+  when `start` asks for it.
+- **The music built to the film** (reel.json `"music_shape"`, `render.shape_envelope` / `shape_song`): a little under
+  full at the opening, down and muffled (a gentle low-pass) under the talking scenes, then from the first dunk a
+  build to full and bright by the last, each rise lifted by a bar-long swell. The final level is one gain and a peak
+  limiter (loudnorm's linear mode squashed a real crescendo).
+- **Documentary structure:** `"section_starts"` pins a section (the first dunk) to a time in the song, counted after
+  dropped slots; `"event_s"` sets a moment's length in seconds, whatever the tempo; `"montage"` sections play the
+  editor's picks only, each its own length in beats; `"last_pick"` closes the film on an editor's pick; `"grow":
+  null` lets a film with nothing to fill come out shorter, the card running to the song's end (up to 22 s).
+- **Dissolve transition** (`fx/transitions.Dissolve`): both shots keep moving through a two-beat cross-dissolve; the
+  cut into a double exposure uses it.
+
+- **The speaker is whoever holds the mic** (new `holding.py`, reel.json `"holding": {"speakers": "microphone"}`):
+  SAM 3 finds the prop by name, the holder is the person whose wrist is at it; speaker slots play only stretches with
+  it held, and panels and grid cells frame the holder instead of the biggest face.
+- **The event plays in the order it happened** (`template.in_order`, `recap_in_order`): the first dunk opens the
+  event; no ground shot from it shows a moment after the next dunk still to play; after the last, the look back runs
+  in time order.
+- **The camera rule is hard and sees what it missed** (`template.Steady.faults`, new `aim.py`). Every pick, dunk,
+  stutter and split-screen panel plays clear of camera faults, at every 0.1 s, never relaxed: a swing, the camera
+  lowered or dropped at the end of a take, a twist, shake beyond what the steadying crop takes out, frames the tracker
+  lost (a whip), the picture going soft against the clip's own sharpness (a focus hunt), and frames of nothing --
+  SigLIP 2 reading each frame as of something or of nothing (the ground, feet, the sky, a hand on the lens). Before,
+  a lost track read as a still camera, handheld shake went unmeasured, and the camera rule was relaxed when a slot
+  ran short. A slot whose footage is used up now widens its search (any category, then all the footage) instead.
+- **`"stabilise_always"`**: clip patterns or categories whose every shot renders through the steadying crop.
+- **Exposure matching spares the faces** (`exposure.gain_filter` `protect`): a scene brought down a stop (the ISO
+  raised for darker faces) is brought down above a luma point only -- skin and shadows stay as shot, the water and sky
+  take the full gain, never a tone inversion (`protect_span`). The tracked face window, no longer needed there, had
+  lifted the water around each head too: a halo. The window's lift itself now has a luma qualifier (`window.knee`).
+- **Per-stretch camera looks** (`render.lut_cube`, reel.json `"lut_segments"`): a clip whose camera changed part way
+  (an ISO step, the fade drifting) takes the cube of the stretch its shot's middle falls in -- from color-grade-ai's
+  `match_camera.py science`, which matches each camera to a model of the hero camera's colour across the shoot.
+- **Integration tests against the truth** (`tests/integration/test_truth.py`): inputs whose right answer is known by
+  construction (ffmpeg-synthesised moves, cuts, splits, titles, dust, exposure) or checked by eye on real footage.
+
 - **DJ shots show the decks** (`lead.py`, `validate.py`, `plan.py`). In portrait a DJ shot is never zoomed past
   z=1; when the deck work is the action (hands down on the gear, decks a real part of the frame, nobody hyping,
   the strip not mostly empty) the strip centres on the hands, mixer and near deck and the DJ's head may sit on
@@ -183,6 +247,33 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A faster analysis and render, the same picture** (measured on a 4 min 4K film; `docs/render.md`, findings
+  11-15, and `docs/hardware.md`).
+  - *Speed curves* (`fx/speed.py`, `render.fx_shot`): a stretch at exactly 1x plays the source's own frames
+    (`snap_steps` nudges the ramp before it by half a source frame at most, so it starts on a whole one; before,
+    every frame after a ramp was an optical-flow in-between of two real frames). A chain that is one speed curve
+    streams in the 4:2:0 the encoder takes (`Speed.stream`, `Yuv`): a few frames held, not the shot as RGB
+    (8.6 GB for 7 s of 4K), decode, curve and encode each on a thread, three such shots at once
+    (`FOCALCUT_FX_JOBS`) in the plain shots' slots. The in-between arithmetic keeps its pixel grid and builds its
+    maps with `cv2.scaleAdd`. 13 hero shots at 4K: about 390 s to 68 s.
+  - *Cache keys* (`render.key`, `render_shots`): a shot's key is made of what shapes its pixels and nothing else
+    (not the planner's scores of the crop; no peak, role or beat for a plain shot), its file is `shot_<key>.mp4`
+    rather than numbered by its place in the plan, and LUTs and the dust map are identified by content
+    (`render.file_id`, `dust.version`). A shot added early in a plan, or a re-plan that only re-scores, re-renders
+    nothing else. **Every shot renders once more after this change**; `work/shot_NNN_*.mp4` are no longer read.
+  - *Score* (`score.py`, `hw.readers`) reads each source's proxy when reel.json has one, on NVDEC (Quick Sync
+    for a 4:2:2 camera file without one), frames thinned on the GPU and scaled on the CPU: about 3.5x real time a
+    worker, from 1.4x. Every frame is decoded on every decoder (the CPU path no longer skips non-reference
+    frames), so **new scores differ from old ones** on 50p camera files: 15-20% more subject motion (the old
+    sampling was uneven), sharpness about 10% higher from a proxy. Existing scores are kept as they are; scoring
+    a few sources again moved 3 of 18 and 8 of 20 moments by more than 0.3 s on the two tried.
+  - *Shake* (`shake.py`) prints each source as it finishes and decodes through `hw.readers` (the same numbers;
+    a 4:2:2 camera file 3.4x quicker).
+  - *Reference* (`reference.py`): the film's frames in one pass a size (`frames_at`: the same pixels as 270
+    seeks), its shots' moves read several at once, unit frames from keyframes alone, six units at once, each
+    stamped with its own time (they were up to a sample step early; `reference_frames.npz` `store` 2), and
+    `run()` keeps the embeddings it already has. 5.2 min to 2.3. One of 90 shots changed category (a 0.001 tie)
+    with the re-timed frames.
 - **Calm passages glide (landscape)** (Isaac: "in the calm sections for landscape gentle slow mo"). Where the music is
   calm (music.feel: an intro, a breakdown, a build), every shot of two beats or more with no effect of its own plays
   at 0.8x throughout (fx "glide", optical-flow in-betweens, the face guard keeping faces sharp); picks included,
@@ -229,6 +320,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A documentary scene shows only its own footage, and a drone slot only the drone's: a slot with nothing left is
+  dropped, never filled from another scene out of its time. A section set to 0 bars is gone (a phrase snap no longer
+  grows it back).
+- Drone b-roll never goes back in time (`AIR_BEHIND`: at most 2 min before where the day has got to), never turns
+  (yaw over `steady.air_turn` rad/s), and away from the event only the editor's picks or what `aim.prefer` asks for.
+- A side-by-side dunk's drone panel is the same second exactly, or the dunk plays full frame.
+- A grid cell can be framed by hand (`grid_extra`: `[clip, t, x, y]`).
+- A split screen's canvas is labelled BT.709 like the footage, so panels no longer shift colour.
+- A drone shot can no longer land on the take-off or landing after its stretch is clamped to the clip.
+- The reference's opening title is read even when its ground is plain enough to pass for a card.
+
+- **An effect shot could come from a stale cache** (`render.key`): the key used the plan's beat where the shot
+  renders with its own, and left out `group`, `add` and the exposure match's `gain_protect`.
+- **Speed-curve shots were a code value darker than the shots around them** (4:2:0 to RGB and back through
+  swscale, truncating twice); they now stay in 4:2:0 and match a plain cut of the same frames.
 - **The same inputs give the same plan.** `cover_people` chose among equally good spots in a set's order, which
   changes with the interpreter's hash seed: two runs of one cut differed in most shots. Spots are now taken in
   order (unit, then time).

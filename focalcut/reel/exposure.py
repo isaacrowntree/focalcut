@@ -24,6 +24,16 @@ reel.json "exposure" (off unless set):
      "lift": true,                      night shots: lift dark faces through a tracked window (window.py), or
                                         {"target": 0.4, "stops": 0.6}; {"window": false, "target", "max"}: the
                                         old midtone curve over the whole frame
+     "highlights": {"from": 0.78,       a bright daylight picture brought down by its top end and its overall
+                    "frame": 0.45,      level, faces or none (highlight_amount); "only": clip patterns
+                    "max": 0.12,
+                    "only": ["C2*"]},
+     "match": {"clips": ["baptisms"],  one scene shot at different exposures (the ISO raised for darker
+               "level": "auto",         faces) brought to one level: each shot's background scaled to the
+               "max": 1.2},             group's (match_gains), its faces then lifted back by the window
+     "lift": {"day": true},             by day as well: faces that sit dark in a bright frame (dark skin in the
+                                        shade of a cap, against noon sun on the water) are lifted through the same
+                                        window -- the window still decides from the faces, and leaves lit ones be
      "lift_by": {"C2037": 0}}           by hand, like "pull": 0 keeps a shot as shot; with the window, the most
                                         it may brighten that shot's faces, in stops
 """
@@ -49,6 +59,13 @@ NIGHT_TARGET = 0.40              # a night subject's level (faces, else the medi
 LIFT_MAX = 0.08                   # the most a night shot is lifted (at mid-grey: a dark face ~2/3 of it)
 SAMPLES = (0.2, 0.5, 0.8)         # where in the shot to look
 GRAB_W = 960
+
+
+def _matches(u, pats):
+    """Whether a unit is one of the patterns -- its export category, or its clip name by pattern (None: every
+    unit)."""
+    import fnmatch
+    return not pats or any(u.get("category") == p or fnmatch.fnmatch(u.get("clip", ""), p) for p in pats)
 
 
 def config(project) -> dict:
@@ -108,7 +125,12 @@ def measure(project, unit, src_in, length):
         top = min(f[1] for f in faces) if faces else box[1] + 0.25 * (box[3] - box[1])
         s = _cut(y, (box[0], max(box[1], top), box[2], box[3]))   # the people from their heads down: not the sky
         fp = np.concatenate([_cut(y, f).ravel() for f in faces]) if faces else np.zeros(0)
-        rows.append(dict(frame=float(y.mean()), subject=float((s >= CLIP).mean()) if s.size else 0.0,
+        hh, ww = y.shape
+        bgm = np.ones_like(y, bool)                              # the background: everything but the subject
+        bx0, by0, bx1, by1 = (int(round(v * d)) for v, d in zip(box, (ww, hh, ww, hh), strict=True))
+        bgm[max(by0, 0):max(by1, 0), max(bx0, 0):max(bx1, 0)] = False
+        rows.append(dict(back=float(np.median(y[bgm])) if bgm.any() else float(np.median(y)),
+                         frame=float(y.mean()), subject=float((s >= CLIP).mean()) if s.size else 0.0,
                          face=float(np.median(fp)) if fp.size else None,
                          face_clip=float((fp >= CLIP).mean()) if fp.size else None,
                          top=float(np.percentile(s, 99.5)) if s.size else 0.0,
@@ -117,7 +139,8 @@ def measure(project, unit, src_in, length):
         return None
     faces = [r["face"] for r in rows if r["face"] is not None]
     fclip = [r["face_clip"] for r in rows if r["face_clip"] is not None]
-    return dict(frame=round(float(np.mean([r["frame"] for r in rows])), 3),
+    return dict(back=round(float(np.median([r["back"] for r in rows])), 3),
+                frame=round(float(np.mean([r["frame"] for r in rows])), 3),
                 subject=round(float(np.mean([r["subject"] for r in rows])), 4),
                 face=round(float(np.mean(faces)), 3) if faces else None,
                 face_clip=round(float(np.mean(fclip)), 3) if fclip else None,
@@ -134,6 +157,88 @@ def amount(m, top=MAX):
     if bad < 1.0:
         return 0.0
     return round(min(top, 0.03 + 0.04 * (bad - 1.0)), 3)
+
+
+def highlight_amount(m, h):
+    """A bright daylight picture brought down (reel.json "exposure" "highlights": {"from": 0.78, "frame": 0.45,
+    "max": 0.12}): however its faces read, a shot whose top end (the subject's 99.5th percentile) sits above `from`
+    of white, or whose whole frame averages above `frame`, is pulled -- the curve only moves the upper midtones
+    and highlights (above KNEE), so faces in the midtones keep their level. Night shots are left alone."""
+    if not m or m["frame"] < DAY:
+        return 0.0
+    top = float(h.get("max", MAX))
+    a = max(0.0, (m["top"] - float(h.get("from", 0.78))) / 0.2) + max(0.0, (m["frame"] - float(h.get("frame", 0.45))) / 0.25)
+    return round(min(top, top * a), 3) if a > 0.05 else 0.0
+
+
+def match_gains(cfg, shots, cache):
+    """reel.json "exposure" "match": {"clips": ["baptisms"], "level": "auto" | 0.6, "max": 1.2}: shots of one scene
+    shot at different exposures (the ISO raised a stop to see darker faces) brought to one level -- each shot's
+    background (everything but its subject) scaled to the level the group sits at ("auto": its lower third), never
+    brighter, by at most "max" stops. Video is gamma-encoded, so a change of exposure is a scale of the signal: the
+    gain is (level / background). {shot index: gain < 1}."""
+    if not cfg:
+        return {}
+    pats = cfg.get("clips")
+    backs = {i: cache.get(_key(s["unit"], s)) for i, s in enumerate(shots) if _matches(s["unit"], pats)}
+    backs = {i: m["back"] for i, m in backs.items() if m and m.get("back")}
+    if len(backs) < 2:
+        return {}
+    level = cfg.get("level", "auto")
+    level = float(np.percentile(list(backs.values()), 33)) if level == "auto" else float(level)
+    least = 2 ** (-float(cfg.get("max", 1.2)) / 2.2)
+    return {i: round(max(least, level / b), 3) for i, b in backs.items() if b > level * 1.05}
+
+
+PROTECT = (0.25, 0.60)    # match gains spare levels below the first, act in full above the second (gain_filter)
+
+
+def protect_levels(cfg):
+    """reel.json "exposure" "match" "protect": [from, to] (legal-range luma) -- the gain leaves levels below `from`
+    (skin, dark skin above all, and shadows) as shot and takes its full effect above `to` (the water, sky, sand that
+    the raised ISO blew bright); false scales the whole picture. Default PROTECT."""
+    v = (cfg or {}).get("protect", PROTECT)
+    return tuple(float(x) for x in v) if v else None
+
+
+def protected(y, g, protect):
+    """A level y (legal-range luma, 0..1) under gain g protected below protect[0] (the curve gain_filter renders)."""
+    e = min(max((y - protect[0]) / (protect[1] - protect[0]), 0.0), 1.0)
+    return y * (1 - (1 - g) * e * e * (3 - 2 * e))
+
+
+def protect_span(g, protect, slope=0.25):
+    """protect widened until the protected curve rises everywhere at least `slope` (a strong gain over a narrow span
+    would make the water darker than the skin below it: a tone inversion) -- the top first, up to white, then the
+    bottom down (a gain that strong spares a little less of the skin)."""
+    ys = np.linspace(0.0, 1.0, 501)
+    lo, hi = protect
+
+    def rises(lo, hi):
+        f = np.array([protected(y, g, (lo, hi)) for y in ys])
+        return (np.diff(f) / np.diff(ys)).min() >= slope
+    while hi < 1.0 and not rises(lo, hi):
+        hi = min(hi + 0.02, 1.0)
+    while lo > 0.0 and not rises(lo, hi):
+        lo = max(lo - 0.02, 0.0)
+    return round(lo, 3), round(hi, 3)
+
+
+def gain_filter(g, protect=None, tag="g"):
+    """A shot's exposure scaled by g (gamma-encoded: luma above black and chroma around neutral, alike). With
+    protect (from, to): only the bright part of the picture -- the gained picture laid over the shot as shot, keyed
+    by the shot's own luma (smoothstep from..to), so faces and shadows keep their level and their colour while the
+    water and sky come down; no window, so no halo. Inline filter-graph text for a -vf / -filter_complex chain."""
+    gain = (f"lutyuv=y='(val-minval)*{g:.4f}+minval':u='(val-(maxval+minval)/2)*{g:.4f}+(maxval+minval)/2'"
+            f":v='(val-(maxval+minval)/2)*{g:.4f}+(maxval+minval)/2'")
+    if not protect:
+        return gain
+    k0, k1 = 16 + 219 * protect[0], 219 * (protect[1] - protect[0])
+    e = f"clip((val-{k0:.2f})/{k1:.2f}\\,0\\,1)"
+    q = f"255*{e}*{e}*(3-2*{e})"
+    return (f"format=yuv422p10le,split=3[{tag}b][{tag}x][{tag}q0];[{tag}x]{gain}[{tag}y];"
+            f"[{tag}q0]extractplanes=y,format=gray,lut=c0={q}[{tag}q];[{tag}y][{tag}q]alphamerge[{tag}a];"
+            f"[{tag}b][{tag}a]overlay=format=yuv422p10")
 
 
 def lift_amount(m, target=NIGHT_TARGET, top=LIFT_MAX):
@@ -219,6 +324,7 @@ def mark(project, plan, workers=6):
     lc = lift_config(cfg)
     from .window import settings
     win = settings(cfg.get("lift"))                          # the lift through a window on the faces (window.py)
+    day = isinstance(cfg.get("lift"), dict) and bool(cfg["lift"].get("day"))   # by day too: faces in hard shade
     cache_f = project.path("exposure.json")
     cache = json.load(open(cache_f)) if os.path.exists(cache_f) else {}
     skip = set(cfg.get("skip") or [])
@@ -227,8 +333,12 @@ def mark(project, plan, workers=6):
         m = cache.get(_key(s["unit"], s), False)
         auto = cfg.get("auto") and by_hand(cfg, s["unit"], s) is None
         lift = lc and by_hand(cfg, s["unit"], s, "lift_by") is None
-        return (auto and m is False) or (lift and (m is False or (m and "mid" not in m)))
-    want = [s for s in shots if s["unit"]["id"] not in skip and needs(s)]
+        match = _matches(s["unit"], (cfg.get("match") or {}).get("clips")) if cfg.get("match") else False
+        return ((auto and m is False) or (lift and (m is False or (m and "mid" not in m)))
+                or (match and (m is False or (m and "back" not in m))))
+    want = [s for s in shots if s["unit"]["id"] not in skip and not s.get("photo") and not s.get("photos")
+            and needs(s)]   # (a still photo:
+                                                                                                    # graded already)
     if want:
         with ThreadPoolExecutor(workers) as ex:
             got = list(ex.map(lambda s: measure(project, s["unit"], s["src_in"], s["length"]), want))
@@ -237,20 +347,37 @@ def mark(project, plan, workers=6):
         with open(cache_f + ".part", "w") as fh:
             json.dump(cache, fh, indent=1, sort_keys=True)
         os.replace(cache_f + ".part", cache_f)
+    gains = match_gains(cfg.get("match"), shots, cache)
     out = {}
     for i, s in enumerate(shots):
         u = s["unit"]
+        s.pop("gain", None)
+        s.pop("gain_protect", None)
+        if s.get("photo") or s.get("photos"):
+            continue
+        if i in gains:
+            s["gain"] = gains[i]
+            pl = protect_levels(cfg.get("match"))
+            if pl:
+                s["gain_protect"] = list(protect_span(gains[i], pl))
         if u["id"] in skip:
             continue
         m = cache.get(_key(u, s))
         p = by_hand(cfg, u, s)
         if p is None and cfg.get("auto"):
             p = amount(m, float(cfg.get("max", MAX)))
-        if p:
-            s["pull"] = min(round(p, 3), 0.18)
+            if cfg.get("highlights") and _matches(u, cfg["highlights"].get("only")):
+                p = max(p or 0.0, highlight_amount(m, cfg["highlights"]))
+        if p and not s.get("gain"):                           # (a shot matched to its scene is already down:
+            s["pull"] = min(round(p, 3), 0.18)                # no highlight pull on top)
         lf = by_hand(cfg, u, s, "lift_by")
-        if win and not s.get("pull") and not s.get("logo") and lf != 0 and m and m["frame"] < DAY:
+        if s.get("gain_protect") and lf is None:             # matched with its faces spared: they are as shot
+            lf = 0                                             # (the ISO raised for them), so no window on top
+        if win and not s.get("pull") and not s.get("logo") and lf != 0 and m and (m["frame"] < DAY or day or s.get("gain")):
             s["lift"] = dict(win, stops=float(lf)) if lf else dict(win)   # (window.prepare decides from the faces)
+            if s.get("gain") and not s.get("gain_protect"):   # a shot brought down a stop as a whole: its faces
+                taken = -np.log2(s["gain"]) * 2.2              # lifted back by what it took (and a little more)
+                s["lift"]["stops"] = round(min(1.6, max(s["lift"]["stops"], taken + 0.2)), 2)
         elif not win:
             if lf is None and lc and not s.get("pull"):
                 lf = lift_amount(m, *lc)

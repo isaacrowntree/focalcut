@@ -138,10 +138,88 @@ With `"stab_analysis": "half"` (finding 3) the cold 1080p landscape render takes
    4:4:4 at constant quality 10.
 9. **Caching** works as intended: shots are keyed by everything that shapes them (now also the frame size and
    the encode's settings), transitions by their pair of files, the MilkDrop layer by the song, the frame count
-   and the preset schedule. The re-render measured above re-made one shot.
+   and the preset schedule. The re-render measured above re-made one shot. (Finding 14, later: the key also
+   followed things that shape nothing, and the file's name the shot's place in the plan.)
 10. **I/O is not a bottleneck.** The Windows drive reads at 280 to 420 MB/s over 9P; the reel reads about 2.5 GB
     of camera files. Proxies would not help the render (the crop needs the full-size picture); they help the
     analysis steps.
+
+## Speed curves, cache keys and the analysis (November 2026)
+
+A second pass, on a 4 min 4K landscape film (Grace City's baptisms: 87 shots, 12,436 frames, 13 of them `hero`
+speed curves on the dunks; 72 sources, 72 minutes of footage, a 1080p H.264 proxy of each), same machine.
+
+| step | before | after |
+|---|---|---|
+| the 13 speed-curve shots (3,108 frames) | about 390 s, one at a time | 123 s one at a time; **68 s** three at once |
+| one of them, 294 frames | 37.7 s, 8.6 GB held | 10 s, a few frames held |
+| score, per worker | 1.4x real time (camera files, CPU) | 3.5x (proxies, NVDEC); two workers 7x |
+| shake, a minute of export | 5.8 s | 4.8 s (same numbers); a 4:2:2 camera file 3.4x quicker on Quick Sync |
+| reference: the film (90 shots) | 79 s, then 26 s more of single-frame seeks | 43 s, then 10 s; the same analysis |
+| reference: frames of every unit | about 166 s, eight cores busy | 40-47 s, keyframes only |
+| reference, the whole command | about 5.2 min | 2.3 min; 1.8 min again (embeddings kept) |
+
+11. **A speed curve re-made frames it could have passed on.** A ramp ends a fraction of a frame into the source,
+    so every frame of the 1x stretch after it (39 to 68% of these shots) was an optical-flow in-between of two real
+    frames at a constant fraction: softer than the footage, and 85 ms each at 4K. *Fix:* `fx.speed.snap_steps`
+    nudges the ramp (each frame in proportion to how far from 1x it runs, half a source frame at most over the
+    whole ramp: about 1% of its speed) so the 1x stretch starts on a whole frame, and those frames are the source's
+    own. The move's peak still lands on its beat (the source window is placed from the same map).
+12. **An effect shot was held whole in memory as RGB** (25 MB a 4K frame: 8.6 GB for a 7 s shot), which is why
+    they ran one at a time; and each frame went 4:2:0 to RGB and back through swscale. *Fix:* a chain that is one
+    speed curve streams (`Speed.stream`, `render.fx_shot`): the shot's filter chain already ends in the 4:2:0 the
+    encoder takes, so the curve works on those planes (luma at full size, chroma at half, the flow scaled to
+    each), reads the source as it goes and holds the few frames it is working on; decode, curve and encode run on
+    threads of their own. Three such shots render at once (`FOCALCUT_FX_JOBS`), each in one of the plain shots'
+    slots, so the encoder sessions still add up to 11. Other chains (anything with SAM 3) work as before.
+    *Checked:* on RGB frames the new arithmetic gives the old in-betweens to one code value on four values in ten
+    million; in 4:2:0 they match the old path's to 44.5 dB luma and 54 dB chroma, where the old path's own trip
+    through RGB cost 46.8 dB. Against a plain cut of the same source frames, the new shots' 1x frames are the same
+    picture (50 to 67 dB: two encodes of one input, no frame lower); the old shots' sat at 45 dB, because the RGB
+    trip left an effect shot 1.1 code values darker than the plain shots around it (swscale truncating twice),
+    with a softer frame every 15 or so. That step in level at an effect shot's cuts is gone.
+13. **The in-between arithmetic itself**: the pixel grid was rebuilt for every frame (25 ms at 4K), the maps were
+    made with numpy temporaries, and the face guard's percentile ran on the 4K flow (50 ms). The grid is kept, the
+    maps are one `cv2.scaleAdd` each, the percentile runs on the 960 px flow (3 ms): 85 ms to 45 ms a frame.
+14. **Cache keys followed things that draw nothing.** A shot's key hashed its whole crop record, the planner's
+    scores of the framing included (action, face, fill, churn...), and its peak, role and beat even for a plain
+    shot; and the file was named after the shot's place in the plan, so one shot added early re-rendered every
+    shot after it. The dust map and the LUTs were identified by time and name, not content. And an effect shot
+    renders with its own `beat` where the plan gives one, while the key used the plan's. *Fix:* `render.key` is
+    made of what shapes the pixels (a plain shot: source stretch, the crop's size and path, what is laid on it;
+    an effect shot also what its effects read: moment, peak, its own beat, the face guard, group, role and what
+    caps its speed -- two of those, `group` and `add`, were missing), files are `shot_<key>.mp4`, a stretch played
+    twice is one file, and LUTs and the dust map go by their content. `out/<cut>_shots.json` is still the
+    plan's order. Every shot renders once more after this change; files named the old way are not read again and
+    can be deleted from `work/`.
+15. **Scoring decoded the camera files on the CPU although the project had proxies**, and thinned them in a way
+    that bent the numbers; shake and the reference pass decoded more than they used. See
+    [Hardware](hardware.md#decoding-for-the-analysis-steps). The reference pass also asked for a frame 270 times
+    with a seek and a decoder start each (now one pass a size: `reference.frames_at`, the same pixels), decoded
+    every frame of every export to keep one in a hundred (now the keyframes alone when they come often enough),
+    stamped those frames up to a sample step early (they now carry their own times; `reference_frames.npz`
+    `store` 2), and embedded every frame again on every run.
+
+Measured and left as it was:
+
+- **`FOCALCUT_DECODERS`.** 24 plain 4K shots: 29.9 s at the default 6 + 3, 30.9 s at 9 + 0, 30.3 s at 9 + 1; ten
+  Quick Sync decodes at once failed. The decoder is not what the plain shots wait for (their CPU filters are).
+- **Three scoring workers.** 7.1x real time, what two already reach (about 7x), at 10.3 GB of the card's 12.
+- **The final mux.** Of its 51 s on this film, 25 s is reading the 3.8 GB of shots back from the Windows drive
+  and 8 s the loudness passes; writing through a local disk first would move the same bytes over the same drive.
+- **Splitting long sources for the shake pass**: one NVDEC stream already uses the whole decoder.
+- **Exposure and the lift window on proxies**: they decide a shot's grade (see Hardware).
+
+Still to do -- **one decode for the analysis.** Score, shake, moves, dust and the reference pass each decode the
+same footage again, and since one NVDEC stream saturates the decoder, the passes cost their sum: about 5 minutes
+each for this project's 72 minutes at 1080p50. One pass per source feeding all of them would be a reader that
+decodes once (NVDEC, frames thinned on the GPU to the highest rate asked for, 25 fps) and hands each consumer
+its own scale and rate: 640 px RGB at 10 fps to score, 320 px grey at 25 fps to shake and at 10 fps to moves,
+a frame every 2 s to dust and to the reference's embeddings. What stands in the way is that the steps do not
+read the same stretches (score reads whole sources; shake and moves read each unit's stretch of its export
+file, the reference pass keyframes) and are separate, resumable CLI steps with their own caches; it needs a
+shared frame source keyed by (file, time) and the steps rewritten as consumers of it. Worth about 10 minutes
+of a cold analysis here; not done in this pass.
 
 ## Quality review
 

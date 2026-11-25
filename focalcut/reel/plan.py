@@ -78,7 +78,8 @@ LEAST_BEAT = None        # ... and the song's real beat it is counted in (picks 
 LONG = ("pattern", "travel", "spin", "trick", "dip", "style")    # moves that need time to play out
 SIZE = {"landscape": (1920, 1080), "portrait": (1080, 1920)}
 MOVES = ("spin", "dip", "trick", "pattern", "shake")
-SPEED = ("hero", "bullet", "montage", "flashin", "flashout", "jumpcut", "fit", "glide")
+SPEED = ("hero", "bullet", "montage", "flashin", "flashout", "jumpcut", "fit", "glide",
+         "dunk", "rise", "reveal", "drift", "none")           # (fx.speed.RAMP_FX)
 FAST = ("flashin", "flashout", "jumpcut", "fit")       # the ones that speed footage up (an editor's pick never is)
 ACT_NAMES = ("teaser", "arrival", "shows", "night", "climax", "finale")
 DAY_ACTS = ("arrival", "shows")
@@ -1573,6 +1574,13 @@ def _secs(x):
     return sum(v * 60 ** k for k, v in enumerate(reversed(parts)))
 
 
+def span_of(v):
+    """"m:ss.ss-m:ss.ss" (or one time) as (from, to) seconds."""
+    v = str(v).strip()
+    a, b = v.split("-", 1) if "-" in v[1:] else (v, v)
+    return _secs(a), _secs(b)
+
+
 def _norm(v):
     """An in-out as (from, to) seconds, for comparing picks written differently ("1:18.6-1:22.8" / "1:18.60-...")."""
     if not isinstance(v, str) or "-" not in v.strip()[1:]:
@@ -1604,7 +1612,9 @@ def apply_picks(recs, picks, only=True):
     A clip with picks gives the reel those and nothing else -- the editor chose its best part, so the planner takes
     nothing more from it: its other moments go, and the rest of it is banned (single-time adds keep 1.5 s either
     side). The planner may still cut a pick down (pick_pieces). not only (reel.json plan.<fmt> "only_picks": false):
-    the rest of the clip stays in play, between the picks. Keys starting with "_" are notes. Changes recs in place."""
+    the rest of the clip stays in play, between the picks. A clip's "guide" overrides that for it: "mine" (its picks
+    and nothing else), "both" (the rest stays in play), "focalcut" (its picks set aside, its bans kept); its "notes"
+    and "note" are the editor's words, for the editor. Keys starting with "_" are notes. Changes recs in place."""
     picks = {k: v for k, v in (picks or {}).items() if not k.startswith("_")}
     for r in recs:
         p = picks.get(r["id"]) or picks.get(r["unit"]["id"])
@@ -1625,6 +1635,10 @@ def apply_picks(recs, picks, only=True):
         for a, b in map(span, p.get("ban", [])):
             r["moments"] = [m for m in r["moments"] if not a <= m["t"] <= b]
             u["bans"] = [*u.get("bans", []), [a, b]]           # in_point keeps shots out of them too
+        guide = p.get("guide")                                 # the editor's word on the clip: "focalcut" -- the
+        if guide == "focalcut":                                # planner's own choice, the picks set aside (bans
+            continue                                           # still hold); "mine" -- the picks and nothing else;
+        clip_only = True if guide == "mine" else False if guide == "both" else only   # "both" -- around them too
         for a, b in map(span, p.get("prefer", [])):
             inside = [m for m in r["moments"] if a <= m["t"] <= b]
             if not inside and r["moments"]:
@@ -1659,8 +1673,9 @@ def apply_picks(recs, picks, only=True):
                 r["moments"] = [x for x in r["moments"] if x is m or not a <= x["t"] <= b]
                 u["bans"] = [*u.get("bans", []), [a, b]]
         keep = [span(v) for v in p.get("add", []) + ([p["open"]] if p.get("open") else [])]
-        if only and any(b - a > 0.05 for a, b in keep):
+        if clip_only and any(b - a > 0.05 for a, b in keep):
             r["moments"] = [m for m in r["moments"] if m.get("add") or m.get("open")]
+            u["picks_only"] = True                             # (nothing else of it: no moment is added later)
             keep = sorted((a, b) if b - a > 0.05 else (a - 1.5, a + 1.5) for a, b in keep)
             edge = u["t0"] - 1
             for a, b in keep + [(u["t1"] + 1, u["t1"] + 1)]:
@@ -6311,6 +6326,13 @@ def refill(project, fmt, base):
 
 
 def run(project, fmt, stinger_len=0.0) -> dict:
+    if project.config.get("mode") in ("reference", "documentary"):   # cut on a finished film's own edit, or on the
+                                                                     # documentary engine's structure (template.py)
+        from . import template
+        plan = template.run(project, fmt)
+        plan["format"] = fmt
+        project.dump(f"plan_{project.cut_name(fmt)}.json", plan)
+        return plan
     from .flow import Flow
     fl = Flow(project)
     rf = project.config.get("refill")
